@@ -1,0 +1,71 @@
+{
+  "description": "Recorded on 2025-07-23 23:11:11",
+  "loop": false,
+  "orientation_euler_angles_deg": null,
+  "moves": [
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.296,
+        -0.0012,
+        0.1447
+      ],
+      "orientation_euler_deg": [
+        -0.88,
+        8.09,
+        -0.23
+      ]
+    },
+    {
+      "command": "pause",
+      "duration": 1.0
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.4924,
+        -0.0019,
+        0.3264
+      ],
+      "orientation_euler_deg": [
+        -0.35,
+        5.8,
+        -0.21
+      ]
+    },
+    {
+      "command": "pause",
+      "duration": 1.0
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.0861,
+        -0.1802,
+        0.0413
+      ],
+      "orientation_euler_deg": [
+        112.65,
+        85.67,
+        112.42
+      ]
+    },
+    {
+      "command": "pause",
+      "duration": 1.0
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.0861,
+        -0.1802,
+        0.0413
+      ],
+      "orientation_euler_deg": [
+        112.65,
+        85.67,
+        112.42
+      ]
+    }
+  ]
+}

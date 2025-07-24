@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QTableWidget, QTableWidgetItem, QListWidget,
     QSlider, QStatusBar, QTextBrowser, QLineEdit, QComboBox, QMessageBox, QGridLayout,
-    QGroupBox
+    QGroupBox, QScrollArea, QButtonGroup
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
@@ -150,10 +150,6 @@ class DashboardPage(QWidget):
 
         layout.addWidget(self.table)
 
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
-
         self.setLayout(layout)
 
 class WorkflowPage(QWidget):
@@ -181,10 +177,6 @@ class WorkflowPage(QWidget):
             node_layout.addWidget(btn)
 
         layout.addLayout(node_layout)
-
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
 
         self.setLayout(layout)
 
@@ -225,10 +217,6 @@ class WeldingPage(QWidget):
         torch_label = QLabel("Torch Angle: +45° / +15°")
         layout.addWidget(torch_label)
 
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
-
         self.setLayout(layout)
 
 class ControlPage(QWidget):
@@ -247,35 +235,51 @@ class ControlPage(QWidget):
         self.status_label.hide()
         layout.addWidget(self.status_label)
 
+        # --- Live Control Buttons ---
+        control_button_layout = QHBoxLayout()
         self.activate_btn = QPushButton("ACTIVATE LIVE CONTROL")
         self.activate_btn.setStyleSheet("background-color: lime; color: black; font-weight: bold; font-size: 16px;")
         self.activate_btn.clicked.connect(self.activate_live_control)
-        layout.addWidget(self.activate_btn)
+        control_button_layout.addWidget(self.activate_btn)
 
         self.deactivate_btn = QPushButton("DEACTIVATE")
         self.deactivate_btn.setStyleSheet("background-color: darkred; color: gray; font-weight: bold; font-size: 16px;")
         self.deactivate_btn.clicked.connect(self.deactivate_live_control)
         self.deactivate_btn.setEnabled(False)
-        layout.addWidget(self.deactivate_btn)
+        control_button_layout.addWidget(self.deactivate_btn)
+        layout.addLayout(control_button_layout)
 
         joints = ["Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3", "Gripper"]
         self.joints = joints
         self.sliders = {}
         self.value_labels = {}
-        self.jog_combos = {}
+
+        # Create a grid to hold all joint controls, two per row
+        sliders_grid = QGridLayout()
+        sliders_grid.setHorizontalSpacing(15) # Keep space between columns
+        sliders_grid.setVerticalSpacing(0)   # Remove space between rows
 
         for i, joint_name in enumerate(joints):
+            # Each joint's controls are in a group box.
+            joint_group_box = QGroupBox() 
             joint_layout = QGridLayout()
-            
-            # Label
-            j_label = QLabel(f"J{i+1}: {joint_name}")
-            joint_layout.addWidget(j_label, 0, 0, 1, 4)
 
-            # Slider
+            # Row 0, Col 1: Joint Label
+            j_label = QLabel(f"J{i+1}: {joint_name}")
+            j_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            joint_layout.addWidget(j_label, 0, 1)
+
+            # Row 0, Col 2: Value Label (Bold)
+            value_label = QLabel("0°")
+            value_label.setStyleSheet("font-weight: bold;")
+            value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            joint_layout.addWidget(value_label, 0, 2)
+            self.value_labels[joint_name] = value_label
+            
+            # Row 1: Slider (spans columns 1 and 2)
             slider = QSlider(Qt.Horizontal)
-            # Set different ranges for arm joints vs gripper
             if joint_name == "Gripper":
-                slider.setRange(0, 180)  # 0° (closed) to 180° (open)
+                slider.setRange(0, 180)
             else:
                 slider.setRange(-180, 180)
             slider.setValue(0)
@@ -283,46 +287,67 @@ class ControlPage(QWidget):
             joint_layout.addWidget(slider, 1, 1, 1, 2)
             self.sliders[joint_name] = slider
 
-            # Value Label
-            value_label = QLabel("0°")
-            joint_layout.addWidget(value_label, 1, 3)
-            self.value_labels[joint_name] = value_label
-            
-            # Connect slider value change to new handler that updates label and sends command
             slider.valueChanged.connect(partial(self._handle_slider_change, joint_name=joint_name))
             
-            # Jog Buttons and Increment Selector
+            # Jog Buttons (span 2 rows, in cols 0 and 3)
             jog_minus_btn = QPushButton("-")
             jog_minus_btn.setObjectName("JogButton")
+            joint_layout.addWidget(jog_minus_btn, 0, 0, 2, 1)
+            jog_minus_btn.clicked.connect(partial(self.jog_joint, joint_name, -1))
+
             jog_plus_btn = QPushButton("+")
             jog_plus_btn.setObjectName("JogButton")
-            
-            jog_combo = QComboBox()
-            jog_combo.addItems(["0.5", "1", "5", "10"])
-            self.jog_combos[joint_name] = jog_combo
-            
-            joint_layout.addWidget(jog_minus_btn, 1, 0)
-            joint_layout.addWidget(jog_plus_btn, 1, 4)
-            joint_layout.addWidget(QLabel("Step:"), 2, 0)
-            joint_layout.addWidget(jog_combo, 2, 1, 1, 3)
-
-            # Connect jog buttons to handler
-            jog_minus_btn.clicked.connect(partial(self.jog_joint, joint_name, -1))
+            joint_layout.addWidget(jog_plus_btn, 0, 3, 2, 1)
             jog_plus_btn.clicked.connect(partial(self.jog_joint, joint_name, 1))
+            
+            joint_group_box.setLayout(joint_layout)
+            
+            # Add the group box to the main sliders grid
+            row = i // 2
+            col = i % 2
+            sliders_grid.addWidget(joint_group_box, row, col)
 
-            layout.addLayout(joint_layout)
+        # --- NEW: Global Jog Step as Radio Buttons ---
+        # This is placed in the grid cell next to the Gripper control
+        jog_step_group_box = QGroupBox("Global Jog Step")
+        jog_step_layout = QHBoxLayout()
+        self.jog_step_button_group = QButtonGroup()
+        
+        steps = ["1", "5", "10", "20", "45"]
+        for step in steps:
+            button = QPushButton(step)
+            button.setCheckable(True)
+            jog_step_layout.addWidget(button)
+            self.jog_step_button_group.addButton(button)
+            if step == "5":
+                button.setChecked(True)
 
+        jog_step_group_box.setLayout(jog_step_layout)
+        
+        # Add it to the grid next to the last joint (Gripper)
+        sliders_grid.addWidget(jog_step_group_box, 3, 1)
 
+        layout.addLayout(sliders_grid)
+
+        # --- Bottom Controls (Actions & Calibration) in a Grid ---
+        bottom_controls_layout = QGridLayout()
+
+        # Column 1: Action Buttons (Apply/Zero)
+        action_buttons_layout = QVBoxLayout()
+        
         apply_btn = QPushButton("Apply All Positions")
         apply_btn.clicked.connect(self.apply_all_positions)
-        layout.addWidget(apply_btn)
+        action_buttons_layout.addWidget(apply_btn)
 
         zero_btn = QPushButton("Zero All Sliders")
         zero_btn.clicked.connect(self.reset_sliders)
-        layout.addWidget(zero_btn)
+        action_buttons_layout.addWidget(zero_btn)
+        
+        action_buttons_layout.addStretch() # Pushes buttons to the top of the cell
+        bottom_controls_layout.addLayout(action_buttons_layout, 0, 0, Qt.AlignTop)
 
-        # --- NEW: Calibration Box ---
-        calib_group_box = QGroupBox("Calibration Tools")
+        # Column 2: Calibration Tools
+        calib_group_box = QGroupBox() # Title removed
         calib_layout = QGridLayout()
 
         # Set Zero
@@ -342,24 +367,39 @@ class ControlPage(QWidget):
         factory_reset_btn.clicked.connect(self.send_factory_reset)
         calib_layout.addWidget(factory_reset_btn, 1, 2)
 
-        # Refresh Limits
+        # Refresh Limits button is now created but added later
         refresh_limits_btn = QPushButton("Refresh Servo Limits")
         refresh_limits_btn.clicked.connect(self.send_refresh_limits)
-        calib_layout.addWidget(refresh_limits_btn, 2, 0, 1, 3)
         
         calib_group_box.setLayout(calib_layout)
-        layout.addWidget(calib_group_box)
-        # --- End Calibration Box ---
+        bottom_controls_layout.addWidget(calib_group_box, 0, 1)
 
+        # Configure column widths (15% for buttons, 85% for calibration)
+        bottom_controls_layout.setColumnStretch(0, 1)
+        bottom_controls_layout.setColumnStretch(1, 6)
+        
+        layout.addLayout(bottom_controls_layout)
 
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
+        # --- Log Area and Final Buttons ---
+        log_area_layout = QGridLayout()
+        
+        # Column 1: Final Buttons
+        final_buttons_layout = QVBoxLayout()
+        final_buttons_layout.addWidget(refresh_limits_btn) # Add refresh button here
+        final_buttons_layout.addStretch()
+        log_area_layout.addLayout(final_buttons_layout, 0, 0, Qt.AlignTop)
 
+        # Column 2: Log Readout
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet("background-color: #111111; color: #FF6600; font-family: 'Courier New', monospace;")
-        layout.addWidget(self.log_text)
+        log_area_layout.addWidget(self.log_text, 0, 1)
+
+        # Configure column widths
+        log_area_layout.setColumnStretch(0, 1)
+        log_area_layout.setColumnStretch(1, 6)
+
+        layout.addLayout(log_area_layout)
 
         self.setLayout(layout)
         self.live_active = False
@@ -426,9 +466,8 @@ class ControlPage(QWidget):
     def jog_joint(self, joint_name, direction):
         """Handles the jog button clicks for a specific joint."""
         slider = self.sliders[joint_name]
-        combo = self.jog_combos[joint_name]
         
-        increment = float(combo.currentText())
+        increment = float(self.jog_step_button_group.checkedButton().text())
         current_value = slider.value()
         new_value = current_value + (increment * direction)
         
@@ -493,8 +532,14 @@ class ControlPage(QWidget):
         self.parent.send_command(f"SET_ORIENTATION,{input_str}")
 
     def send_run_trajectory(self):
-        name = self.run_traj_input.text()
-        self.parent.send_command(f"RUN_TRAJECTORY,{name}")
+        name = self.run_traj_combo.currentText()
+        if not name:
+            QMessageBox.warning(self, "Selection Error", "Please select a trajectory to run, or refresh the list.")
+            return
+
+        is_looping = self.loop_traj_btn.isChecked()
+        # Send command with loop status. Format: RUN_TRAJECTORY,name,use_cache,loop
+        self.parent.send_command(f"RUN_TRAJECTORY,{name},false,{is_looping}")
 
     def send_end_trajectory(self):
         name = self.end_traj_input.text()
@@ -543,10 +588,6 @@ class TutorialsPage(QWidget):
 
         self.doc_viewer = QTextBrowser()
         layout.addWidget(self.doc_viewer)
-
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
 
         self.setLayout(layout)
 
@@ -612,10 +653,6 @@ class CalibrationPage(QWidget):
         factory_reset_hbox.addWidget(self.factory_reset_input)
         factory_reset_hbox.addWidget(factory_reset_btn)
         layout.addLayout(factory_reset_hbox)
-
-        back_btn = QPushButton("Back to Home")
-        back_btn.clicked.connect(self.parent.switch_to_home)
-        layout.addWidget(back_btn)
 
         self.setLayout(layout)
 
@@ -748,13 +785,29 @@ class RealControlPage(QWidget):
         
         # Run Trajectory
         run_layout = QHBoxLayout()
-        self.run_traj_input = QLineEdit()
-        self.run_traj_input.setPlaceholderText("e.g., trajectory_name")
-        run_layout.addWidget(QLabel("Run Trajectory:"))
-        run_layout.addWidget(self.run_traj_input)
+        
+        # Column 1: Label and Dropdown (in a VBox)
+        combo_layout = QVBoxLayout()
+        combo_layout.addWidget(QLabel("Run Saved Trajectory:"))
+        self.run_traj_combo = QComboBox()
+        combo_layout.addStretch()
+        combo_layout.addWidget(self.run_traj_combo)
+        run_layout.addLayout(combo_layout)
+
+        # Columns 2 & 3: Buttons
+        refresh_traj_btn = QPushButton("Refresh List")
+        refresh_traj_btn.clicked.connect(self.refresh_trajectory_list)
+        run_layout.addWidget(refresh_traj_btn)
+
         run_btn = QPushButton("Run")
         run_btn.clicked.connect(self.send_run_trajectory)
         run_layout.addWidget(run_btn)
+        
+        self.loop_traj_btn = QPushButton("Loop")
+        self.loop_traj_btn.setCheckable(True)
+        self.loop_traj_btn.setToolTip("If selected, the trajectory will run continuously until STOP is pressed.")
+        run_layout.addWidget(self.loop_traj_btn)
+
         traj_layout.addLayout(run_layout)
 
         traj_group_box.setLayout(traj_layout)
@@ -848,17 +901,9 @@ class RealControlPage(QWidget):
         self.send_btn = QPushButton("Send Direct Command")
         self.send_btn.clicked.connect(self.send_command_from_inputs)
         right_side_layout.addWidget(self.send_btn)
-
-        # Back to Home Button
-        self.home_btn = QPushButton("Back to Home")
-        self.home_btn.clicked.connect(self.parent.switch_to_home)
-        right_side_layout.addWidget(self.home_btn)
         
         main_layout.addLayout(right_side_layout)
         self.setLayout(main_layout)
-
-        # Check for gripper presence on initialization
-        self.check_gripper_presence()
 
     def check_gripper_presence(self):
         """Sends GET_STATUS to the controller and enables/disables the gripper UI."""
@@ -905,6 +950,30 @@ class RealControlPage(QWidget):
         cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]}"
         self.parent.send_command(cmd)
         self.refresh_state() # Refresh position after move
+
+    def refresh_trajectory_list(self):
+        """Requests the list of saved trajectories from the robot and updates the dropdown."""
+        self.log_message("Requesting trajectory list...")
+        self.parent.send_command("GET_TRAJECTORIES")
+        
+        # We need a slightly longer timeout here as fetching file lists can take time.
+        response = self.parent.receive_data(timeout_seconds=3.0)
+        
+        if response and response.startswith("TRAJECTORIES,"):
+            # The controller returns a comma-separated list. Filter out any empty
+            # strings that might result from trailing commas or other formatting issues.
+            trajectories = [t.strip() for t in response.split(',')[1:] if t.strip()]
+            
+            self.run_traj_combo.clear()
+            if trajectories:
+                self.run_traj_combo.addItems(trajectories)
+                self.log_message(f"Updated trajectories: {len(trajectories)} found.")
+            else:
+                self.log_message("No saved trajectories found on robot.")
+        elif response:
+            self.log_message(f"Failed to get trajectories. Response: {response}")
+        else:
+            self.log_message("Failed to get trajectories: No response from robot.")
 
     def _send_orientation_jog(self, axis_index, direction):
         increment_deg = float(self.ori_increment_combo.currentText())
@@ -1070,8 +1139,14 @@ class RealControlPage(QWidget):
         self.parent.send_command(f"SET_ORIENTATION,{input_str}")
 
     def send_run_trajectory(self):
-        name = self.run_traj_input.text()
-        self.parent.send_command(f"RUN_TRAJECTORY,{name}")
+        name = self.run_traj_combo.currentText()
+        if not name:
+            QMessageBox.warning(self, "Selection Error", "Please select a trajectory to run, or refresh the list.")
+            return
+
+        is_looping = self.loop_traj_btn.isChecked()
+        # Send command with loop status. Format: RUN_TRAJECTORY,name,use_cache,loop
+        self.parent.send_command(f"RUN_TRAJECTORY,{name},false,{is_looping}")
 
     def send_end_trajectory(self):
         name = self.end_traj_input.text()
@@ -1103,9 +1178,28 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Industrial Robot Controller")
-        self.setGeometry(100, 100, 1600, 480)
+        self.setGeometry(50, 50, 1280, 800)
 
-        # UDP Configuration
+        # --- Setup Footer/Status Bar FIRST ---
+        # This is critical because some page constructors trigger actions
+        # that try to update the status label upon initialization.
+        
+        # The home button is on the far left.
+        self.home_btn_footer = QPushButton("Back to Home")
+        self.home_btn_footer.clicked.connect(self.switch_to_home)
+        self.statusBar().addWidget(self.home_btn_footer)
+
+        # The status label is next to the home button.
+        self.status_label_footer = QLabel("Robot State: Active")
+        self.statusBar().addWidget(self.status_label_footer)
+
+        # The E-Stop button is on the far right.
+        estop_btn = QPushButton("EMERGENCY STOP")
+        estop_btn.setStyleSheet("background-color: #CC0000; color: #FFFFFF;")
+        estop_btn.clicked.connect(self.emergency_stop)
+        self.statusBar().addPermanentWidget(estop_btn)
+
+        # --- UDP Configuration ---
         self.PI_IP = "ai-pi.local"
         self.UDP_PORT = 3000
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1115,26 +1209,40 @@ class MainWindow(QMainWindow):
             print("Could not resolve PI_IP. Using fallback.")
             self.PI_RESOLVED_IP = self.PI_IP  # Assume it's an IP if hostname fails
 
+        # --- Page Creation and Layout ---
         self.stacked_widget = QStackedWidget()
+
+        # Instantiate pages
         self.home = HomePage(self)
         self.tutorials = TutorialsPage(self)
         self.calibration = CalibrationPage(self)
         self.control = ControlPage(self)
         self.real_control = RealControlPage(self)
 
+        # Now that all pages are created, perform initial setup for pages
+        # that require sending commands.
+        self.real_control.check_gripper_presence()
+
+        # Wrap control-heavy pages inside scroll areas so that vertical overflow
+        # is handled gracefully on 800-pixel-high displays.
+        self.control_scroll = QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setWidget(self.control)
+
+        self.real_control_scroll = QScrollArea()
+        self.real_control_scroll.setWidgetResizable(True)
+        self.real_control_scroll.setWidget(self.real_control)
+
         self.stacked_widget.addWidget(self.home)
         self.stacked_widget.addWidget(self.tutorials)
         self.stacked_widget.addWidget(self.calibration)
-        self.stacked_widget.addWidget(self.control)
-        self.stacked_widget.addWidget(self.real_control)
+        self.stacked_widget.addWidget(self.control_scroll)
+        self.stacked_widget.addWidget(self.real_control_scroll)
         self.setCentralWidget(self.stacked_widget)
 
-        self.statusBar().showMessage("Robot State: Active")
-
-        estop_btn = QPushButton("EMERGENCY STOP")
-        estop_btn.setStyleSheet("background-color: #CC0000; color: #FFFFFF;")
-        estop_btn.clicked.connect(self.emergency_stop)
-        self.statusBar().addPermanentWidget(estop_btn)
+        # Connect page changes to footer visibility updates
+        self.stacked_widget.currentChanged.connect(self.update_footer_buttons)
+        self.update_footer_buttons(self.stacked_widget.currentIndex()) # Set initial state
 
         print('Starting MainWindow init')
         print('UDP config done')
@@ -1146,11 +1254,20 @@ class MainWindow(QMainWindow):
     def send_command(self, command_str):
         try:
             self.sock.sendto(command_str.encode("utf-8"), (self.PI_IP, self.UDP_PORT))
-            self.statusBar().showMessage(f"Sent: {command_str}")
-            if self.stacked_widget.currentWidget() == self.real_control:
+            self.status_label_footer.setText(f"Sent: {command_str}")
+            
+            # Determine which logical page is currently visible even if it is
+            # wrapped in a QScrollArea.
+            current_widget = self.stacked_widget.currentWidget()
+            if isinstance(current_widget, QScrollArea):
+                current_page = current_widget.widget()
+            else:
+                current_page = current_widget
+            
+            if current_page == self.real_control:
                 self.real_control.log_message(f"Sent: {command_str}")
         except Exception as e:
-            self.statusBar().showMessage(f"Error sending: {e}")
+            self.status_label_footer.setText(f"Error sending: {e}")
 
     def receive_data(self, timeout_seconds=2.0):
         self.sock.settimeout(timeout_seconds)
@@ -1161,16 +1278,16 @@ class MainWindow(QMainWindow):
             # intended robot. This is more robust against complex network configs.
             if server_addr[1] == self.UDP_PORT:
                 response = data.decode("utf-8").strip()
-                self.statusBar().showMessage(f"Received: {response}")
+                self.status_label_footer.setText(f"Received: {response}")
                 return response
             else:
-                self.statusBar().showMessage(f"Received from unexpected source: {server_addr}")
+                self.status_label_footer.setText(f"Received from unexpected source: {server_addr}")
                 return None
         except socket.timeout:
-            self.statusBar().showMessage("Timeout waiting for response")
+            self.status_label_footer.setText("Timeout waiting for response")
             return None
         except Exception as e:
-            self.statusBar().showMessage(f"Receive error: {e}")
+            self.status_label_footer.setText(f"Receive error: {e}")
             return None
         finally:
             self.sock.settimeout(None)
@@ -1197,20 +1314,27 @@ class MainWindow(QMainWindow):
                 self.send_command("WAIT_FOR_IDLE")
                 time.sleep(0.2)
 
-            self.statusBar().showMessage("Square Test Complete")
+            self.status_label_footer.setText("Square Test Complete")
             if self.stacked_widget.currentWidget() == self.real_control:
                 self.real_control.log_message("Square Test Complete")
         except Exception as e:
-            self.statusBar().showMessage(f"Square Test Error: {e}")
+            self.status_label_footer.setText(f"Square Test Error: {e}")
             if self.stacked_widget.currentWidget() == self.real_control:
                 self.real_control.log_message(f"Square Test Error: {e}")
 
     def emergency_stop(self):
         self.send_command("STOP")  # Assuming STOP is the command for emergency
-        self.statusBar().showMessage("Emergency Stop Activated!")
+        self.status_label_footer.setText("Emergency Stop Activated!")
+
+    def update_footer_buttons(self, index):
+        """Shows/hides footer buttons based on the current page."""
+        # The home button should not be visible when we are on the home page.
+        is_home_page = (self.stacked_widget.widget(index) == self.home)
+        self.home_btn_footer.setVisible(not is_home_page)
 
     def switch_to_home(self):
-        self.stacked_widget.setCurrentIndex(0)
+        """Navigate to the Home page."""
+        self.stacked_widget.setCurrentWidget(self.home)
 
     def switch_to_tutorials(self):
         self.stacked_widget.setCurrentIndex(1)
@@ -1219,10 +1343,13 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(2)
 
     def switch_to_control(self):
-        self.stacked_widget.setCurrentIndex(3)
+        """Navigate to the Joint Control page (scroll wrapper)."""
+        self.stacked_widget.setCurrentWidget(self.control_scroll)
 
     def switch_to_real_control(self):
-        self.stacked_widget.setCurrentIndex(4)
+        """Navigate to the Real Robot Control page (scroll wrapper) and refresh trajectories."""
+        self.stacked_widget.setCurrentWidget(self.real_control_scroll)
+        self.real_control.refresh_trajectory_list()
 
     def closeEvent(self, event):
         self.sock.close()
@@ -1249,6 +1376,11 @@ if __name__ == "__main__":
     }
     QPushButton:pressed {
         background-color: #CC0000;  /* Red for activation */
+    }
+    QPushButton:checked {
+        background-color: #FF9933; /* A lighter orange for selection */
+        color: #000000;
+        border: 2px solid #FFFFFF;
     }
     QLineEdit {
         border: 1px solid #FF6600;

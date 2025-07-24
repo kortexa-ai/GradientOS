@@ -2,6 +2,7 @@
 import os
 import json
 import time
+from scipy.spatial.transform import Slerp  # needed for reset/initial path slerp interpolation
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import threading
@@ -390,15 +391,15 @@ def handle_move_profiled_relative(dx: float, dy: float, dz: float, speed: float 
     print(f"[Pi Smooth] Calculated absolute target: {np.round(target_pos, 4)}. Executing profiled move.")
     handle_move_profiled(target_pos[0], target_pos[1], target_pos[2], target_velocity, target_acceleration, use_smoothing=use_smoothing)
 
-
-def handle_run_trajectory(trajectory_name: str, use_cache: bool = False):
+def handle_run_trajectory(trajectory_name: str, use_cache: bool = False, loop_override: bool | None = None):
     """
     Handles the 'RUN_TRAJECTORY' command. It loads a trajectory definition
     from a JSON file, plans all the constituent moves, and then starts the
     trajectory executor thread to run the full sequence.
+    The `loop_override` parameter from the UI takes precedence over the setting in the file.
     """
     utils.trajectory_state["should_stop"] = False # Reset stop flag for a new trajectory run
-    print(f"[Pi Trajectory] Received RUN_TRAJECTORY for '{trajectory_name}' (Use Cache: {use_cache})")
+    print(f"[Pi Trajectory] Received RUN_TRAJECTORY for '{trajectory_name}' (Use Cache: {use_cache}, Loop Override: {loop_override})")
 
     # --- 1. Load Trajectory Definition ---
     trajectory = _load_trajectory_by_name(trajectory_name)
@@ -408,13 +409,18 @@ def handle_run_trajectory(trajectory_name: str, use_cache: bool = False):
         return
 
     moves = trajectory.get("moves", [])
-    should_loop = trajectory.get("loop", False)
-    # NEW: Parse orientation lock from trajectory file
+    
+    # Determine looping behavior: UI override > file setting > default false
+    if loop_override is not None:
+        should_loop = loop_override
+    else:
+        should_loop = trajectory.get("loop", False)
+
+    # NEW: Parse orientation lock from trajectory file (unchanged from original)
     orientation_lock_euler = trajectory.get("orientation_euler_angles_deg")
     target_orientation_matrix = None
     if orientation_lock_euler:
         try:
-            # Note: scipy is imported at the top of pi_controller
             target_orientation_matrix = R.from_euler('xyz', orientation_lock_euler, degrees=True).as_matrix()
             print(f"[Pi Trajectory] Orientation will be locked to Euler (deg): {orientation_lock_euler}")
         except Exception as e:
@@ -592,21 +598,146 @@ def handle_run_trajectory(trajectory_name: str, use_cache: bool = False):
         except Exception as e:
             print(f"[Pi Trajectory] WARNING: Failed to save planned path to cache: {e}")
         
+    # NEW: Now that we have planned_steps (from planning or cache), plan the reset move for looping if needed.
+    # Explanation: This is the key fix. We calculate a smooth path from the last waypoint back to the first.
+    # We use linear interpolation for position and SLERP for orientation. This prevents jerking back to the random start.
+    # If planning fails, we disable looping to avoid the bug.
+    # This works for both cached and non-cached plans.
+    first_pose = None  # We'll set this if looping is possible
+    if should_loop:
+        if len(planned_steps) < 2:
+            print("[Pi Trajectory] Trajectory has less than 2 steps, disabling loop.")
+            should_loop = False
+        else:
+            # Get joints at end of first step (first waypoint)
+            if planned_steps[0]['type'] != 'move':
+                print("[Pi Trajectory] First step is not a move, disabling loop.")
+                should_loop = False
+            else:
+                first_end_q = np.array(planned_steps[0]['path'][-1])
+                # Get joints at end of last move step (last waypoint)
+                last_end_q = None
+                for step in reversed(planned_steps):
+                    if step['type'] == 'move' or step['type'] == 'joint_move':
+                        last_end_q = np.array(step['path'][-1])
+                        break
+                if last_end_q is None:
+                    print("[Pi Trajectory] Could not find last move step, disabling loop.")
+                    should_loop = False
+                else:
+                    first_pose = ik_solver.get_fk_matrix(first_end_q)
+                    last_pose = ik_solver.get_fk_matrix(last_end_q)
+                    if first_pose is None or last_pose is None:
+                        print("[Pi Trajectory] Failed to calculate poses for loop reset, disabling loop.")
+                        should_loop = False
+                    else:
+                        first_pos = first_pose[:3, 3]
+                        first_orient = first_pose[:3, :3]
+                        last_pos = last_pose[:3, 3]
+                        last_orient = last_pose[:3, :3]
+                        # Calculate duration based on distance and default velocity (for smooth speed)
+                        dist = np.linalg.norm(first_pos - last_pos)
+                        velocity = utils.DEFAULT_PROFILE_VELOCITY
+                        duration_s = max(0.5, dist / velocity)
+                        frequency_hz = 100  # Matches frequency used in other moves
+                        num_steps = max(2, int(duration_s * frequency_hz))
+                        # Linear interpolation for positions (straight line path)
+                        t = np.linspace(0, 1, num_steps)
+                        path_positions = [last_pos + ti * (first_pos - last_pos) for ti in t]
+                        # SLERP for orientations (smooth rotation)
+                        key_times = [0, 1]
+                        key_rots = R.concatenate([R.from_matrix(last_orient), R.from_matrix(first_orient)])
+                        slerp = Slerp(key_times, key_rots)
+                        interp_rots = slerp(t)
+                        orientation_matrices = [r.as_matrix() for r in interp_rots]
+                        # Solve IK for the entire path (batch for efficiency)
+                        joint_path_reset = ik_solver.solve_ik_path_batch(
+                            path_points=path_positions,
+                            initial_joint_angles=last_end_q,
+                            target_orientations=orientation_matrices,
+                        )
+                        if joint_path_reset is None:
+                            print("[Pi Trajectory] Failed to plan reset path from last to first, disabling loop to avoid jerk.")
+                            should_loop = False
+                        else:
+                            reset_move = {'type': 'move', 'path': joint_path_reset, 'freq': frequency_hz}
+
     # --- 2. Execution Phase ---
     print("\n--- Trajectory Ready. Starting Execution in a background thread ---")
     
     utils.trajectory_state["is_running"] = True
     utils.trajectory_state["should_stop"] = False
-    
-    executor_thread = threading.Thread(
-        target=trajectory_execution._trajectory_executor_thread,
-        args=(planned_steps, should_loop)
-    )
+
+    # NEW: For looping, first move to the trajectory's start point from current position.
+    # Explanation: We re-plan this move every time (even for cache) to avoid jerk if starting from a different position.
+    # Uses similar interpolation as the reset for smoothness.
+    if should_loop and len(planned_steps) > 0:
+        print("[Pi Trajectory] Looping enabled. Moving to trajectory start point first.")
+        # Plan initial move from current actual position to first waypoint
+        current_q = np.array(utils.current_logical_joint_angles_rad)
+        current_pose = ik_solver.get_fk_matrix(current_q)
+        if current_pose is None or first_pose is None:
+            print("[Pi Trajectory] Failed to get current or first pose, aborting trajectory.")
+            utils.trajectory_state["is_running"] = False
+            return
+        first_pos = first_pose[:3, 3]
+        first_orient = first_pose[:3, :3]
+        current_pos = current_pose[:3, 3]
+        current_orient = current_pose[:3, :3]
+        dist = np.linalg.norm(first_pos - current_pos)
+        velocity = utils.DEFAULT_PROFILE_VELOCITY
+        duration_s = max(0.5, dist / velocity)
+        frequency_hz = 100
+        num_steps = max(2, int(duration_s * frequency_hz))
+        t = np.linspace(0, 1, num_steps)
+        path_positions = [current_pos + ti * (first_pos - current_pos) for ti in t]
+        key_times = [0, 1]
+        key_rots = R.concatenate([R.from_matrix(current_orient), R.from_matrix(first_orient)])
+        slerp = Slerp(key_times, key_rots)
+        interp_rots = slerp(t)
+        orientation_matrices = [r.as_matrix() for r in interp_rots]
+        joint_path_initial = ik_solver.solve_ik_path_batch(
+            path_points=path_positions,
+            initial_joint_angles=current_q,
+            target_orientations=orientation_matrices,
+        )
+        if joint_path_initial is None:
+            print("[Pi Trajectory] Failed to plan initial move to first waypoint, aborting trajectory.")
+            utils.trajectory_state["is_running"] = False
+            return
+        initial_freq = frequency_hz
+        initial_thread = threading.Thread(
+            target=trajectory_execution._open_loop_executor_thread,
+            kwargs={'joint_path': joint_path_initial, 'frequency': initial_freq, 'diagnostics': False},
+            daemon=True
+        )
+        initial_thread.start()
+        # Timed join with stop check to allow interruption
+        while initial_thread.is_alive():
+            if utils.trajectory_state["should_stop"]:
+                print("[Pi Trajectory] Stop detected during initial move – aborting.")
+                break
+            initial_thread.join(timeout=0.1)  # Check every 100ms
+
+        # NEW: For looping, create a modified steps list that starts from the second step
+        loop_steps = planned_steps[1:]
+        # Add the newly planned reset move back to the first waypoint
+        loop_steps.append(reset_move)  # Uses the smooth reset we planned, not the old initial path
+
+        executor_thread = threading.Thread(
+            target=trajectory_execution._trajectory_executor_thread,
+            args=(loop_steps, should_loop)
+        )
+    else:
+        # Non-looping case (unchanged)
+        executor_thread = threading.Thread(
+            target=trajectory_execution._trajectory_executor_thread,
+            args=(planned_steps, should_loop)
+        )
     utils.trajectory_state["thread"] = executor_thread
     executor_thread.start()
     
     print("[Pi Trajectory] Trajectory thread started. Main loop is responsive.")
-
 
 def handle_stop_command():
     """

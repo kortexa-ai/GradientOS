@@ -245,6 +245,27 @@ def main():
                     except IndexError:
                         print("[Controller] Error: Invalid END_TRAJECTORY command. Use 'END_TRAJECTORY,name'.")
 
+                elif command == "GET_TRAJECTORIES":
+                    try:
+                        # Define the path relative to this script's location
+                        script_dir = os.path.dirname(__file__)
+                        traj_dir = os.path.abspath(os.path.join(script_dir, '.', 'recorded_trajectories'))
+
+                        if not os.path.isdir(traj_dir):
+                            print(f"[Controller] Trajectory directory not found: {traj_dir}")
+                            sock.sendto("TRAJECTORIES,".encode("utf-8"), addr)
+                            continue
+                        
+                        # Get all .json files, remove extension
+                        traj_files = [f.replace('.json', '') for f in os.listdir(traj_dir) if f.endswith('.json')]
+                        
+                        reply = "TRAJECTORIES," + ",".join(traj_files)
+                        print(f"[Controller] Sending trajectory list: {reply}")
+                        sock.sendto(reply.encode("utf-8"), addr)
+                    except Exception as e:
+                        print(f"[Controller] Error getting trajectories: {e}")
+                        sock.sendto("ERROR,TRAJECTORY_LIST_FAILED".encode("utf-8"), addr)
+
                 # ------------------------------------------------------------------
                 # Standard Command Handling continues
                 # ------------------------------------------------------------------
@@ -336,9 +357,10 @@ def main():
                     try:
                         name = parts[1].lower().strip()
                         cache = parts[2].lower().strip() in ['true', '1', 'yes'] if len(parts) > 2 else False
-                        command_api.handle_run_trajectory(name, use_cache=cache)
+                        loop_override = parts[3].lower().strip() in ['true', '1', 'yes'] if len(parts) > 3 else None
+                        command_api.handle_run_trajectory(name, use_cache=cache, loop_override=loop_override)
                     except IndexError:
-                        print("[Controller] Error: Invalid RUN_TRAJECTORY command. Use 'RUN_TRAJECTORY,name,[use_cache]'.")
+                        print("[Controller] Error: Invalid RUN_TRAJECTORY command. Use 'RUN_TRAJECTORY,name,[use_cache],[loop_override]'.")
                 
                 # Default case for raw joint angles
                 else:
