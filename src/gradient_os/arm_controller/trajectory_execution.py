@@ -13,8 +13,8 @@ import csv
 import threading
 
 try:
-    import ik_solver
-    import trajectory_planner
+    from .. import ik_solver
+    from .. import trajectory_planner
 except ImportError:
     print("ERROR: Missing 'ik_solver' or 'trajectory_planner'. Ensure they are in the python path.")
     ik_solver = None

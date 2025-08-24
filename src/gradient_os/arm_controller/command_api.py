@@ -12,10 +12,11 @@ import datetime
 # The motion_stopped Event has been removed to use the native trajectory_state flag.
 
 try:
-    import ik_solver
+    from .. import ik_solver
 except ImportError:
     print("ERROR: Missing 'ik_solver'. Ensure it is in the python path.")
     ik_solver = None
+    trajectory_planner = None
 
 from . import utils
 from . import servo_driver

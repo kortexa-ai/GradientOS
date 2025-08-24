@@ -7,11 +7,8 @@ import sys
 import os
 import numpy as np # Added for gripper angle conversion
 
-# Add the 'src' directory to the Python path to allow importing the arm_controller package
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
-
 try:
-    from arm_controller import (
+    from .arm_controller import (
         command_api, 
         servo_driver, 
         servo_protocol,

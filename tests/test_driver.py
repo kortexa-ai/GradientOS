@@ -3,11 +3,8 @@ import sys
 import os
 import math
 
-# Add the 'src' directory to the Python path to allow importing the arm_controller package
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-
-from arm_controller import servo_driver
-from arm_controller import utils
+from gradient_os.arm_controller import servo_driver
+from gradient_os.arm_controller import utils
 
 class TestServoDriver(unittest.TestCase):
     """
@@ -38,7 +35,7 @@ class TestServoDriver(unittest.TestCase):
         rad_val_pi_half_inv = servo_driver.servo_value_to_radians(1023, 7)
         self.assertAlmostEqual(rad_val_pi_half_inv, math.pi / 2, places=2)
 
-    @unittest.mock.patch('arm_controller.servo_protocol.sync_write_goal_pos_speed_accel')
+    @unittest.mock.patch('gradient_os.arm_controller.servo_protocol.sync_write_goal_pos_speed_accel')
     def test_j1_gear_ratio(self, mock_sync_write: unittest.mock.Mock) -> None:
         """
         Tests that a command to the logical Joint 1 results in a physical command

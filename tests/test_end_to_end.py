@@ -5,16 +5,13 @@ import socket
 import threading
 import time
 
-# Add the 'src' directory to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-
 # Mock the serial and scipy modules before importing the controller
 from unittest.mock import MagicMock, patch
 sys.modules['serial'] = MagicMock()
 sys.modules['scipy.signal'] = MagicMock()
 
-from run_controller import main as run_controller_main
-from arm_controller import utils
+from gradient_os.run_controller import main as run_controller_main
+from gradient_os.arm_controller import utils
 
 class TestEndToEnd(unittest.TestCase):
     """
@@ -31,8 +28,8 @@ class TestEndToEnd(unittest.TestCase):
             "thread": None
         }
 
-    @patch('arm_controller.servo_driver.servo_protocol.sync_read_positions')
-    @patch('ik_solver.solve_ik_path_batch')
+    @patch('gradient_os.arm_controller.servo_driver.servo_protocol.sync_read_positions')
+    @patch('gradient_os.ik_solver.solve_ik_path_batch')
     @patch('serial.Serial')
     def test_move_line_command_to_serial_output(self, mock_serial_class: MagicMock, 
                                                 mock_solve_ik: MagicMock,
