@@ -25,4 +25,4 @@ target_link_libraries(ikfast_pybind PRIVATE pybind11::module)
 # The DESTINATION must match the Python package name. This ensures that
 # scikit-build-core places the compiled .so file inside the package directory,
 # making it importable.
-install(TARGETS ikfast_pybind DESTINATION ikfast_solver) 
+install(TARGETS ikfast_pybind DESTINATION ikfast_solver)

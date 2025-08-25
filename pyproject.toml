@@ -3,15 +3,39 @@ requires = ["scikit-build-core", "pybind11", "numpy"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "ikfast_solver"
+name = "gradient-os"
 version = "0.1.0"
+description = "Software for the Mini 6DOF Robotic Arm"
+readme = "docs/README.md"
 requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+  { name = "TerrorProforma" },
+]
 dependencies = [
     "numpy",
+    "scipy",
+    "matplotlib",
+    "modern_robotics",
+    "pyqtgraph",
+    "pyside6",
+    "pyserial",
+    "PyOpenGL",
+]
+
+[project.scripts]
+gradient-ui = "gradient_os.ui_start:main"
+gradient-controller = "gradient_os.run_controller:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-mock",
 ]
 
 [tool.scikit-build]
 cmake.source-dir = "src/ikfast_solver"
+wheel.packages = ["src/gradient_os", "src/ikfast_solver"]
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -19,4 +43,4 @@ testpaths = [
 ]
 norecursedirs = [
     "openrave",
-] 
+]

@@ -2,11 +2,8 @@ import unittest
 import sys
 import os
 
-# Add the 'src' directory to the Python path to allow importing the arm_controller package
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-
-from arm_controller import servo_protocol
-from arm_controller import utils
+from gradient_os.arm_controller import servo_protocol
+from gradient_os.arm_controller import utils
 
 class TestServoProtocol(unittest.TestCase):
     """
@@ -68,7 +65,7 @@ class TestServoProtocol(unittest.TestCase):
         expected_packet = bytearray([0xFF, 0xFF]) + checksum_data + bytearray([expected_checksum])
 
         # To test, we need to mock the ser.write call
-        with unittest.mock.patch('arm_controller.utils.ser') as mock_serial:
+        with unittest.mock.patch('gradient_os.arm_controller.utils.ser') as mock_serial:
             servo_protocol.sync_write_goal_pos_speed_accel(servo_data)
             # Check that write was called
             mock_serial.write.assert_called_once()

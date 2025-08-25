@@ -4,22 +4,19 @@ import os
 import math
 import numpy as np
 
-# Add the 'src' directory to the Python path to allow importing the arm_controller package
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-
 # Mock the scipy savgol_filter before importing the module that uses it
 from unittest.mock import MagicMock
 sys.modules['scipy.signal'] = MagicMock()
 
-from arm_controller import trajectory_execution
-from arm_controller import utils
+from gradient_os.arm_controller import trajectory_execution
+from gradient_os.arm_controller import utils
 
 class TestTrajectoryPlanning(unittest.TestCase):
     """
     Unit tests for the trajectory planning functions.
     """
 
-    @unittest.mock.patch('ik_solver.solve_ik_path_batch')
+    @unittest.mock.patch('gradient_os.ik_solver.solve_ik_path_batch')
     def test_path_unwrapping_and_smoothing(self, mock_solve_ik: unittest.mock.Mock) -> None:
         """
         Tests that the planning pipeline correctly unwraps and smooths a raw
