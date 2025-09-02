@@ -21,7 +21,7 @@ except ImportError as e:
     sys.exit(1)
 
 
-def main(serial_port):
+def main():
     """
     Main entry point for the robot controller.
 
@@ -34,14 +34,23 @@ def main(serial_port):
     5. Manages a simple calibration mode for streaming servo data.
     6. Ensures a graceful shutdown of the serial port on exit.
     """
+    parser = argparse.ArgumentParser(description="Robot Arm Controller")
+    parser.add_argument(
+        "--serial-port",
+        type=str,
+        default="/dev/ttyAMA0",
+        help="The serial port to connect to the robot arm.",
+    )
+    args = parser.parse_args()
+
     # Update the serial port from the command line argument
-    if serial_port:
-        utils.SERIAL_PORT = serial_port
+    if args.serial_port:
+        utils.SERIAL_PORT = args.serial_port
 
     # Initialize the hardware
     servo_driver.initialize_servos()
     servo_driver.set_servo_angle_limits_from_urdf()
-    
+
     # Homing Routine: Read servo positions to synchronize our internal state.
     # This prevents dangerous movements if the arm isn't at zero when the script starts.
     utils.current_logical_joint_angles_rad = servo_driver.get_current_arm_state_rad()
@@ -147,13 +156,13 @@ def main(serial_port):
                         servo_id_to_reset = int(parts[1])
                         print(f"[Controller] WARNING: Received FACTORY_RESET for Servo ID: {servo_id_to_reset}.")
                         print("[Controller] This will reset all EEPROM values (PID, offsets, limits) to factory defaults, except for the ID.")
-                        
+
                         if servo_protocol.factory_reset_servo(servo_id_to_reset):
                             print(f"[Controller] Factory reset command sent to servo {servo_id_to_reset}.")
                             # Add a longer delay for the servo to process the EEPROM write before restarting.
                             print("[Controller] Waiting 1 second for servo to process reset...")
                             time.sleep(1.0) 
-                            
+
                             print(f"[Controller] Now sending RESTART command to servo ID {servo_id_to_reset}.")
                             if servo_protocol.restart_servo(servo_id_to_reset):
                                 print(f"[Controller] Servo {servo_id_to_reset} has been reset and restarted.")
@@ -197,7 +206,7 @@ def main(serial_port):
 
                 elif command == "GET_POSITION":
                     command_api.handle_get_position(sock, addr)
-                
+
                 elif command == "GET_STATUS":
                     reply = f"STATUS,gripper_present,{utils.gripper_present}"
                     sock.sendto(reply.encode("utf-8"), addr)
@@ -227,7 +236,7 @@ def main(serial_port):
                         command_api.handle_set_gripper_state(angle_deg, speed, accel)
                     except (ValueError, IndexError):
                         print("[Controller] Error: Invalid SET_GRIPPER command. Use 'SET_GRIPPER,angle_deg,[speed],[accel]'.")
-                
+
                 elif command == "GET_GRIPPER_STATE":
                     command_api.handle_get_gripper_state(sock, addr)
 
@@ -257,10 +266,10 @@ def main(serial_port):
                             print(f"[Controller] Trajectory directory not found: {traj_dir}")
                             sock.sendto("TRAJECTORIES,".encode("utf-8"), addr)
                             continue
-                        
+
                         # Get all .json files, remove extension
                         traj_files = [f.replace('.json', '') for f in os.listdir(traj_dir) if f.endswith('.json')]
-                        
+
                         reply = "TRAJECTORIES," + ",".join(traj_files)
                         print(f"[Controller] Sending trajectory list: {reply}")
                         sock.sendto(reply.encode("utf-8"), addr)
@@ -284,7 +293,7 @@ def main(serial_port):
                         angle_deg = float(parts[2])
                         command_api.handle_rotate_command(axis, angle_deg)
                     except (ValueError, IndexError, KeyError):
-                         print("[Controller] Error: Invalid ROTATE command. Use 'ROTATE,axis,degrees'.")
+                        print("[Controller] Error: Invalid ROTATE command. Use 'ROTATE,axis,degrees'.")
 
                 elif command == "SET_ORIENTATION":
                     try:
@@ -354,7 +363,7 @@ def main(serial_port):
                         command_api.handle_move_profiled_relative(dx, dy, dz, speed)
                     except (ValueError, IndexError):
                         print("[Controller] Error: Invalid MOVE_PROFILED_RELATIVE command. Use '...,dx,dy,dz,[speed]'.")
-                
+
                 elif command == "RUN_TRAJECTORY":
                     try:
                         name = parts[1].lower().strip()
@@ -363,7 +372,7 @@ def main(serial_port):
                         command_api.handle_run_trajectory(name, use_cache=cache, loop_override=loop_override)
                     except IndexError:
                         print("[Controller] Error: Invalid RUN_TRAJECTORY command. Use 'RUN_TRAJECTORY,name,[use_cache],[loop_override]'.")
-                
+
                 # Default case for raw joint angles
                 else:
                     try:
@@ -386,7 +395,6 @@ def main(serial_port):
                     except ValueError:
                         print(f"[Controller] Error: Could not parse joint angle command '{message}'")
 
-
             except socket.timeout:
                 if in_calibration_mode and calibrating_servo_id is not None:
                     # Keep streaming calibration data if no new command arrives
@@ -401,7 +409,6 @@ def main(serial_port):
                 print("[Controller] An unexpected error occurred in the main loop:")
                 traceback.print_exc()
 
-
     except socket.error as e:
         print(f"[Controller] Error binding UDP socket: {e}")
     except KeyboardInterrupt:
@@ -414,9 +421,4 @@ def main(serial_port):
             print("[Controller] Serial port closed.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Robot Arm Controller')
-    parser.add_argument('--serial-port', type=str, default='/dev/ttyAMA0',
-                        help='The serial port to connect to the robot arm.')
-    args = parser.parse_args()
-    main(args.serial_port)
-
+    main()
