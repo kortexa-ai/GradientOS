@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 gradient-ui = "gradient_os.ui_start:main"
 gradient-controller = "gradient_os.run_controller:main"
+gradient-cli = "gradient_os.cli_controller:main"
 
 [project.optional-dependencies]
 test = [
