@@ -2,6 +2,40 @@
 
 This documentation provides a comprehensive overview of the Mini Arm Controller software, from the high-level API down to the low-level hardware communication and IK solver implementation.
 
+## Installation 
+
+```
+git clone https://github.com/terrorproforma/GradientOS.git --verbose
+cd GradientOS
+python3 -m venv .venv
+. .venv/bin/activate
+pip install .
+```
+
+The package provides three command-line tools:
+```
+gradient-controller  # Main controller for UDP commands
+gradient-ui         # Graphical user interface
+gradient-cli        # Command-line interface
+```
+
+You may need to exit and re-enter the venv to run 
+`gradient-controller` and
+`gradient-ui`.
+
+`gradient-ui` can be run remotely and can connect to you pi or other baord via UDP. `gradient-controller` must run locally on you pi or board connected to the motor controller. 
+
+
+# command CLI 
+The command-line interface, `gradient-cli`, for real-time control of the robot arm. The UI is built with the standard `curses` library for a lightweight, terminal-based experience.
+
+Features include:
+- Mode switching (Tab key) between Cartesian "pan" and tool "orient" control.
+- Intuitive W/A/S/D and Shift key bindings for jogging the arm.
+- Keys R/F open and close the gripper.
+- Hotkeys (1, 2, 3) for sending the arm to preset Rest, Home, and Zero positions.
+- A live display of the robot's current X/Y/Z position.
+
 ## Documentation Checklist (Detailed)
 
 This checklist tracks the progress of documenting each component of the system at a granular level.
