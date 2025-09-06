@@ -9,7 +9,7 @@ import argparse
 # This should be the hostname or IP address of your Raspberry Pi.
 # Using .local hostnames requires Avahi/Bonjour/Zeroconf networking.
 # If this does not work, use the direct IP address of the Pi.
-PI_IP = "ai-pi.local"
+PI_IP = "mini-arm.local"
 UDP_PORT = 3000
 
 # =============================================================================
@@ -268,7 +268,7 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Robot Arm UDP Client')
-    parser.add_argument('--pi-ip', type=str, default='ai-pi.local',
+    parser.add_argument('--pi-ip', type=str, default='mini-arm.local',
                         help='The IP address of the Raspberry Pi.')
     args = parser.parse_args()
     PI_IP = args.pi_ip
