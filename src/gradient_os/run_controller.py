@@ -38,7 +38,7 @@ def main():
     parser.add_argument(
         "--serial-port",
         type=str,
-        default="/dev/ttyAMA0",
+        default="/dev/ttyUSB0",
         help="The serial port to connect to the robot arm.",
     )
     args = parser.parse_args()
