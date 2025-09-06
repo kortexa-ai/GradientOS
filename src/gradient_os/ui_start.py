@@ -86,6 +86,32 @@ class HomePage(QWidget):
         
         main_layout.addLayout(button_grid)
 
+        # --- Connection/IP Controls ---
+        ip_group = QGroupBox("Robot Connection")
+        ip_layout = QHBoxLayout()
+
+        ip_label = QLabel("IP/Hostname:")
+        self.ip_input = QLineEdit(self.parent.PI_IP)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_ip_from_input)
+        self.current_ip_label = QLabel(f"Current target: {self.parent.PI_IP}")
+
+        ip_layout.addWidget(ip_label)
+        ip_layout.addWidget(self.ip_input)
+        ip_layout.addWidget(save_btn)
+        ip_layout.addWidget(self.current_ip_label)
+
+        ip_group.setLayout(ip_layout)
+        main_layout.addWidget(ip_group)
+
+    def save_ip_from_input(self):
+        new_ip = self.ip_input.text().strip()
+        if not new_ip:
+            QMessageBox.warning(self, "Invalid Address", "Please enter a valid IP address or hostname.")
+            return
+        self.parent.update_pi_ip(new_ip)
+        self.current_ip_label.setText(f"Current target: {self.parent.PI_IP}")
+
 # class SimulationPage(QWidget):
 #     def __init__(self, parent=None):
 #         super().__init__(parent)
@@ -687,19 +713,23 @@ class RealControlPage(QWidget):
         
         pos_increment_label = QLabel("Increment (mm):")
         self.pos_increment_combo = QComboBox()
-        self.pos_increment_combo.addItems(["1", "10", "100"])
+        self.pos_increment_combo.addItems(["1", "5", "10", "50", "100"])
+        # Default to 50 mm
+        index_50 = self.pos_increment_combo.findText("50")
+        if index_50 != -1:
+            self.pos_increment_combo.setCurrentIndex(index_50)
         pos_layout.addWidget(pos_increment_label, 0, 0, 1, 2)
         pos_layout.addWidget(self.pos_increment_combo, 0, 2, 1, 2)
 
-        # X buttons
-        pos_layout.addWidget(self._create_jog_button("-X", "x", -1), 2, 0)
-        pos_layout.addWidget(self._create_jog_button("+X", "x", 1), 2, 1)
-        # Y buttons
-        pos_layout.addWidget(self._create_jog_button("-Y", "y", -1), 1, 0)
+        # Axis buttons arranged by columns (X, Y, Z) with plus on top row and minus on bottom row
+        # Top row: +X, +Y, +Z
+        pos_layout.addWidget(self._create_jog_button("+X", "x", 1), 1, 0)
         pos_layout.addWidget(self._create_jog_button("+Y", "y", 1), 1, 1)
-        # Z buttons
-        pos_layout.addWidget(self._create_jog_button("-Z", "z", -1), 3, 0)
-        pos_layout.addWidget(self._create_jog_button("+Z", "z", 1), 3, 1)
+        pos_layout.addWidget(self._create_jog_button("+Z", "z", 1), 1, 2)
+        # Bottom row: -X, -Y, -Z
+        pos_layout.addWidget(self._create_jog_button("-X", "x", -1), 2, 0)
+        pos_layout.addWidget(self._create_jog_button("-Y", "y", -1), 2, 1)
+        pos_layout.addWidget(self._create_jog_button("-Z", "z", -1), 2, 2)
         
         pos_group_box.setLayout(pos_layout)
         left_controls_layout.addWidget(pos_group_box)
@@ -711,18 +741,22 @@ class RealControlPage(QWidget):
         ori_increment_label = QLabel("Increment (deg):")
         self.ori_increment_combo = QComboBox()
         self.ori_increment_combo.addItems(["1", "5", "15", "45"])
+        # Default to 15 degrees
+        index_15 = self.ori_increment_combo.findText("15")
+        if index_15 != -1:
+            self.ori_increment_combo.setCurrentIndex(index_15)
         ori_layout.addWidget(ori_increment_label, 0, 0, 1, 2)
         ori_layout.addWidget(self.ori_increment_combo, 0, 2, 1, 2)
 
-        # Roll buttons
-        ori_layout.addWidget(self._create_jog_button("-Roll", 0, -1, is_rotation=True), 1, 0)
-        ori_layout.addWidget(self._create_jog_button("+Roll", 0, 1, is_rotation=True), 1, 1)
-        # Pitch buttons
-        ori_layout.addWidget(self._create_jog_button("-Pitch", 1, -1, is_rotation=True), 2, 0)
-        ori_layout.addWidget(self._create_jog_button("+Pitch", 1, 1, is_rotation=True), 2, 1)
-        # Yaw buttons
-        ori_layout.addWidget(self._create_jog_button("-Yaw", 2, -1, is_rotation=True), 3, 0)
-        ori_layout.addWidget(self._create_jog_button("+Yaw", 2, 1, is_rotation=True), 3, 1)
+        # Orientation buttons arranged by columns (Roll, Pitch, Yaw)
+        # Top row: +Roll, +Pitch, +Yaw
+        ori_layout.addWidget(self._create_jog_button("+Roll", 0, 1, is_rotation=True), 1, 0)
+        ori_layout.addWidget(self._create_jog_button("+Pitch", 1, 1, is_rotation=True), 1, 1)
+        ori_layout.addWidget(self._create_jog_button("+Yaw", 2, 1, is_rotation=True), 1, 2)
+        # Bottom row: -Roll, -Pitch, -Yaw
+        ori_layout.addWidget(self._create_jog_button("-Roll", 0, -1, is_rotation=True), 2, 0)
+        ori_layout.addWidget(self._create_jog_button("-Pitch", 1, -1, is_rotation=True), 2, 1)
+        ori_layout.addWidget(self._create_jog_button("-Yaw", 2, -1, is_rotation=True), 2, 2)
 
         ori_group_box.setLayout(ori_layout)
         left_controls_layout.addWidget(ori_group_box)
@@ -1176,7 +1210,7 @@ class RealControlPage(QWidget):
         self.parent.send_command(f"ROTATE,{input_str}")
 
 class MainWindow(QMainWindow):
-    def __init__(self, pi_ip="ai-pi.local"):
+    def __init__(self, pi_ip="mini-arm.local"):
         super().__init__()
         self.setWindowTitle("Industrial Robot Controller")
         self.setGeometry(50, 50, 1280, 800)
@@ -1202,12 +1236,13 @@ class MainWindow(QMainWindow):
 
         # --- UDP Configuration ---
         self.PI_IP = pi_ip
+        print(f"PI_IP is set to: {self.PI_IP}")
         self.UDP_PORT = 3000
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self.PI_RESOLVED_IP = socket.gethostbyname(self.PI_IP)
         except socket.gaierror:
-            print("Could not resolve PI_IP. Using fallback.")
+            print(f"Could not resolve PI_IP: {self.PI_IP}. Using fallback.")
             self.PI_RESOLVED_IP = self.PI_IP  # Assume it's an IP if hostname fails
 
         # --- Page Creation and Layout ---
@@ -1269,6 +1304,16 @@ class MainWindow(QMainWindow):
                 self.real_control.log_message(f"Sent: {command_str}")
         except Exception as e:
             self.status_label_footer.setText(f"Error sending: {e}")
+
+    def update_pi_ip(self, new_ip):
+        """Updates the target IP/hostname used for UDP communication at runtime."""
+        self.PI_IP = new_ip
+        try:
+            self.PI_RESOLVED_IP = socket.gethostbyname(self.PI_IP)
+        except socket.gaierror:
+            self.PI_RESOLVED_IP = self.PI_IP
+        # Nudge footer status to reflect change
+        self.status_label_footer.setText(f"Target updated: {self.PI_IP}")
 
     def receive_data(self, timeout_seconds=2.0):
         self.sock.settimeout(timeout_seconds)
@@ -1358,7 +1403,7 @@ class MainWindow(QMainWindow):
 
 def main():
     parser = argparse.ArgumentParser(description='Robot Arm UI')
-    parser.add_argument('--pi-ip', type=str, default='ai-pi.local',
+    parser.add_argument('--pi-ip', type=str, default='mini-arm.local',
                         help='The IP address of the Raspberry Pi.')
     args = parser.parse_args()
 
