@@ -8,7 +8,7 @@ import sys
 import numpy as np
 
 # --- Constants ---
-DEFAULT_CONTROLLER_IP = "ai-pi.local"
+DEFAULT_CONTROLLER_IP = "mini-arm.local"
 UDP_PORT = 3000
 UPDATE_INTERVAL_S = 0.1  # 10 Hz for UI updates
 POSITION_REQUEST_INTERVAL_S = 0.5 # 2 Hz for position requests
