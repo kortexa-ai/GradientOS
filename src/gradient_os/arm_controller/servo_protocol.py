@@ -2,6 +2,7 @@
 # such as packet creation and checksum calculation. 
 from . import utils
 import time
+import threading
 
 
 # Servo Protocol Constants
@@ -41,6 +42,7 @@ SERVO_INSTRUCTION_SYNC_READ = 0x82
 
 
 # A simple in-memory cache for which servos were detected at startup
+# A simple in-memory cache for which servos were detected at startup
 _present_servo_ids: set[int] = set()
 
 def get_present_servo_ids() -> set[int]:
@@ -53,6 +55,9 @@ def get_present_servo_ids() -> set[int]:
 # ---------------------------------------------------------------------------
 
 _sync_profiles: list[tuple[float, float, float]] = []  # populated when diagnostics enabled
+
+# Global re-entrant lock to serialize all serial I/O across threads
+_SERIAL_LOCK = threading.RLock()
 
 
 def get_sync_profiles() -> list[tuple[float, float, float]]:
@@ -105,13 +110,14 @@ def ping(servo_id: int) -> bool:
     ping_command[5] = calculate_checksum(ping_command[2:5])
 
     try:
-        utils.ser.reset_input_buffer()
-        utils.ser.write(ping_command)
-        
-        # A successful ping should receive a status packet in response
-        # Status Packet: [0xFF, 0xFF, ID, Length=2, Error=0, Checksum]
-        # We'll just check if we get *any* valid response for the correct ID
-        response = utils.ser.read(6) # Read the expected status packet length
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(ping_command)
+            
+            # A successful ping should receive a status packet in response
+            # Status Packet: [0xFF, 0xFF, ID, Length=2, Error=0, Checksum]
+            # We'll just check if we get *any* valid response for the correct ID
+            response = utils.ser.read(6) # Read the expected status packet length
 
         if len(response) == 6 and response[0] == 0xFF and response[1] == 0xFF and response[2] == servo_id:
             # We have a response from the correct servo. Add to cache.
@@ -223,7 +229,8 @@ def send_servo_command(servo_id: int, position_value: int, speed_value: int = No
 
     try:
         print(f"[Pi PROTOCOL] send_servo_command to ID {servo_id}: {list(packet)}")
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # print(f"[Pi] Servo {servo_id} command: {list(packet)}") # Verbose
     except Exception as e:
         print(f"[Pi] Error writing to serial for servo {servo_id}: {e}")
@@ -307,7 +314,8 @@ def set_servo_acceleration(servo_id: int, acceleration_value_deg_s2: float):
     packet[7] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # print(f"[Pi] Servo {servo_id} acceleration set to: {servo_register_value} (reg value), from {acceleration_value_deg_s2} deg/s^2")
     except Exception as e:
         print(f"[Pi] Error writing acceleration for servo {servo_id}: {e}")
@@ -343,8 +351,9 @@ def read_servo_register_word(servo_id: int, register_address: int) -> int | None
     read_command[7] = calculate_checksum(read_command[2:7])
 
     try:
-        utils.ser.reset_input_buffer()
-        utils.ser.write(read_command)
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(read_command)
 
         # Expected response (Status Packet): [0xFF, 0xFF, ID, Length=4, Error, Param1(LSB), Param2(MSB), Checksum]
         # Total response length = 8 bytes.
@@ -402,8 +411,9 @@ def read_servo_position(servo_id: int) -> int | None:
     read_command[7] = calculate_checksum(read_command[2:7])
 
     try:
-        utils.ser.reset_input_buffer() # Clear any old data
-        utils.ser.write(read_command)
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer() # Clear any old data
+            utils.ser.write(read_command)
         # print(f"[Pi ReadPos] Servo {servo_id}: Sent read cmd: {list(read_command)}")
         
         # Expected response: [0xFF, 0xFF, ID, Length=5, Error, Pos_L, Pos_H, Checksum]
@@ -483,8 +493,9 @@ def read_servo_register_signed_word(servo_id: int, register_address: int) -> int
     read_command[7] = calculate_checksum(read_command[2:7])
 
     try:
-        utils.ser.reset_input_buffer()
-        utils.ser.write(read_command)
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(read_command)
         
         # Expected response: [0xFF, 0xFF, ID, Length=4, Error, Val_L, Val_H, Checksum]
         response = utils.ser.read(8) 
@@ -554,7 +565,8 @@ def write_servo_register_word(servo_id: int, register_address: int, value: int) 
     packet[8] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # print(f"[Pi] Servo {servo_id} register {hex(register_address)} set to {val_clamped}")
         return True
     except Exception as e:
@@ -593,7 +605,8 @@ def write_servo_register_byte(servo_id: int, register_address: int, value: int) 
     packet[7] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # print(f"[Pi] Servo {servo_id} register {hex(register_address)} set to {val_clamped}")
         return True
     except Exception as e:
@@ -665,8 +678,9 @@ def sync_write_goal_pos_speed_accel(servo_data_list: list[tuple[int, int, int, i
     final_packet_to_send = packet[0 : current_byte_index + 1]
 
     try:
-        utils.ser.write(final_packet_to_send)
-        # print(f"[Pi SyncWrite] Sent {len(final_packet_to_send)} bytes: {list(final_packet_to_send)}")
+        with _SERIAL_LOCK:
+            utils.ser.write(final_packet_to_send)
+            # print(f"[Pi SyncWrite] Sent {len(final_packet_to_send)} bytes: {list(final_packet_to_send)}")
     except Exception as e:
         print(f"[Pi SyncWrite] Error: {e}")
 
@@ -699,7 +713,8 @@ def calibrate_servo_middle_position(servo_id: int) -> bool:
     packet[5] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         return True
     except Exception as e:
         print(f"[Pi] Error writing calibration command to servo {servo_id}: {e}")
@@ -734,7 +749,8 @@ def factory_reset_servo(servo_id: int) -> bool:
     packet[5] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # We don't get a response for a reset command.
         return True
     except Exception as e:
@@ -769,7 +785,8 @@ def restart_servo(servo_id: int) -> bool:
     packet[5] = calculate_checksum(packet_data_for_sum)
 
     try:
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.write(packet)
         # No response for this command either.
         return True
     except Exception as e:
@@ -841,8 +858,9 @@ def sync_read_positions(
 
         # --- WRITE ---
         write_start = time.perf_counter()
-        utils.ser.reset_input_buffer()
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(packet)
         write_dur = time.perf_counter() - write_start
 
         # Allow a brief delay for servos to respond if requested
@@ -855,7 +873,8 @@ def sync_read_positions(
         # --- READ ---
         bytes_to_read = num_servos * 8  # Each servo sends an 8-byte status packet
         read_start = time.perf_counter()
-        response_data = utils.ser.read(bytes_to_read)
+        with _SERIAL_LOCK:
+            response_data = utils.ser.read(bytes_to_read)
         read_dur = time.perf_counter() - read_start
 
         if len(response_data) < bytes_to_read:
@@ -977,8 +996,9 @@ def fast_sync_read_positions(
 
         # --- WRITE ---
         write_start = time.perf_counter()
-        utils.ser.reset_input_buffer()
-        utils.ser.write(packet)
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(packet)
         write_dur = time.perf_counter() - write_start
 
         # Allow a brief delay for servos to respond if requested
@@ -991,7 +1011,8 @@ def fast_sync_read_positions(
         # --- READ ---
         bytes_to_read = num_servos * 8  # Each servo sends an 8-byte status packet
         read_start = time.perf_counter()
-        response_data = utils.ser.read(bytes_to_read)
+        with _SERIAL_LOCK:
+            response_data = utils.ser.read(bytes_to_read)
         read_dur = time.perf_counter() - read_start
 
         if len(response_data) < bytes_to_read:

@@ -308,7 +308,7 @@ def main():
                         v = float(parts[4]) if len(parts) > 4 else utils.DEFAULT_PROFILE_VELOCITY
                         a = float(parts[5]) if len(parts) > 5 else utils.DEFAULT_PROFILE_ACCELERATION
                         # Default to OPEN loop unless the user specifies 'true', 'closed', 'yes', etc.
-                        closed_loop = False
+                        closed_loop = True
                         if len(parts) > 6 and parts[6].strip() != "":
                             closed_loop = parts[6].strip().lower() in {"true", "1", "yes", "closed", "on"}
                         command_api.handle_move_line(x, y, z, v, a, closed_loop)
@@ -340,7 +340,7 @@ def main():
                     # runtime errors inside the motion planner don't get caught
                     # and mis-reported as a command-format error.
                     # Default to OPEN loop unless the user specifies 'true', 'closed', 'yes', etc.
-                    closed_loop = False
+                    closed_loop = True
                     if len(parts) > 5 and parts[5].strip() != "":
                         closed_loop = parts[5].strip().lower() in {"true", "1", "yes", "closed", "on"}
                     command_api.handle_move_line_relative(dx, dy, dz, speed_multiplier, closed_loop)

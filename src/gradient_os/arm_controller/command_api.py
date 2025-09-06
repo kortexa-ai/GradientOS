@@ -146,7 +146,7 @@ def handle_set_orientation_command(
     pitch: float,
     yaw: float,
     *,
-    closed_loop: bool = False,
+    closed_loop: bool = True,
     duration_s: float = 2.0,
     diagnostics: bool = False,
 ):
@@ -161,8 +161,8 @@ def handle_set_orientation_command(
     2.  Solves IK in a single batched call for every intermediate pose, so the
         position constraint is enforced at all times.
     3.  Executes the resulting joint path either:
-        • **Open-loop** at 1300 Hz  (default, high-speed)
-        • **Closed-loop** at 400 Hz (`closed_loop=True`, high-precision)
+        • **Closed-loop** at 400 Hz (default, high-precision)
+        • **Open-loop** at 1300 Hz (`closed_loop=False`, high-speed)
 
     Because the path is pre-planned, the function is *blocking*: it only
     returns after the motion (≈ `duration_s`) has finished.
@@ -173,7 +173,7 @@ def handle_set_orientation_command(
         Absolute tool orientation in degrees, XYZ intrinsic Euler order.
     closed_loop : bool, optional
         Run the high-precision closed-loop executor at 400 Hz instead of the
-        high-speed open-loop executor.  Default `False`.
+        high-speed open-loop executor.  Default `True`.
     duration_s : float, optional
         Desired motion duration (≥ 0.1 s).  Controls the smoothness/speed by
         scaling the number of interpolation steps.  Default `1.0`.
@@ -216,7 +216,7 @@ def handle_set_orientation_command(
     # ------------------------------------------------------------
     #   3. Determine execution parameters
     # ------------------------------------------------------------
-    frequency_hz = 400 if closed_loop else 1300  # Align with other commands
+    frequency_hz = 100 if closed_loop else 1300  # Align with other commands
 
     # Use caller-provided duration (default 1 s) to scale interpolation density.
     duration_s = max(0.1, duration_s)  # clamp to sane minimum
@@ -298,9 +298,9 @@ def handle_move_profiled(target_x: float,
                          target_z: float, 
                          velocity: float, 
                          acceleration: float, 
-                         frequency: int = 400, 
+                         frequency: int = 100, 
                          use_smoothing: bool = True, 
-                         closed_loop: bool = False,
+                         closed_loop: bool = True,
                          diagnostics: bool = False
                          ):
     """
@@ -328,11 +328,11 @@ def handle_move_profiled(target_x: float,
         utils.trajectory_state['diagnostics_folder_type'] = "closed_loop" if closed_loop else "open_loop"
 
     if closed_loop:
-        frequency = 400
+        frequency = 80
     else:
         # With diagnostics, the open-loop executor reads feedback and is much slower.
         # We must plan the trajectory at the slower rate to ensure the move duration is correct.
-        frequency = 400 if diagnostics_enabled else 1300
+        frequency = 400 if diagnostics_enabled else 600
 
     # 2. Plan the entire move.
     joint_path = trajectory_execution._plan_smooth_move(

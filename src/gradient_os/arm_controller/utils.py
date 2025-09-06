@@ -27,6 +27,8 @@ DEFAULT_SERVO_SPEED = 200 # Default speed for servos if not specified (0-4095)
 DEFAULT_PROFILE_VELOCITY = 0.1 # m/s, for trapezoidal profiles
 DEFAULT_PROFILE_ACCELERATION = 0.05 # m/s^2, for trapezoidal profiles
 CORRECTION_KP_GAIN = 0.5 # Proportional gain for the closed-loop executor
+CORRECTION_KI_GAIN = 0.05 # Integral gain (rad/s) for the closed-loop executor (eliminates steady-state error)
+CORRECTION_INTEGRAL_CLAMP_RAD = 0.35 # Anti-windup clamp for integral term (±20°)
 
 # --- Serial Port Configuration ---
 # Raspberry Pi GPIO 14 (TXD) and GPIO 15 (RXD) often map to /dev/ttyS0 or /dev/serial0.

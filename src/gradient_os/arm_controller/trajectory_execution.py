@@ -39,6 +39,17 @@ def _plan_smooth_move(start_q: list[float], target_pos: np.ndarray, velocity: fl
     if start_pos_from_q is None:
         print("[Pi Plan] ERROR: Cannot start planning, failed to get start pose from initial_q.")
         return None
+    # Optional diagnostics: compare FK position sources and log any mismatch
+    try:
+        if os.environ.get("MINI_ARM_IK_LOG", "0") == "1":
+            mx = ik_solver.get_fk_matrix(start_q)
+            if mx is not None:
+                pos_from_mx = mx[:3, 3]
+                delta = np.linalg.norm(start_pos_from_q - pos_from_mx)
+                if delta > 1e-3:
+                    print(f"[Pi Plan] WARNING: FK position mismatch at start (||get_fk - get_fk_matrix|| = {delta*1000:.2f} mm)")
+    except Exception as _e:
+        pass
     
     # 2. Generate the ideal Cartesian trajectory
     ideal_cartesian_points = trajectory_planner.generate_trapezoidal_profile(
@@ -60,6 +71,15 @@ def _plan_smooth_move(start_q: list[float], target_pos: np.ndarray, velocity: fl
     
     if final_joint_trajectory:
         print(f"[Pi Plan] Planning complete for move. Took {(t_end_plan - t_start_plan) * 1000:.2f} ms")
+        # Optional diagnostics: verify endpoint FK against target
+        try:
+            if os.environ.get("MINI_ARM_IK_LOG", "0") == "1":
+                fk_end = ik_solver.get_fk(final_joint_trajectory[-1])
+                if fk_end is not None:
+                    err = np.linalg.norm(fk_end - target_pos)
+                    print(f"[Pi Plan] Endpoint FK error vs target: {err*1000:.2f} mm")
+        except Exception as _e:
+            pass
 
     return final_joint_trajectory
 
@@ -145,6 +165,17 @@ def _plan_linear_move(start_q: list[float],
     if start_pos_from_q is None:
         print("[Pi Plan] ERROR: Cannot start planning, failed to get start position from initial_q.")
         return None
+    # Optional diagnostics: compare FK position sources and log any mismatch
+    try:
+        if os.environ.get("MINI_ARM_IK_LOG", "0") == "1":
+            mx = ik_solver.get_fk_matrix(start_q)
+            if mx is not None:
+                pos_from_mx = mx[:3, 3]
+                delta = np.linalg.norm(start_pos_from_q - pos_from_mx)
+                if delta > 1e-3:
+                    print(f"[Pi Plan] WARNING: FK position mismatch at start (||get_fk - get_fk_matrix|| = {delta*1000:.2f} mm)")
+    except Exception as _e:
+        pass
 
     # 2. Generate the ideal linear Cartesian trajectory
     ideal_cartesian_points = trajectory_planner.generate_trapezoidal_profile(
@@ -183,6 +214,16 @@ def _plan_linear_move(start_q: list[float],
         orientations_list=orientations_list,
     )
 
+    # Optional diagnostics: verify endpoint FK against target
+    try:
+        if final_joint_trajectory is not None and os.environ.get("MINI_ARM_IK_LOG", "0") == "1":
+            fk_end = ik_solver.get_fk(final_joint_trajectory[-1])
+            if fk_end is not None:
+                err = np.linalg.norm(fk_end - target_pos)
+                print(f"[Pi Plan] Endpoint FK error vs target: {err*1000:.2f} mm")
+    except Exception as _e:
+        pass
+
     return final_joint_trajectory
 
 
@@ -208,6 +249,18 @@ def _plan_high_fidelity_trajectory(cartesian_points: list,
         The final, dense list of joint angle solutions, or None on failure.
     """
     print(f"[Pi Plan HF] Planning high-fidelity trajectory for {len(cartesian_points)} points.")
+    # Optional diagnostics: compare FK position sources at start
+    try:
+        if os.environ.get("MINI_ARM_IK_LOG", "0") == "1":
+            pos_fk = ik_solver.get_fk(start_q)
+            mx = ik_solver.get_fk_matrix(start_q)
+            if pos_fk is not None and mx is not None:
+                pos_from_mx = mx[:3, 3]
+                delta = np.linalg.norm(pos_fk - pos_from_mx)
+                if delta > 1e-3:
+                    print(f"[Pi Plan HF] WARNING: FK position mismatch at start (||get_fk - get_fk_matrix|| = {delta*1000:.2f} mm)")
+    except Exception as _e:
+        pass
     
     # Determine orientations for each path point
     if orientations_list is None:
@@ -264,6 +317,15 @@ def _plan_high_fidelity_trajectory(cartesian_points: list,
         final_joint_trajectory = unwrapped_joint_trajectory
         
     print("[Pi Plan HF] Path post-processing complete.")
+    # Optional diagnostics: verify endpoint FK against last Cartesian target
+    try:
+        if os.environ.get("MINI_ARM_IK_LOG", "0") == "1" and cartesian_points:
+            fk_end = ik_solver.get_fk(final_joint_trajectory[-1]) if final_joint_trajectory else None
+            if fk_end is not None:
+                err = np.linalg.norm(fk_end - np.array(cartesian_points[-1]))
+                print(f"[Pi Plan HF] Endpoint FK error vs last path point: {err*1000:.2f} mm")
+    except Exception as _e:
+        pass
 
     # ------------------------------
     # Diagnostics: save smoothed joint path
@@ -557,6 +619,9 @@ def _closed_loop_executor_thread(
         all_physical_servo_ids = [utils.SERVO_IDS[i] for i in range(utils.NUM_PHYSICAL_SERVOS)]
         PRIMARY_FB_IDS = [10, 20, 30, 40, 50, 60]
 
+        # Integral accumulators for steady-state error compensation (gravity, bias)
+        integral_error_rad = [0.0 for _ in range(utils.NUM_LOGICAL_JOINTS)]
+
         for i, target_q_step in enumerate(joint_path):
             deadline = start_time + (i + 1) * time_step
             
@@ -653,8 +718,19 @@ def _closed_loop_executor_thread(
                     _abs_errors_per_joint[logical_joint_index].append(abs(error_rad))
                     
                     # 3. Calculate the corrected command
-                    # Commanded Angle = Target + Kp * Error
-                    commanded_physical_angle_rad = target_physical_angle_rad + (utils.CORRECTION_KP_GAIN * error_rad)
+                    # Update integral term (anti-windup clamped)
+                    integral_error_rad[logical_joint_index] += error_rad * time_step
+                    if integral_error_rad[logical_joint_index] > utils.CORRECTION_INTEGRAL_CLAMP_RAD:
+                        integral_error_rad[logical_joint_index] = utils.CORRECTION_INTEGRAL_CLAMP_RAD
+                    elif integral_error_rad[logical_joint_index] < -utils.CORRECTION_INTEGRAL_CLAMP_RAD:
+                        integral_error_rad[logical_joint_index] = -utils.CORRECTION_INTEGRAL_CLAMP_RAD
+
+                    # Commanded Angle = Target + Kp * Error + Ki * ∫Error dt
+                    commanded_physical_angle_rad = (
+                        target_physical_angle_rad
+                        + (utils.CORRECTION_KP_GAIN * error_rad)
+                        + (utils.CORRECTION_KI_GAIN * integral_error_rad[logical_joint_index])
+                    )
                     
                     # 4. Convert the final commanded angle to a raw servo value (0-4095)
                     # This block is the same as in set_servo_positions
@@ -781,8 +857,7 @@ def _closed_loop_executor_thread(
                     plt.close(fig)
 
                     # Additional Sync Read breakdown if available
-                    from arm_controller.servo_protocol import get_sync_profiles
-                    sync_profiles = get_sync_profiles()
+                    sync_profiles = servo_protocol.get_sync_profiles()
                     if sync_profiles:
                         w_list, r_list, p_list = zip(*sync_profiles)
 
