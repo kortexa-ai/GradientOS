@@ -36,7 +36,7 @@ CORRECTION_KP_GAIN = 0.5 # Proportional gain for the closed-loop executor
 #  2. Answer 'No' to 'Would you like a login shell to be accessible over serial?'
 #  3. Answer 'Yes' to 'Would you like the serial port hardware to be enabled?'
 #  4. Reboot your Pi.
-SERIAL_PORT = "/dev/ttyAMA0"  # Default serial port for Raspberry Pi GPIO
+SERIAL_PORT = "/dev/ttyUSB0"  # this uses the usb port   # "/dev/ttyAMA0"  # use ttyAMA0 if using GPIO setup with Raspberry Pi GPIO
 BAUD_RATE = 1000000 # Communication speed for the Feetech servos
 
 # --- Master Calibration Offsets ---
