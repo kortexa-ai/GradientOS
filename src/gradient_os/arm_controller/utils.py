@@ -23,12 +23,12 @@ SERVO_ID_JOINT_3_SECOND = 31
 SERVO_ID_GRIPPER = 100
 
 # --- Default Motion Parameters ---
-DEFAULT_SERVO_SPEED = 200 # Default speed for servos if not specified (0-4095)
+DEFAULT_SERVO_SPEED = 500 # Default speed for servos if not specified (0-4095)
 DEFAULT_PROFILE_VELOCITY = 0.1 # m/s, for trapezoidal profiles
 DEFAULT_PROFILE_ACCELERATION = 0.05 # m/s^2, for trapezoidal profiles
 CORRECTION_KP_GAIN = 0.0 # Proportional gain for the closed-loop executor (disabled for inner-PID tuning)
 CORRECTION_KI_GAIN = 0.0 # Integral gain (rad/s) for the closed-loop executor (disabled for inner-PID tuning)
-CORRECTION_INTEGRAL_CLAMP_RAD = 0.35 # Anti-windup clamp for integral term (±20°)
+CORRECTION_INTEGRAL_CLAMP_RAD = 0.6 # Anti-windup clamp for integral term (±20°)
 
 # --- Serial Port Configuration ---
 # Raspberry Pi GPIO 14 (TXD) and GPIO 15 (RXD) often map to /dev/ttyS0 or /dev/serial0.
@@ -114,7 +114,7 @@ SERVO_ADDR_POS_KD = 0x16
 
 DEFAULT_KP = 50  
 DEFAULT_KI = 40   
-DEFAULT_KD = 1
+DEFAULT_KD = 0
 
 # Default PID gains for the servos
 J1_PID_GAINS = (50, 5, 0) # J1 pattern is  (KP, KI, KD)
