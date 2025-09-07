@@ -48,7 +48,8 @@ def initialize_servos():
         all_pid_set_successfully = True
         # Only configure servos that responded to ping
         for s_id in present_servo_ids:
-            if not set_servo_pid_gains(s_id, utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD):
+            kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
+            if not set_servo_pid_gains(s_id, kp, ki, kd):
                 all_pid_set_successfully = False
             time.sleep(0.05) # Give a bit more time after each servo's PID set
         

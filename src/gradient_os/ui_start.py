@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTextEdit, QTableWidget, QTableWidgetItem, QListWidget,
     QSlider, QStatusBar, QTextBrowser, QLineEdit, QComboBox, QMessageBox, QGridLayout,
-    QGroupBox, QScrollArea, QButtonGroup
+    QGroupBox, QScrollArea, QButtonGroup, QCheckBox, QDial
 )
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon
@@ -936,6 +936,36 @@ class RealControlPage(QWidget):
         self.send_btn = QPushButton("Send Direct Command")
         self.send_btn.clicked.connect(self.send_command_from_inputs)
         right_side_layout.addWidget(self.send_btn)
+
+        # Closed-loop toggle (placed under the Send button)
+        self.closed_loop_checkbox = QCheckBox("Closed-loop control")
+        self.closed_loop_checkbox.setChecked(True)
+        right_side_layout.addWidget(self.closed_loop_checkbox)
+
+        # Speed Multiplier Dial (0.1x – 10x), middle = 1.0x
+        speed_group = QGroupBox("Speed Multiplier & Diagnostics")
+        speed_layout = QHBoxLayout()
+        self.speed_dial = QDial()
+        self.speed_dial.setNotchesVisible(True)
+        self.speed_dial.setWrapping(False)
+        # Map dial 0..1000 to multiplier 0.1..10.0 approximately linear in log-space
+        self.speed_dial.setMinimum(0)
+        self.speed_dial.setMaximum(1000)
+        # Set to 1.0x → around the geometric mid of 0.1 and 10 (log midpoint)
+        self.speed_dial.setValue(500)
+        self.speed_value_label = QLabel("1.00x")
+        self.speed_value_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.speed_dial.valueChanged.connect(self._on_speed_dial_changed)
+        speed_layout.addWidget(self.speed_dial)
+        speed_layout.addWidget(self.speed_value_label)
+        # Diagnostics checkbox
+        self.diagnostics_checkbox = QCheckBox("Diagnostics")
+        self.diagnostics_checkbox.setChecked(False)
+        self.diagnostics_checkbox.toggled.connect(self._on_diagnostics_toggled)
+        speed_layout.addWidget(self.diagnostics_checkbox)
+
+        speed_group.setLayout(speed_layout)
+        right_side_layout.addWidget(speed_group)
         
         main_layout.addLayout(right_side_layout)
         self.setLayout(main_layout)
@@ -960,7 +990,7 @@ class RealControlPage(QWidget):
         else:
             self.log_message("Gripper not detected. UI controls disabled.")
         
-        # Sync initial positions
+        # Sync initial positions and orientation on page load
         self.refresh_state()
 
     def _create_jog_button(self, text, axis, direction, is_rotation=False):
@@ -982,7 +1012,10 @@ class RealControlPage(QWidget):
             "z": [0, 0, increment_m * direction]
         }[axis]
         
-        cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]}"
+        # Build MOVE_LINE_RELATIVE with speed multiplier and closed-loop flag
+        speed_multiplier = self._current_speed_multiplier()
+        closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
+        cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]},{speed_multiplier},{closed_str}"
         self.parent.send_command(cmd)
         self.refresh_state() # Refresh position after move
 
@@ -1066,10 +1099,12 @@ class RealControlPage(QWidget):
         if response:
             try:
                 parts = response.split(',')
+                # CURRENT_POSE,x,y,z,roll,pitch,yaw,angles...
                 self.current_pos = [float(parts[1]), float(parts[2]), float(parts[3])]
-                self.log_message(f"Position updated: {self.current_pos}")
+                self.current_ori = [float(parts[4]), float(parts[5]), float(parts[6])]
+                self.log_message(f"Pose updated: pos={self.current_pos} rpy={self.current_ori}")
             except (ValueError, IndexError):
-                self.log_message("Error parsing position response.")
+                self.log_message("Error parsing CURRENT_POSE response.")
         else:
             self.log_message("Failed to get position from robot.")
 
@@ -1163,11 +1198,45 @@ class RealControlPage(QWidget):
 
     def send_move_line(self):
         input_str = self.move_line_input.text()
-        self.parent.send_command(f"MOVE_LINE,{input_str}")
+        # Append velocity/acceleration defaults and closed-loop flag when needed
+        parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
+        closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
+        # Defaults aligned with controller constants and scaled by multiplier
+        default_v = 0.1 * self._current_speed_multiplier()
+        default_a = 0.05 * self._current_speed_multiplier()
+        cmd = None
+        if len(parts) >= 6:
+            # x,y,z,v,a already present → append closed flag
+            cmd = f"MOVE_LINE,{','.join(parts)},{closed_str}"
+        elif len(parts) == 5:
+            # x,y,z,v,a provided → append closed flag (same as >=6 path)
+            cmd = f"MOVE_LINE,{','.join(parts)},{closed_str}"
+        elif len(parts) == 4:
+            # x,y,z,v provided → add default accel and closed flag
+            cmd = f"MOVE_LINE,{parts[0]},{parts[1]},{parts[2]},{parts[3]},{default_a},{closed_str}"
+        elif len(parts) == 3:
+            # x,y,z only → add default v,a and closed flag
+            cmd = f"MOVE_LINE,{parts[0]},{parts[1]},{parts[2]},{default_v},{default_a},{closed_str}"
+        else:
+            # Pass through as-is if malformed; controller will reject
+            cmd = f"MOVE_LINE,{input_str}"
+        self.parent.send_command(cmd)
 
     def send_move_line_rel(self):
         input_str = self.move_line_rel_input.text()
-        self.parent.send_command(f"MOVE_LINE_RELATIVE,{input_str}")
+        parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
+        closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
+        cmd = None
+        if len(parts) >= 5:
+            # dx,dy,dz,speed present → append closed flag
+            cmd = f"MOVE_LINE_RELATIVE,{','.join(parts)},{closed_str}"
+        elif len(parts) == 3:
+            # dx,dy,dz only → add default speed and closed flag
+            cmd = f"MOVE_LINE_RELATIVE,{parts[0]},{parts[1]},{parts[2]},{self._current_speed_multiplier()},{closed_str}"
+        else:
+            # Pass through as-is if malformed
+            cmd = f"MOVE_LINE_RELATIVE,{input_str}"
+        self.parent.send_command(cmd)
 
     def send_set_orientation(self):
         input_str = self.set_ori_input.text()
@@ -1208,6 +1277,27 @@ class RealControlPage(QWidget):
     def send_rotate(self):
         input_str = self.rotate_input.text()
         self.parent.send_command(f"ROTATE,{input_str}")
+
+    def _on_speed_dial_changed(self, value):
+        mult = self._current_speed_multiplier()
+        self.speed_value_label.setText(f"{mult:.2f}x")
+
+    def _current_speed_multiplier(self):
+        # Map dial 0..1000 to multiplier 0.1..10.0 using logarithmic scaling
+        # mult = 10^(map * 2 - 1), where map in [0,1]
+        t = self.speed_dial.value() / 1000.0
+        exp_val = (t * 2.0) - 1.0
+        mult = 10 ** exp_val
+        if mult < 0.1:
+            mult = 0.1
+        if mult > 10.0:
+            mult = 10.0
+        return mult
+
+    def _on_diagnostics_toggled(self, checked):
+        mode = "ON" if checked else "OFF"
+        # Send runtime toggle to controller
+        self.parent.send_command(f"DIAGNOSTICS,{mode}")
 
 class MainWindow(QMainWindow):
     def __init__(self, pi_ip="mini-arm.local"):

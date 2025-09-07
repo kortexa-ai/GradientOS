@@ -319,7 +319,11 @@ def handle_move_profiled(target_x: float,
     initial_q = servo_driver.get_current_arm_state_rad(verbose=False)
     target_pos = np.array([target_x, target_y, target_z])
 
-    diagnostics_enabled = os.environ.get("MINI_ARM_IK_LOG", "0") == "1" or diagnostics
+    diagnostics_enabled = (
+        os.environ.get("MINI_ARM_IK_LOG", "0") == "1"
+        or diagnostics
+        or utils.trajectory_state.get("diagnostics_enabled", False)
+    )
 
     # --- Set up diagnostics session if enabled ---
     if diagnostics_enabled:
@@ -328,7 +332,7 @@ def handle_move_profiled(target_x: float,
         utils.trajectory_state['diagnostics_folder_type'] = "closed_loop" if closed_loop else "open_loop"
 
     if closed_loop:
-        frequency = 80
+        frequency = 100
     else:
         # With diagnostics, the open-loop executor reads feedback and is much slower.
         # We must plan the trajectory at the slower rate to ensure the move duration is correct.
@@ -815,23 +819,29 @@ def handle_get_position(sock: 'socket.socket', addr: tuple):
     # Fetch the latest joint angles directly from the physical servos
     current_angles = servo_driver.get_current_arm_state_rad(verbose=False)
     
-    # Get the current position using Forward Kinematics
-    current_pos_xyz = ik_solver.get_fk(current_angles)
+    # Get the current full pose using Forward Kinematics (matrix)
+    pose_mx = ik_solver.get_fk_matrix(current_angles)
 
-    if current_pos_xyz is not None:
-        # Round cartesian coordinates to 3 decimal places as requested
-        pos_rounded = [round(p, 3) for p in current_pos_xyz]
+    if pose_mx is not None:
+        # Position rounded to 3 decimals
+        pos_xyz = pose_mx[:3, 3]
+        pos_rounded = [round(float(p), 3) for p in pos_xyz]
+        # Orientation as Euler XYZ degrees, rounded
+        euler_deg = R.from_matrix(pose_mx[:3, :3]).as_euler('xyz', degrees=True)
+        euler_rounded = [round(float(e), 2) for e in euler_deg]
         
         # Round joint angles for cleaner display
-        angles_rounded = [round(a, 4) for a in current_angles]
+        angles_rounded = [round(float(a), 4) for a in current_angles]
 
         pos_str = ",".join(map(str, pos_rounded))
+        euler_str = ",".join(map(str, euler_rounded))
         angles_str = ",".join(map(str, angles_rounded))
         
-        print(f"[Pi] Sending coordinates pose: {pos_str}")
+        print(f"[Pi] Sending pose: pos={pos_str} eulerXYZdeg={euler_str}")
         print(f"[Pi] Sending joint angles: {angles_str}")
 
-        reply_msg = f"CURRENT_POSE,{pos_str},{angles_str}"
+        # Extended format: CURRENT_POSE,x,y,z,roll,pitch,yaw,<angles...>
+        reply_msg = f"CURRENT_POSE,{pos_str},{euler_str},{angles_str}"
         
         try:
             sock.sendto(reply_msg.encode("utf-8"), addr)

@@ -211,6 +211,20 @@ def main():
                     reply = f"STATUS,gripper_present,{utils.gripper_present}"
                     sock.sendto(reply.encode("utf-8"), addr)
 
+                elif command == "DIAGNOSTICS":
+                    # Toggle runtime diagnostics without restart
+                    try:
+                        mode = parts[1].strip().lower()
+                        enable = mode in {"on", "true", "1", "yes"}
+                        utils.trajectory_state["diagnostics_enabled"] = enable
+                        # Also reflect in environment for planning logs that check env
+                        os.environ["MINI_ARM_IK_LOG"] = "1" if enable else "0"
+                        sock.sendto(f"ACK,DIAGNOSTICS,{mode}".encode("utf-8"), addr)
+                        print(f"[Controller] Diagnostics set to {enable}")
+                    except Exception as e:
+                        print(f"[Controller] Error parsing DIAGNOSTICS command: {e}")
+                        sock.sendto("ERROR,DIAGNOSTICS".encode("utf-8"), addr)
+
                 elif command == "GET_JOINT_ANGLES":
                     arm_deg = np.rad2deg(utils.current_logical_joint_angles_rad)
                     reply = "JOINT_ANGLES," + ",".join(f"{deg:.2f}" for deg in arm_deg)
@@ -308,7 +322,7 @@ def main():
                         v = float(parts[4]) if len(parts) > 4 else utils.DEFAULT_PROFILE_VELOCITY
                         a = float(parts[5]) if len(parts) > 5 else utils.DEFAULT_PROFILE_ACCELERATION
                         # Default to OPEN loop unless the user specifies 'true', 'closed', 'yes', etc.
-                        closed_loop = True
+                        closed_loop = False
                         if len(parts) > 6 and parts[6].strip() != "":
                             closed_loop = parts[6].strip().lower() in {"true", "1", "yes", "closed", "on"}
                         command_api.handle_move_line(x, y, z, v, a, closed_loop)
@@ -340,7 +354,7 @@ def main():
                     # runtime errors inside the motion planner don't get caught
                     # and mis-reported as a command-format error.
                     # Default to OPEN loop unless the user specifies 'true', 'closed', 'yes', etc.
-                    closed_loop = True
+                    closed_loop = False
                     if len(parts) > 5 and parts[5].strip() != "":
                         closed_loop = parts[5].strip().lower() in {"true", "1", "yes", "closed", "on"}
                     command_api.handle_move_line_relative(dx, dy, dz, speed_multiplier, closed_loop)
