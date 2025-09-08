@@ -114,18 +114,23 @@ SERVO_ADDR_POS_KD = 0x16
 
 # PID values range from 0 to 254
 
-DEFAULT_KP = 60  
-DEFAULT_KI = 20   
-DEFAULT_KD = 0
+# If it overshoots a lot and oscillates, either the integral gain (I) needs to be increased or all gains (P,I,D) should be reduced
+# Too much overshoot? Increase D, decrease P.
+# Response too damped? Increase P.
+# Ramps up quickly to a value below target value and then slows down as it approaches target value? Try increasing the I constant.
 
-# Default PID gains for the servos
-J1_PID_GAINS = (150, 70, 0) # J1 pattern is  (KP, KI, KD)
-J2_PID_GAINS = (150, 20, 0) # J2 pattern is  (KP, KI, KD)
-J3_PID_GAINS = (150, 20, 0) # J3 pattern is  (KP, KI, KD)
-J4_PID_GAINS = (100, DEFAULT_KI, DEFAULT_KD) # J4 pattern is  (KP, KI, KD)
-J5_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J5 pattern is  (KP, KI, KD)
-J6_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J6 pattern is  (KP, KI, KD)
-Gripper_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # Gripper pattern is  (KP, KI, KD)
+DEFAULT_KP = 60  
+DEFAULT_KI = 1   
+DEFAULT_KD = 30
+
+# Default PID gains for the servos (per-joint tuned baseline)
+J1_PID_GAINS = (50, 2, 30) # J1 pattern is  (KP, KI, KD)
+J2_PID_GAINS = (60, 2, 30) # J2 pattern is  (KP, KI, KD)
+J3_PID_GAINS = (60, 2, 30) # J3 pattern is  (KP, KI, KD)
+J4_PID_GAINS = (40, 1, 30) # J4 pattern is  (KP, KI, KD)
+J5_PID_GAINS = (40, 1, 30) # J5 pattern is  (KP, KI, KD)
+J6_PID_GAINS = (40, 1, 30) # J6 pattern is  (KP, KI, KD)
+Gripper_PID_GAINS = (50, 1, 30) # Gripper pattern is  (KP, KI, KD)
 
 # Per-servo default PID gains (Kp, Ki, Kd), keyed by hardware Servo ID.
 # If a servo ID is missing from this map, the controller falls back to

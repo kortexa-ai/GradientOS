@@ -265,6 +265,34 @@ def main():
                     command_api.handle_get_gripper_state(sock, addr)
 
                 # ------------------------------------------------------------------
+                # NEW: PID tuning commands (advanced)
+                # ------------------------------------------------------------------
+                elif command == "TUNE_PID_JOINT":
+                    try:
+                        j = int(parts[1]) - 1  # UI sends 1-6
+                        amp = float(parts[2]) if len(parts) > 2 else 5.0
+                        freq = int(float(parts[3])) if len(parts) > 3 else 200
+                        dur = float(parts[4]) if len(parts) > 4 else 3.0
+                        move_zero = (parts[5].strip().lower() in {"true","1","yes","on"}) if len(parts) > 5 else True
+                        command_api.handle_tune_pid_joint(j, amplitude_deg=amp, frequency_hz=freq, duration_s=dur, move_to_zero_first=move_zero)
+                        sock.sendto("ACK,TUNE_PID_JOINT".encode("utf-8"), addr)
+                    except Exception as e:
+                        print(f"[Controller] Error: TUNE_PID_JOINT malformed: {e}")
+                        sock.sendto("ERROR,TUNE_PID_JOINT".encode("utf-8"), addr)
+
+                elif command == "TUNE_PID_ALL":
+                    try:
+                        amp = float(parts[1]) if len(parts) > 1 else 5.0
+                        freq = int(float(parts[2])) if len(parts) > 2 else 200
+                        dur = float(parts[3]) if len(parts) > 3 else 3.0
+                        move_zero_each = (parts[4].strip().lower() in {"true","1","yes","on"}) if len(parts) > 4 else True
+                        command_api.handle_tune_pid_all(amplitude_deg=amp, frequency_hz=freq, duration_s=dur, move_to_zero_first_each=move_zero_each)
+                        sock.sendto("ACK,TUNE_PID_ALL".encode("utf-8"), addr)
+                    except Exception as e:
+                        print(f"[Controller] Error: TUNE_PID_ALL malformed: {e}")
+                        sock.sendto("ERROR,TUNE_PID_ALL".encode("utf-8"), addr)
+
+                # ------------------------------------------------------------------
                 # NEW: Recording commands (trajectory recorder)
                 # ------------------------------------------------------------------
                 elif command == "PLAN_TRAJECTORY":

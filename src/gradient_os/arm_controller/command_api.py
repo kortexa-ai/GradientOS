@@ -22,6 +22,7 @@ from . import utils
 from . import servo_driver
 from . import servo_protocol
 from . import trajectory_execution
+from . import pid_tuner
 
 def handle_translate_command(dx: float, dy: float, dz: float):
     """
@@ -908,6 +909,38 @@ def handle_wait_for_idle():
         print("[Controller] Move complete. Resuming.")
     else:
         print("[Controller] No move is currently running.")
+
+
+# -----------------------------------------------------------------------------
+# PID Tuning API
+# -----------------------------------------------------------------------------
+
+def handle_tune_pid_joint(joint_index: int, amplitude_deg: float = 5.0, frequency_hz: int = 100, duration_s: float = 3.0, move_to_zero_first: bool = True):
+    """Runs the internal PID tuner for a single logical joint (blocking)."""
+    if utils.trajectory_state.get("is_running"):
+        print("[PID Tune] ERROR: Motion already active. Stop current move before tuning.")
+        return
+    try:
+        print(f"[PID Tune] Starting tuning for joint J{joint_index+1}...")
+        pid_tuner.tune_internal_pid_for_joint(
+            logical_joint_index=joint_index,
+            amplitude_deg=amplitude_deg,
+            frequency_hz=frequency_hz,
+            duration_s=duration_s,
+            move_to_zero_first=move_to_zero_first,
+        )
+        print(f"[PID Tune] Tuning complete for joint J{joint_index+1}.")
+    except Exception as e:
+        print(f"[PID Tune] ERROR: {e}")
+
+
+def handle_tune_pid_all(amplitude_deg: float = 5.0, frequency_hz: int = 200, duration_s: float = 3.0, move_to_zero_first_each: bool = True):
+    """Tunes all logical joints sequentially (blocking)."""
+    for j in range(utils.NUM_LOGICAL_JOINTS):
+        if utils.trajectory_state.get("is_running"):
+            print("[PID Tune] Motion became active mid-run; aborting all-joint tuning.")
+            return
+        handle_tune_pid_joint(j, amplitude_deg, frequency_hz, duration_s, move_to_zero_first_each)
 
 # -----------------------------------------------------------------------------
 # Gripper Control

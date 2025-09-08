@@ -3,6 +3,8 @@
 import time
 import serial
 import numpy as np
+import os
+import json
 
 from . import utils
 from . import servo_protocol
@@ -45,10 +47,26 @@ def initialize_servos():
 
         # Set default PID gains for all PRESENT servos upon initialization
         print("[Pi] Setting default PID gains for present servos...")
+        # Load persisted PID overrides if available
+        overrides_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config", "pid_gains.json"))
+        pid_overrides: dict[str, list[int]] | None = None
+        try:
+            if os.path.isfile(overrides_path):
+                with open(overrides_path, "r") as fp:
+                    pid_overrides = json.load(fp)
+                print(f"[Pi] Loaded PID overrides from {overrides_path}")
+        except Exception as e:
+            print(f"[Pi] WARNING: Failed to load PID overrides: {e}")
         all_pid_set_successfully = True
         # Only configure servos that responded to ping
         for s_id in present_servo_ids:
-            kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
+            if pid_overrides and str(s_id) in pid_overrides:
+                try:
+                    kp, ki, kd = pid_overrides[str(s_id)]
+                except Exception:
+                    kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
+            else:
+                kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
             if not set_servo_pid_gains(s_id, kp, ki, kd):
                 all_pid_set_successfully = False
             time.sleep(0.05) # Give a bit more time after each servo's PID set
