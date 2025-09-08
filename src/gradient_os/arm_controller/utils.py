@@ -23,10 +23,12 @@ SERVO_ID_JOINT_3_SECOND = 31
 SERVO_ID_GRIPPER = 100
 
 # --- Default Motion Parameters ---
-DEFAULT_SERVO_SPEED = 200 # Default speed for servos if not specified (0-4095)
+DEFAULT_SERVO_SPEED = 500 # Default speed for servos if not specified (0-4095)
 DEFAULT_PROFILE_VELOCITY = 0.1 # m/s, for trapezoidal profiles
 DEFAULT_PROFILE_ACCELERATION = 0.05 # m/s^2, for trapezoidal profiles
-CORRECTION_KP_GAIN = 0.5 # Proportional gain for the closed-loop executor
+CORRECTION_KP_GAIN = 0.0 # Proportional gain for the closed-loop executor (disabled for inner-PID tuning)
+CORRECTION_KI_GAIN = 0.0 # Integral gain (rad/s) for the closed-loop executor (disabled for inner-PID tuning)
+CORRECTION_INTEGRAL_CLAMP_RAD = 0.6 # Anti-windup clamp for integral term (±20°)
 
 # --- Serial Port Configuration ---
 # Raspberry Pi GPIO 14 (TXD) and GPIO 15 (RXD) often map to /dev/ttyS0 or /dev/serial0.
@@ -110,9 +112,40 @@ SERVO_ADDR_POS_KP = 0x15
 SERVO_ADDR_POS_KI = 0x17 
 SERVO_ADDR_POS_KD = 0x16
 
-DEFAULT_KP = 32  
-DEFAULT_KI = 0   
-DEFAULT_KD = 0
+# PID values range from 0 to 254
+
+# If it overshoots a lot and oscillates, either the integral gain (I) needs to be increased or all gains (P,I,D) should be reduced
+# Too much overshoot? Increase D, decrease P.
+# Response too damped? Increase P.
+# Ramps up quickly to a value below target value and then slows down as it approaches target value? Try increasing the I constant.
+
+DEFAULT_KP = 60  
+DEFAULT_KI = 1   
+DEFAULT_KD = 30
+
+# Default PID gains for the servos (per-joint tuned baseline)
+J1_PID_GAINS = (50, 2, 30) # J1 pattern is  (KP, KI, KD)
+J2_PID_GAINS = (60, 2, 30) # J2 pattern is  (KP, KI, KD)
+J3_PID_GAINS = (60, 2, 30) # J3 pattern is  (KP, KI, KD)
+J4_PID_GAINS = (40, 1, 30) # J4 pattern is  (KP, KI, KD)
+J5_PID_GAINS = (40, 1, 30) # J5 pattern is  (KP, KI, KD)
+J6_PID_GAINS = (40, 1, 30) # J6 pattern is  (KP, KI, KD)
+Gripper_PID_GAINS = (50, 1, 30) # Gripper pattern is  (KP, KI, KD)
+
+# Per-servo default PID gains (Kp, Ki, Kd), keyed by hardware Servo ID.
+# If a servo ID is missing from this map, the controller falls back to
+# DEFAULT_KP/DEFAULT_KI/DEFAULT_KD above for that servo.
+DEFAULT_PID_GAINS: dict[int, tuple[int, int, int]] = {
+    10: J1_PID_GAINS,  # J1
+    20: J2_PID_GAINS,  # J2 master
+    21: J2_PID_GAINS,  # J2 slave
+    30: J3_PID_GAINS,  # J3 master
+    31: J3_PID_GAINS,  # J3 slave
+    40: J4_PID_GAINS,  # J4
+    50: J5_PID_GAINS,  # J5
+    60: J6_PID_GAINS,  # J6
+    100: Gripper_PID_GAINS, # Gripper
+}
 
 # Trajectory Planning Optimization
 IK_PLANNING_FREQUENCY = 100 # Hz. We solve IK at this rate, then interpolate for smoother, faster execution.
@@ -126,6 +159,8 @@ trajectory_state = {
     "is_running": False,
     "should_stop": False,
     "thread": None,
+    # Diagnostics toggle (runtime), used to enable IK/executor logging and charts
+    "diagnostics_enabled": False,
     # --- New state for real-time jogging ---
     "is_jogging": False,
     # 6D vector: [vx, vy, vz, v_roll, v_pitch, v_yaw]

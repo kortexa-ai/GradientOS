@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+from .arm_controller import utils  # for diagnostics folder/session info
 
 # -----------------------------------------------------------
 # END-EFFECTOR OFFSET (tool-tip with respect to wrist frame)

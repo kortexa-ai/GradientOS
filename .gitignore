@@ -28,6 +28,8 @@ dist/
 performance_log.csv
 performance_charts.png
 trajectory_cache/
+closed_loop/
+open_loop/
 
 # IDE and Editor files
 # ----------------------------------------------------------------

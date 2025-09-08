@@ -22,6 +22,7 @@ from . import utils
 from . import servo_driver
 from . import servo_protocol
 from . import trajectory_execution
+from . import pid_tuner
 
 def handle_translate_command(dx: float, dy: float, dz: float):
     """
@@ -146,7 +147,7 @@ def handle_set_orientation_command(
     pitch: float,
     yaw: float,
     *,
-    closed_loop: bool = False,
+    closed_loop: bool = True,
     duration_s: float = 2.0,
     diagnostics: bool = False,
 ):
@@ -161,8 +162,8 @@ def handle_set_orientation_command(
     2.  Solves IK in a single batched call for every intermediate pose, so the
         position constraint is enforced at all times.
     3.  Executes the resulting joint path either:
-        • **Open-loop** at 1300 Hz  (default, high-speed)
-        • **Closed-loop** at 400 Hz (`closed_loop=True`, high-precision)
+        • **Closed-loop** at 400 Hz (default, high-precision)
+        • **Open-loop** at 1300 Hz (`closed_loop=False`, high-speed)
 
     Because the path is pre-planned, the function is *blocking*: it only
     returns after the motion (≈ `duration_s`) has finished.
@@ -173,7 +174,7 @@ def handle_set_orientation_command(
         Absolute tool orientation in degrees, XYZ intrinsic Euler order.
     closed_loop : bool, optional
         Run the high-precision closed-loop executor at 400 Hz instead of the
-        high-speed open-loop executor.  Default `False`.
+        high-speed open-loop executor.  Default `True`.
     duration_s : float, optional
         Desired motion duration (≥ 0.1 s).  Controls the smoothness/speed by
         scaling the number of interpolation steps.  Default `1.0`.
@@ -203,7 +204,12 @@ def handle_set_orientation_command(
 
     # --- 3. Set up diagnostics session if enabled ---
     session_id = None
-    if os.environ.get("MINI_ARM_IK_LOG", "0") == "1" or diagnostics:
+    diagnostics_enabled = (
+        os.environ.get("MINI_ARM_IK_LOG", "0") == "1"
+        or diagnostics
+        or utils.trajectory_state.get("diagnostics_enabled", False)
+    )
+    if diagnostics_enabled:
         # Use a consistent timestamp for all diagnostics in this session
         session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         utils.trajectory_state['diagnostics_session_id'] = session_id
@@ -216,7 +222,7 @@ def handle_set_orientation_command(
     # ------------------------------------------------------------
     #   3. Determine execution parameters
     # ------------------------------------------------------------
-    frequency_hz = 400 if closed_loop else 1300  # Align with other commands
+    frequency_hz = 100 if closed_loop else 1300  # Align with other commands
 
     # Use caller-provided duration (default 1 s) to scale interpolation density.
     duration_s = max(0.1, duration_s)  # clamp to sane minimum
@@ -265,7 +271,7 @@ def handle_set_orientation_command(
     
     executor_thread = threading.Thread(
         target=target_func,
-        kwargs={'joint_path': joint_path, 'frequency': frequency_hz, 'diagnostics': diagnostics}
+        kwargs={'joint_path': joint_path, 'frequency': frequency_hz, 'diagnostics': diagnostics_enabled}
     )
 
     executor_thread.start()
@@ -298,9 +304,9 @@ def handle_move_profiled(target_x: float,
                          target_z: float, 
                          velocity: float, 
                          acceleration: float, 
-                         frequency: int = 400, 
+                         frequency: int = 100, 
                          use_smoothing: bool = True, 
-                         closed_loop: bool = False,
+                         closed_loop: bool = True,
                          diagnostics: bool = False
                          ):
     """
@@ -319,7 +325,11 @@ def handle_move_profiled(target_x: float,
     initial_q = servo_driver.get_current_arm_state_rad(verbose=False)
     target_pos = np.array([target_x, target_y, target_z])
 
-    diagnostics_enabled = os.environ.get("MINI_ARM_IK_LOG", "0") == "1" or diagnostics
+    diagnostics_enabled = (
+        os.environ.get("MINI_ARM_IK_LOG", "0") == "1"
+        or diagnostics
+        or utils.trajectory_state.get("diagnostics_enabled", False)
+    )
 
     # --- Set up diagnostics session if enabled ---
     if diagnostics_enabled:
@@ -328,11 +338,11 @@ def handle_move_profiled(target_x: float,
         utils.trajectory_state['diagnostics_folder_type'] = "closed_loop" if closed_loop else "open_loop"
 
     if closed_loop:
-        frequency = 400
+        frequency = 100
     else:
         # With diagnostics, the open-loop executor reads feedback and is much slower.
         # We must plan the trajectory at the slower rate to ensure the move duration is correct.
-        frequency = 400 if diagnostics_enabled else 1300
+        frequency = 400 if diagnostics_enabled else 600
 
     # 2. Plan the entire move.
     joint_path = trajectory_execution._plan_smooth_move(
@@ -815,23 +825,29 @@ def handle_get_position(sock: 'socket.socket', addr: tuple):
     # Fetch the latest joint angles directly from the physical servos
     current_angles = servo_driver.get_current_arm_state_rad(verbose=False)
     
-    # Get the current position using Forward Kinematics
-    current_pos_xyz = ik_solver.get_fk(current_angles)
+    # Get the current full pose using Forward Kinematics (matrix)
+    pose_mx = ik_solver.get_fk_matrix(current_angles)
 
-    if current_pos_xyz is not None:
-        # Round cartesian coordinates to 3 decimal places as requested
-        pos_rounded = [round(p, 3) for p in current_pos_xyz]
+    if pose_mx is not None:
+        # Position rounded to 3 decimals
+        pos_xyz = pose_mx[:3, 3]
+        pos_rounded = [round(float(p), 3) for p in pos_xyz]
+        # Orientation as Euler XYZ degrees, rounded
+        euler_deg = R.from_matrix(pose_mx[:3, :3]).as_euler('xyz', degrees=True)
+        euler_rounded = [round(float(e), 2) for e in euler_deg]
         
         # Round joint angles for cleaner display
-        angles_rounded = [round(a, 4) for a in current_angles]
+        angles_rounded = [round(float(a), 4) for a in current_angles]
 
         pos_str = ",".join(map(str, pos_rounded))
+        euler_str = ",".join(map(str, euler_rounded))
         angles_str = ",".join(map(str, angles_rounded))
         
-        print(f"[Pi] Sending coordinates pose: {pos_str}")
+        print(f"[Pi] Sending pose: pos={pos_str} eulerXYZdeg={euler_str}")
         print(f"[Pi] Sending joint angles: {angles_str}")
 
-        reply_msg = f"CURRENT_POSE,{pos_str},{angles_str}"
+        # Extended format: CURRENT_POSE,x,y,z,roll,pitch,yaw,<angles...>
+        reply_msg = f"CURRENT_POSE,{pos_str},{euler_str},{angles_str}"
         
         try:
             sock.sendto(reply_msg.encode("utf-8"), addr)
@@ -893,6 +909,38 @@ def handle_wait_for_idle():
         print("[Controller] Move complete. Resuming.")
     else:
         print("[Controller] No move is currently running.")
+
+
+# -----------------------------------------------------------------------------
+# PID Tuning API
+# -----------------------------------------------------------------------------
+
+def handle_tune_pid_joint(joint_index: int, amplitude_deg: float = 5.0, frequency_hz: int = 100, duration_s: float = 3.0, move_to_zero_first: bool = True):
+    """Runs the internal PID tuner for a single logical joint (blocking)."""
+    if utils.trajectory_state.get("is_running"):
+        print("[PID Tune] ERROR: Motion already active. Stop current move before tuning.")
+        return
+    try:
+        print(f"[PID Tune] Starting tuning for joint J{joint_index+1}...")
+        pid_tuner.tune_internal_pid_for_joint(
+            logical_joint_index=joint_index,
+            amplitude_deg=amplitude_deg,
+            frequency_hz=frequency_hz,
+            duration_s=duration_s,
+            move_to_zero_first=move_to_zero_first,
+        )
+        print(f"[PID Tune] Tuning complete for joint J{joint_index+1}.")
+    except Exception as e:
+        print(f"[PID Tune] ERROR: {e}")
+
+
+def handle_tune_pid_all(amplitude_deg: float = 5.0, frequency_hz: int = 200, duration_s: float = 3.0, move_to_zero_first_each: bool = True):
+    """Tunes all logical joints sequentially (blocking)."""
+    for j in range(utils.NUM_LOGICAL_JOINTS):
+        if utils.trajectory_state.get("is_running"):
+            print("[PID Tune] Motion became active mid-run; aborting all-joint tuning.")
+            return
+        handle_tune_pid_joint(j, amplitude_deg, frequency_hz, duration_s, move_to_zero_first_each)
 
 # -----------------------------------------------------------------------------
 # Gripper Control

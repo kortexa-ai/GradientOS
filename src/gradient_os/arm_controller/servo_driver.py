@@ -3,6 +3,8 @@
 import time
 import serial
 import numpy as np
+import os
+import json
 
 from . import utils
 from . import servo_protocol
@@ -45,10 +47,27 @@ def initialize_servos():
 
         # Set default PID gains for all PRESENT servos upon initialization
         print("[Pi] Setting default PID gains for present servos...")
+        # Load persisted PID overrides if available
+        overrides_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "config", "pid_gains.json"))
+        pid_overrides: dict[str, list[int]] | None = None
+        try:
+            if os.path.isfile(overrides_path):
+                with open(overrides_path, "r") as fp:
+                    pid_overrides = json.load(fp)
+                print(f"[Pi] Loaded PID overrides from {overrides_path}")
+        except Exception as e:
+            print(f"[Pi] WARNING: Failed to load PID overrides: {e}")
         all_pid_set_successfully = True
         # Only configure servos that responded to ping
         for s_id in present_servo_ids:
-            if not set_servo_pid_gains(s_id, utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD):
+            if pid_overrides and str(s_id) in pid_overrides:
+                try:
+                    kp, ki, kd = pid_overrides[str(s_id)]
+                except Exception:
+                    kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
+            else:
+                kp, ki, kd = utils.DEFAULT_PID_GAINS.get(s_id, (utils.DEFAULT_KP, utils.DEFAULT_KI, utils.DEFAULT_KD))
+            if not set_servo_pid_gains(s_id, kp, ki, kd):
                 all_pid_set_successfully = False
             time.sleep(0.05) # Give a bit more time after each servo's PID set
         
@@ -324,7 +343,25 @@ def set_servo_pid_gains(servo_id: int, kp: int, ki: int, kd: int) -> bool:
     Returns:
         bool: True on success, False on failure.
     """
-    print(f"[Pi] Setting PID for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+    def _clamp_byte(value: int) -> int:
+        try:
+            iv = int(value)
+        except Exception:
+            iv = 0
+        if iv < 0:
+            return 0
+        if iv > 254:
+            return 254
+        return iv
+
+    orig = (kp, ki, kd)
+    kp = _clamp_byte(kp)
+    ki = _clamp_byte(ki)
+    kd = _clamp_byte(kd)
+    if orig != (kp, ki, kd):
+        print(f"[Pi] PID inputs clamped to 0-254 for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+    else:
+        print(f"[Pi] Setting PID for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
     # Note: PID registers are in EEPROM. Need to ensure EEPROM is unlocked if necessary.
     # The STSServoDriver.cpp unlocks EEPROM (reg 0x37) before writing to ID (0x05) or PosCorrection (0x1F).
     # For standard PID registers, direct write might be okay if servo isn't locked by default for these.

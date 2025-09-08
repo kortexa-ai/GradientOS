@@ -71,6 +71,16 @@ def main():
 
     # --- UDP Server Setup ---
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Allow quick restarts without TIME_WAIT issues; ignore errors on platforms lacking the option
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except Exception:
+        pass
+    try:
+        # REUSEPORT lets multiple sockets bind the same UDP port; not required, but can ease restarts
+        sock.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_REUSEPORT', 15), 1)
+    except Exception:
+        pass
     try:
         sock.bind((utils.PI_IP, utils.UDP_PORT))
         print(f"[Controller] Listening for UDP packets on {utils.PI_IP}:{utils.UDP_PORT}")
@@ -211,6 +221,20 @@ def main():
                     reply = f"STATUS,gripper_present,{utils.gripper_present}"
                     sock.sendto(reply.encode("utf-8"), addr)
 
+                elif command == "DIAGNOSTICS":
+                    # Toggle runtime diagnostics without restart
+                    try:
+                        mode = parts[1].strip().lower()
+                        enable = mode in {"on", "true", "1", "yes"}
+                        utils.trajectory_state["diagnostics_enabled"] = enable
+                        # Also reflect in environment for planning logs that check env
+                        os.environ["MINI_ARM_IK_LOG"] = "1" if enable else "0"
+                        sock.sendto(f"ACK,DIAGNOSTICS,{mode}".encode("utf-8"), addr)
+                        print(f"[Controller] Diagnostics set to {enable}")
+                    except Exception as e:
+                        print(f"[Controller] Error parsing DIAGNOSTICS command: {e}")
+                        sock.sendto("ERROR,DIAGNOSTICS".encode("utf-8"), addr)
+
                 elif command == "GET_JOINT_ANGLES":
                     arm_deg = np.rad2deg(utils.current_logical_joint_angles_rad)
                     reply = "JOINT_ANGLES," + ",".join(f"{deg:.2f}" for deg in arm_deg)
@@ -239,6 +263,34 @@ def main():
 
                 elif command == "GET_GRIPPER_STATE":
                     command_api.handle_get_gripper_state(sock, addr)
+
+                # ------------------------------------------------------------------
+                # NEW: PID tuning commands (advanced)
+                # ------------------------------------------------------------------
+                elif command == "TUNE_PID_JOINT":
+                    try:
+                        j = int(parts[1]) - 1  # UI sends 1-6
+                        amp = float(parts[2]) if len(parts) > 2 else 5.0
+                        freq = int(float(parts[3])) if len(parts) > 3 else 200
+                        dur = float(parts[4]) if len(parts) > 4 else 3.0
+                        move_zero = (parts[5].strip().lower() in {"true","1","yes","on"}) if len(parts) > 5 else True
+                        command_api.handle_tune_pid_joint(j, amplitude_deg=amp, frequency_hz=freq, duration_s=dur, move_to_zero_first=move_zero)
+                        sock.sendto("ACK,TUNE_PID_JOINT".encode("utf-8"), addr)
+                    except Exception as e:
+                        print(f"[Controller] Error: TUNE_PID_JOINT malformed: {e}")
+                        sock.sendto("ERROR,TUNE_PID_JOINT".encode("utf-8"), addr)
+
+                elif command == "TUNE_PID_ALL":
+                    try:
+                        amp = float(parts[1]) if len(parts) > 1 else 5.0
+                        freq = int(float(parts[2])) if len(parts) > 2 else 200
+                        dur = float(parts[3]) if len(parts) > 3 else 3.0
+                        move_zero_each = (parts[4].strip().lower() in {"true","1","yes","on"}) if len(parts) > 4 else True
+                        command_api.handle_tune_pid_all(amplitude_deg=amp, frequency_hz=freq, duration_s=dur, move_to_zero_first_each=move_zero_each)
+                        sock.sendto("ACK,TUNE_PID_ALL".encode("utf-8"), addr)
+                    except Exception as e:
+                        print(f"[Controller] Error: TUNE_PID_ALL malformed: {e}")
+                        sock.sendto("ERROR,TUNE_PID_ALL".encode("utf-8"), addr)
 
                 # ------------------------------------------------------------------
                 # NEW: Recording commands (trajectory recorder)
