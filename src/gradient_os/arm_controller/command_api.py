@@ -203,7 +203,12 @@ def handle_set_orientation_command(
 
     # --- 3. Set up diagnostics session if enabled ---
     session_id = None
-    if os.environ.get("MINI_ARM_IK_LOG", "0") == "1" or diagnostics:
+    diagnostics_enabled = (
+        os.environ.get("MINI_ARM_IK_LOG", "0") == "1"
+        or diagnostics
+        or utils.trajectory_state.get("diagnostics_enabled", False)
+    )
+    if diagnostics_enabled:
         # Use a consistent timestamp for all diagnostics in this session
         session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         utils.trajectory_state['diagnostics_session_id'] = session_id
@@ -265,7 +270,7 @@ def handle_set_orientation_command(
     
     executor_thread = threading.Thread(
         target=target_func,
-        kwargs={'joint_path': joint_path, 'frequency': frequency_hz, 'diagnostics': diagnostics}
+        kwargs={'joint_path': joint_path, 'frequency': frequency_hz, 'diagnostics': diagnostics_enabled}
     )
 
     executor_thread.start()

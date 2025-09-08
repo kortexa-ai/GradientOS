@@ -112,13 +112,15 @@ SERVO_ADDR_POS_KP = 0x15
 SERVO_ADDR_POS_KI = 0x17 
 SERVO_ADDR_POS_KD = 0x16
 
-DEFAULT_KP = 50  
-DEFAULT_KI = 40   
-DEFAULT_KD = 0
+# PID values range from 0 to 254
+
+DEFAULT_KP = 60  
+DEFAULT_KI = 20   
+DEFAULT_KD = 5
 
 # Default PID gains for the servos
-J1_PID_GAINS = (50, 5, 0) # J1 pattern is  (KP, KI, KD)
-J2_PID_GAINS = (60, 20, 5) # J2 pattern is  (KP, KI, KD)
+J1_PID_GAINS = (150, 5, 1) # J1 pattern is  (KP, KI, KD)
+J2_PID_GAINS = (70, 20, 5) # J2 pattern is  (KP, KI, KD)
 J3_PID_GAINS = (60, 20, 5) # J3 pattern is  (KP, KI, KD)
 J4_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J4 pattern is  (KP, KI, KD)
 J5_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J5 pattern is  (KP, KI, KD)

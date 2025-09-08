@@ -71,6 +71,16 @@ def main():
 
     # --- UDP Server Setup ---
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Allow quick restarts without TIME_WAIT issues; ignore errors on platforms lacking the option
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except Exception:
+        pass
+    try:
+        # REUSEPORT lets multiple sockets bind the same UDP port; not required, but can ease restarts
+        sock.setsockopt(socket.SOL_SOCKET, getattr(socket, 'SO_REUSEPORT', 15), 1)
+    except Exception:
+        pass
     try:
         sock.bind((utils.PI_IP, utils.UDP_PORT))
         print(f"[Controller] Listening for UDP packets on {utils.PI_IP}:{utils.UDP_PORT}")

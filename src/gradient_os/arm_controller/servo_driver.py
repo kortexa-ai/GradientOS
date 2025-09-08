@@ -325,7 +325,25 @@ def set_servo_pid_gains(servo_id: int, kp: int, ki: int, kd: int) -> bool:
     Returns:
         bool: True on success, False on failure.
     """
-    print(f"[Pi] Setting PID for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+    def _clamp_byte(value: int) -> int:
+        try:
+            iv = int(value)
+        except Exception:
+            iv = 0
+        if iv < 0:
+            return 0
+        if iv > 254:
+            return 254
+        return iv
+
+    orig = (kp, ki, kd)
+    kp = _clamp_byte(kp)
+    ki = _clamp_byte(ki)
+    kd = _clamp_byte(kd)
+    if orig != (kp, ki, kd):
+        print(f"[Pi] PID inputs clamped to 0-254 for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+    else:
+        print(f"[Pi] Setting PID for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
     # Note: PID registers are in EEPROM. Need to ensure EEPROM is unlocked if necessary.
     # The STSServoDriver.cpp unlocks EEPROM (reg 0x37) before writing to ID (0x05) or PosCorrection (0x1F).
     # For standard PID registers, direct write might be okay if servo isn't locked by default for these.

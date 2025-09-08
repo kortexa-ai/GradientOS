@@ -26,6 +26,211 @@ from . import servo_protocol
 
 JointTraj = Union[Sequence[Sequence[float]], np.ndarray]
 
+def _save_executor_diagnostics_charts(
+    mode: str,
+    session_id: str | None,
+    time_step: float | None,
+    loop_durations: list[float],
+    write_durations: list[float],
+    abs_errors_per_joint: list[list[float]] | None = None,
+    target_angles_per_joint: list[list[float]] | None = None,
+    actual_angles_per_joint: list[list[float]] | None = None,
+    read_durations: list[float] | None = None,
+    compute_durations: list[float] | None = None,
+    sync_profiles: list[tuple[float, float, float]] | None = None,
+) -> Path | None:
+    """Render and save diagnostics charts for both executors in one place.
+
+    Args:
+        mode: 'open_loop' or 'closed_loop'.
+        session_id: optional session identifier used for output folder.
+        time_step: control period in seconds; used to plot deadline line if provided.
+        loop_durations: per-cycle total durations (s).
+        write_durations: write durations (s).
+        abs_errors_per_joint: per-joint |error| arrays (rad).
+        target_angles_per_joint: per-joint target angle arrays (rad).
+        actual_angles_per_joint: per-joint actual angle arrays (rad).
+        read_durations: read durations (s), if available (closed-loop).
+        compute_durations: compute durations (s), if available (closed-loop).
+        sync_profiles: list of (write, read, parse) triplets in seconds, optional.
+
+    Returns:
+        The output directory Path, or None on failure.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as e:
+        print(f"[Pi Diag] WARNING: Matplotlib unavailable for diagnostics: {e}")
+        return None
+
+    try:
+        # Resolve output directory
+        if session_id:
+            out_dir = Path(f"diagnostics/{mode}/{session_id}")
+        else:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = Path(f"diagnostics/{mode}/{ts}")
+        out_dir.mkdir(exist_ok=True, parents=True)
+
+        # 0) Save angle telemetry as CSV for PID tuning
+        try:
+            has_target = bool(target_angles_per_joint) and any(target_angles_per_joint)
+            has_actual = bool(actual_angles_per_joint) and any(actual_angles_per_joint)
+            has_error = bool(abs_errors_per_joint) and any(abs_errors_per_joint)
+
+            if has_target or has_actual or has_error:
+                max_len = 0
+                for arrs in (target_angles_per_joint or []):
+                    max_len = max(max_len, len(arrs))
+                for arrs in (actual_angles_per_joint or []):
+                    max_len = max(max_len, len(arrs))
+                for arrs in (abs_errors_per_joint or []):
+                    max_len = max(max_len, len(arrs))
+
+                header = ["step"]
+                if time_step is not None:
+                    header.append("time_s")
+                # Target columns
+                for j in range(utils.NUM_LOGICAL_JOINTS):
+                    header.append(f"T_J{j+1}_rad")
+                # Actual columns
+                for j in range(utils.NUM_LOGICAL_JOINTS):
+                    header.append(f"A_J{j+1}_rad")
+                # Error columns (abs)
+                for j in range(utils.NUM_LOGICAL_JOINTS):
+                    header.append(f"Eabs_J{j+1}_rad")
+
+                csv_path = out_dir / "angles.csv"
+                with open(csv_path, "w", newline="") as fp:
+                    writer = csv.writer(fp)
+                    writer.writerow(header)
+                    for idx in range(max_len):
+                        row = [idx]
+                        if time_step is not None:
+                            row.append(idx * time_step)
+                        # Targets
+                        for j in range(utils.NUM_LOGICAL_JOINTS):
+                            val = ""
+                            if has_target and target_angles_per_joint and j < len(target_angles_per_joint):
+                                ta = target_angles_per_joint[j]
+                                if idx < len(ta):
+                                    val = ta[idx]
+                            row.append(val)
+                        # Actuals
+                        for j in range(utils.NUM_LOGICAL_JOINTS):
+                            val = ""
+                            if has_actual and actual_angles_per_joint and j < len(actual_angles_per_joint):
+                                aa = actual_angles_per_joint[j]
+                                if idx < len(aa):
+                                    val = aa[idx]
+                            row.append(val)
+                        # Errors (abs)
+                        for j in range(utils.NUM_LOGICAL_JOINTS):
+                            val = ""
+                            if has_error and abs_errors_per_joint and j < len(abs_errors_per_joint):
+                                ea = abs_errors_per_joint[j]
+                                if idx < len(ea):
+                                    val = ea[idx]
+                            row.append(val)
+                        writer.writerow(row)
+        except Exception as _e:
+            pass
+
+        # 1) Timing chart
+        try:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+            ax.plot([d * 1000 for d in loop_durations], label="total")
+            if read_durations is not None:
+                ax.plot([d * 1000 for d in read_durations], label="read")
+            if compute_durations is not None:
+                ax.plot([d * 1000 for d in compute_durations], label="compute")
+            ax.plot([d * 1000 for d in write_durations], label="write")
+            if time_step is not None:
+                ax.axhline(time_step * 1000, color="red", linestyle="--", label="deadline")
+            ax.set_xlabel("Cycle index")
+            ax.set_ylabel("Duration (ms)")
+            ax.set_title(("Closed" if mode == "closed_loop" else "Open") + "-loop cycle timing")
+            ax.legend()
+            timing_path = out_dir / "timing.png"
+            fig.tight_layout()
+            fig.savefig(timing_path)
+            plt.close(fig)
+        except Exception as _e:
+            pass
+
+        # 2) Error chart per joint
+        if abs_errors_per_joint is not None:
+            try:
+                fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+                for j_idx, errs in enumerate(abs_errors_per_joint):
+                    if errs:
+                        ax.plot([math.degrees(e) for e in errs], label=f"J{j_idx+1}")
+                ax.set_xlabel("Cycle index")
+                ax.set_ylabel("Abs error (deg)")
+                ax.set_title("Tracking error per joint")
+                ax.legend(ncol=3)
+                error_path = out_dir / "error.png"
+                fig.tight_layout()
+                fig.savefig(error_path)
+                plt.close(fig)
+            except Exception as _e:
+                pass
+
+        # 3) Target vs Actual joint angles
+        if target_angles_per_joint is not None or actual_angles_per_joint is not None:
+            try:
+                fig, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
+                for j_idx in range(utils.NUM_LOGICAL_JOINTS):
+                    r, c = divmod(j_idx, 3)
+                    ax = axes[r][c]
+                    if target_angles_per_joint and j_idx < len(target_angles_per_joint) and target_angles_per_joint[j_idx]:
+                        ax.plot([math.degrees(v) for v in target_angles_per_joint[j_idx]], label="target")
+                    if actual_angles_per_joint and j_idx < len(actual_angles_per_joint) and actual_angles_per_joint[j_idx]:
+                        ax.plot([math.degrees(v) for v in actual_angles_per_joint[j_idx]], label="actual")
+                    ax.set_title(f"J{j_idx+1}")
+                    ax.set_ylabel("deg")
+                    ax.grid(True, alpha=0.3)
+                axes[1][0].set_xlabel("Cycle index")
+                axes[1][1].set_xlabel("Cycle index")
+                axes[1][2].set_xlabel("Cycle index")
+                handles, labels = axes[0][0].get_legend_handles_labels()
+                if handles:
+                    fig.legend(handles, labels, loc="upper center", ncol=2)
+                fig.suptitle(("Closed" if mode == "closed_loop" else "Open") + "-loop Target vs Actual Joint Angles")
+                angles_path = out_dir / "angles.png"
+                fig.tight_layout(rect=[0, 0, 1, 0.95])
+                fig.savefig(angles_path)
+                plt.close(fig)
+            except Exception as _e:
+                pass
+
+        # 4) Sync Read internals (closed loop specific)
+        if sync_profiles:
+            try:
+                w_list, r_list, p_list = zip(*sync_profiles)
+                fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+                ax.plot([d * 1000 for d in w_list], label="write")
+                ax.plot([d * 1000 for d in r_list], label="read")
+                ax.plot([d * 1000 for d in p_list], label="parse")
+                ax.set_xlabel("Cycle index")
+                ax.set_ylabel("Duration (ms)")
+                ax.set_title("Sync Read internal timing")
+                ax.legend()
+                sync_path = out_dir / "sync.png"
+                fig.tight_layout()
+                fig.savefig(sync_path)
+                plt.close(fig)
+            except Exception as _e:
+                pass
+
+        print(f"[Pi Diag] Charts saved → {out_dir}")
+        return out_dir
+    except Exception as e:
+        print(f"[Pi Diag] WARNING: Failed to generate diagnostics charts: {e}")
+        return None
+
 def _plan_smooth_move(start_q: list[float], target_pos: np.ndarray, velocity: float, acceleration: float, frequency: int, use_smoothing: bool) -> list | None:
     """
     DEPRECATED: This function is a legacy wrapper. Use _plan_linear_move instead.
@@ -427,6 +632,7 @@ def _open_loop_executor_thread(
     joint_path: list[list[float]],
     frequency: int,
     diagnostics: bool = True,
+    return_telemetry: bool = False,
 ):
     """High-speed *open-loop* executor.
 
@@ -436,7 +642,10 @@ def _open_loop_executor_thread(
       (loop + write duration). Optionally saves a timing chart.
     """
 
-    if diagnostics and frequency > 400:
+    # Honor global diagnostics toggle as well as explicit argument
+    diagnostics_enabled = diagnostics or utils.trajectory_state.get("diagnostics_enabled", False)
+
+    if diagnostics_enabled and frequency > 400:
         print(f"[Pi OL] WARNING: Diagnostics enabled. Capping frequency from {frequency} Hz to 400 Hz due to feedback overhead.")
         frequency = 400
 
@@ -456,6 +665,9 @@ def _open_loop_executor_thread(
     _loop_durations: list[float] = []
     _write_durations: list[float] = []
     _abs_errors_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
+    # Angle telemetry (target vs actual) for plotting
+    _actual_angles_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
+    _target_angles_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
 
     time_step = 1.0 / frequency
     start_time = time.monotonic()
@@ -480,7 +692,7 @@ def _open_loop_executor_thread(
                 time.sleep(sleep_t)
             # No per-cycle printouts; we'll summarise at the end.
 
-            if diagnostics:
+            if diagnostics_enabled:
                 # For diagnostics, read back the position to calculate tracking error.
                 # This adds overhead and is NOT part of a true open-loop system.
                 actual_q = servo_driver.get_current_arm_state_rad(verbose=False)
@@ -488,6 +700,8 @@ def _open_loop_executor_thread(
                 for j_idx in range(utils.NUM_LOGICAL_JOINTS):
                     error = target_q[j_idx] - actual_q[j_idx]
                     _abs_errors_per_joint[j_idx].append(abs(error))
+                    _target_angles_per_joint[j_idx].append(target_q[j_idx])
+                    _actual_angles_per_joint[j_idx].append(actual_q[j_idx])
 
             if utils.trajectory_state["should_stop"]:
                 print("[Pi OL] Stop signal received, halting execution.")
@@ -519,50 +733,30 @@ def _open_loop_executor_thread(
                 f"overruns {len(overruns)}/{len(_loop_durations)} ({overrun_pct:.1f} %)"
             )
 
-            if diagnostics:
-                try:
-                    session_id = utils.trajectory_state.get('diagnostics_session_id')
-                    
-                    if session_id:
-                        # A session is active; save charts into the session folder.
-                        out_dir = Path(f"diagnostics/open_loop/{session_id}")
-                    else:
-                        # No session; save with a unique timestamp in the parent folder.
-                        session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        out_dir = Path("diagnostics/open_loop")
-                    out_dir.mkdir(exist_ok=True, parents=True)
+            if diagnostics_enabled:
+                session_id = utils.trajectory_state.get('diagnostics_session_id')
+                _save_executor_diagnostics_charts(
+                    mode="open_loop",
+                    session_id=session_id,
+                    time_step=time_step,
+                    loop_durations=_loop_durations,
+                    write_durations=_write_durations,
+                    abs_errors_per_joint=_abs_errors_per_joint,
+                    target_angles_per_joint=_target_angles_per_joint,
+                    actual_angles_per_joint=_actual_angles_per_joint,
+                )
 
-                    # --- Joint Error Chart ---
-                    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-                    for j_idx, errs in enumerate(_abs_errors_per_joint):
-                        if errs:
-                            ax.plot([math.degrees(e) for e in errs], label=f"J{j_idx+1}")
-                    ax.set_xlabel("Cycle index")
-                    ax.set_ylabel("Abs error (deg)")
-                    ax.set_title("Open-Loop Tracking Error per Joint")
-                    ax.legend(ncol=3)
-                    error_path = out_dir / "error.png"
-                    fig.tight_layout()
-                    fig.savefig(error_path)
-                    plt.close(fig)
-
-                    # --- Timing Chart ---
-                    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-                    ax.plot([d * 1000 for d in _loop_durations], label="total loop")
-                    ax.plot([d * 1000 for d in _write_durations], label="write")
-                    ax.axhline(time_step * 1000, color="red", linestyle="--", label="deadline")
-                    ax.set_xlabel("Cycle index")
-                    ax.set_ylabel("Duration (ms)")
-                    ax.set_title("Open-loop cycle timing")
-                    ax.legend()
-                    chart_path = out_dir / "timing.png"
-                    fig.tight_layout()
-                    fig.savefig(chart_path)
-                    plt.close(fig)
-
-                    print(f"[Pi OL] Charts saved → {out_dir}")
-                except Exception as e:
-                    print(f"[Pi OL] WARNING: Failed to generate diagnostics chart: {e}")
+        telemetry_result = None
+        if return_telemetry:
+            # Build telemetry dict in radians
+            telemetry_result = {
+                "target_angles_per_joint": _target_angles_per_joint,
+                "actual_angles_per_joint": _actual_angles_per_joint,
+                "abs_errors_per_joint": _abs_errors_per_joint,
+                "loop_durations": _loop_durations,
+                "write_durations": _write_durations,
+                "frequency": frequency,
+            }
 
         # If this executor thread is the one registered in trajectory_state, clear it
         if utils.trajectory_state.get("thread") is threading.current_thread():
@@ -572,11 +766,15 @@ def _open_loop_executor_thread(
             utils.trajectory_state.pop('diagnostics_folder_type', None)
         print("[Pi OL] Open-Loop Executor finished.")
 
+        if return_telemetry:
+            return telemetry_result
+
 
 def _closed_loop_executor_thread(
     joint_path: list[list[float]],
     frequency: int,
     diagnostics: bool = True,
+    return_telemetry: bool = False,
 ):
     """
     Executes a pre-planned joint-space trajectory using a real-time, closed-loop
@@ -588,6 +786,8 @@ def _closed_loop_executor_thread(
         frequency: The target execution frequency for the control loop (e.g., 200 Hz).
         diagnostics: Whether to generate and save timing and error charts.
     """
+    # Honor global diagnostics toggle
+    diagnostics_enabled = diagnostics or utils.trajectory_state.get("diagnostics_enabled", False)
     print(f"[Pi CLC] Starting Closed-Loop Executor at {frequency} Hz for a path with {len(joint_path)} steps.")
     
     try:
@@ -604,6 +804,9 @@ def _closed_loop_executor_thread(
 
         # Per-joint error accumulators (abs radians per cycle)
         _abs_errors_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
+        # Angle telemetry buffers (radians)
+        _target_angles_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
+        _actual_angles_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
 
         # We need a mapping from logical joint index back to the physical servos to command.
         # This is the reverse of the logic in set_servo_positions.
@@ -682,6 +885,26 @@ def _closed_loop_executor_thread(
                 angle_rad_30 = servo_driver.servo_value_to_radians(raw_positions[30], 3)  # index of 30
                 raw_positions[31] = _angle_to_raw(angle_rad_30, 4)  # index of 31
 
+            # Record target vs actual angles per logical joint using primary IDs
+            try:
+                primary_ids = {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 60}
+                for logical_joint_index in range(utils.NUM_LOGICAL_JOINTS):
+                    target_angle_rad = target_q_step[logical_joint_index]
+                    _target_angles_per_joint[logical_joint_index].append(target_angle_rad)
+                    primary_id = primary_ids[logical_joint_index]
+                    if primary_id in raw_positions:
+                        config_index = utils.SERVO_IDS.index(primary_id)
+                        actual_angle = servo_driver.servo_value_to_radians(raw_positions[primary_id], config_index)
+                        # Undo master offset to get logical angle
+                        actual_angle -= utils.LOGICAL_JOINT_MASTER_OFFSETS_RAD[logical_joint_index]
+                        _actual_angles_per_joint[logical_joint_index].append(actual_angle)
+                    else:
+                        # If missing, repeat last or 0.0
+                        last = _actual_angles_per_joint[logical_joint_index][-1] if _actual_angles_per_joint[logical_joint_index] else 0.0
+                        _actual_angles_per_joint[logical_joint_index].append(last)
+            except Exception:
+                pass
+
             # --- Control Law (Calculate Error and Correction) ---
             commands_for_sync_write = []
             
@@ -726,11 +949,9 @@ def _closed_loop_executor_thread(
                         integral_error_rad[logical_joint_index] = -utils.CORRECTION_INTEGRAL_CLAMP_RAD
 
                     # Commanded Angle = Target + Kp * Error + Ki * ∫Error dt
-                    commanded_physical_angle_rad = (
-                        target_physical_angle_rad
-                        + (utils.CORRECTION_KP_GAIN * error_rad)
-                        + (utils.CORRECTION_KI_GAIN * integral_error_rad[logical_joint_index])
-                    )
+                    # Software PID correction intentionally disabled. We command the planned target
+                    # to let inner servo PID be the only stabilizing loop during tuning.
+                    commanded_physical_angle_rad = target_physical_angle_rad
                     
                     # 4. Convert the final commanded angle to a raw servo value (0-4095)
                     # This block is the same as in set_servo_positions
@@ -810,80 +1031,43 @@ def _closed_loop_executor_thread(
             # ------------------
             # Optional Charts
             # ------------------
-            if diagnostics:
-                try:
-                    import matplotlib
-                    matplotlib.use("Agg")  # headless backend
-                    import matplotlib.pyplot as plt
-
-                    session_id = utils.trajectory_state.get('diagnostics_session_id')
-                    
-                    if session_id:
-                        # A session is active; save charts into the session folder.
-                        out_dir = Path(f"diagnostics/closed_loop/{session_id}")
-                    else:
-                        # No session; save with a unique timestamp in the parent folder.
-                        session_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        out_dir = Path("diagnostics/closed_loop")
-                    out_dir.mkdir(exist_ok=True, parents=True)
-
-                    # 1. Timing chart
-                    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-                    ax.plot([d * 1000 for d in _loop_durations], label="total")
-                    ax.plot([d * 1000 for d in _read_durations], label="read")
-                    ax.plot([d * 1000 for d in _compute_durations], label="compute")
-                    ax.plot([d * 1000 for d in _write_durations], label="write")
-                    ax.set_xlabel("Cycle index")
-                    ax.set_ylabel("Duration (ms)")
-                    ax.set_title("Closed-loop cycle timing")
-                    ax.legend()
-                    timing_path = out_dir / "timing.png"
-                    fig.tight_layout()
-                    fig.savefig(timing_path)
-                    plt.close(fig)
-
-                    # 2. Error chart per joint
-                    fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-                    for j_idx, errs in enumerate(_abs_errors_per_joint):
-                        if errs:
-                            ax.plot([math.degrees(e) for e in errs], label=f"J{j_idx+1}")
-                    ax.set_xlabel("Cycle index")
-                    ax.set_ylabel("Abs error (deg)")
-                    ax.set_title("Tracking error per joint")
-                    ax.legend()
-                    error_path = out_dir / "error.png"
-                    fig.tight_layout()
-                    fig.savefig(error_path)
-                    plt.close(fig)
-
-                    # Additional Sync Read breakdown if available
-                    sync_profiles = servo_protocol.get_sync_profiles()
-                    if sync_profiles:
-                        w_list, r_list, p_list = zip(*sync_profiles)
-
-                        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
-                        ax.plot([d * 1000 for d in w_list], label="write")
-                        ax.plot([d * 1000 for d in r_list], label="read")
-                        ax.plot([d * 1000 for d in p_list], label="parse")
-                        ax.set_xlabel("Cycle index")
-                        ax.set_ylabel("Duration (ms)")
-                        ax.set_title("Sync Read internal timing")
-                        ax.legend()
-                        sync_path = out_dir / "sync.png"
-                        fig.tight_layout()
-                        fig.savefig(sync_path)
-                        plt.close(fig)
-                        print(f"[Pi CLC] Diagnostics charts saved to {out_dir}")
-                    else:
-                        print(f"[Pi CLC] Diagnostics charts saved to {timing_path} and {error_path}")
-                except Exception as e:
-                    print(f"[Pi CLC] WARNING: Failed to generate diagnostics charts: {e}")
+            if diagnostics_enabled:
+                session_id = utils.trajectory_state.get('diagnostics_session_id')
+                _save_executor_diagnostics_charts(
+                    mode="closed_loop",
+                    session_id=session_id,
+                    time_step=time_step,
+                    loop_durations=_loop_durations,
+                    write_durations=_write_durations,
+                    abs_errors_per_joint=_abs_errors_per_joint,
+                    target_angles_per_joint=_target_angles_per_joint,
+                    actual_angles_per_joint=_actual_angles_per_joint,
+                    read_durations=_read_durations,
+                    compute_durations=_compute_durations,
+                    sync_profiles=servo_protocol.get_sync_profiles(),
+                )
 
         # If this executor thread is the one registered in trajectory_state, clear it
+        telemetry_result = None
+        if return_telemetry:
+            telemetry_result = {
+                "target_angles_per_joint": _target_angles_per_joint if '_target_angles_per_joint' in locals() else None,
+                "actual_angles_per_joint": _actual_angles_per_joint if '_actual_angles_per_joint' in locals() else None,
+                "abs_errors_per_joint": _abs_errors_per_joint if '_abs_errors_per_joint' in locals() else None,
+                "loop_durations": _loop_durations if '_loop_durations' in locals() else None,
+                "read_durations": _read_durations if '_read_durations' in locals() else None,
+                "compute_durations": _compute_durations if '_compute_durations' in locals() else None,
+                "write_durations": _write_durations if '_write_durations' in locals() else None,
+                "frequency": frequency,
+            }
+
         if utils.trajectory_state.get("thread") is threading.current_thread():
             utils.trajectory_state.update({"is_running": False, "should_stop": False, "thread": None})
             utils.trajectory_state.pop('diagnostics_session_id', None)
             utils.trajectory_state.pop('diagnostics_folder_type', None)
+
+        if return_telemetry:
+            return telemetry_result
 
 
 def _execute_joint_path(joint_path: list[list[float]], frequency: int):
@@ -900,5 +1084,6 @@ def _execute_joint_path(joint_path: list[list[float]], frequency: int):
     frequency : int
         Execution frequency in Hz.
     """
-    _open_loop_executor_thread(joint_path, frequency, diagnostics=False)
+    diagnostics_enabled = utils.trajectory_state.get("diagnostics_enabled", False)
+    _open_loop_executor_thread(joint_path, frequency, diagnostics=diagnostics_enabled)
 
