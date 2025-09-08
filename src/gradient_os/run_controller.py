@@ -217,6 +217,9 @@ def main():
                 elif command == "GET_POSITION":
                     command_api.handle_get_position(sock, addr)
 
+                elif command == "GET_ORIENTATION":
+                    command_api.handle_get_orientation(sock, addr)
+
                 elif command == "GET_STATUS":
                     reply = f"STATUS,gripper_present,{utils.gripper_present}"
                     sock.sendto(reply.encode("utf-8"), addr)

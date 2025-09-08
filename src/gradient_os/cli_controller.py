@@ -6,6 +6,7 @@ import time
 import argparse
 import sys
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 # --- Constants ---
 DEFAULT_CONTROLLER_IP = "mini-arm.local"
@@ -30,10 +31,11 @@ class UDPClient:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(1.0)
         self.position_xyz = [0.0, 0.0, 0.0]
+        self.orientation_rpy_deg = [0.0, 0.0, 0.0]
         self.lock = threading.Lock()
         self.running = True
         
-        self.position_thread = threading.Thread(target=self._fetch_position, daemon=True)
+        self.position_thread = threading.Thread(target=self._fetch_state, daemon=True)
         self.position_thread.start()
 
     def _send_command_locked(self, command):
@@ -71,10 +73,11 @@ class UDPClient:
                 self.sock.settimeout(1.0)
         return 0.0
 
-    def _fetch_position(self):
-        """Periodically sends GET_POSITION and updates the internal state."""
+    def _fetch_state(self):
+        """Periodically sends GET_POSITION and GET_ORIENTATION and updates the internal state."""
         while self.running:
-            with self.lock: # Lock for the entire transaction
+            # --- Get Position ---
+            with self.lock:
                 self._send_command_locked("GET_POSITION")
                 try:
                     data, _ = self.sock.recvfrom(1024)
@@ -88,12 +91,39 @@ class UDPClient:
                 except Exception:
                     pass # Ignore other errors for now
             
+            if not self.running:
+                break
+            time.sleep(0.02) # Small pause between requests
+
+            # --- Get Orientation ---
+            with self.lock:
+                self._send_command_locked("GET_ORIENTATION")
+                try:
+                    data, _ = self.sock.recvfrom(1024)
+                    response = data.decode('utf-8')
+                    if response.startswith("CURRENT_ORIENTATION,"):
+                        parts = response.split(',')
+                        if len(parts) >= 10:
+                            flat_matrix = [float(p) for p in parts[1:10]]
+                            rot_matrix = np.array(flat_matrix).reshape((3, 3))
+                            r = R.from_matrix(rot_matrix)
+                            self.orientation_rpy_deg = r.as_euler('xyz', degrees=True)
+                except socket.timeout:
+                    pass
+                except Exception:
+                    pass
+            
             time.sleep(POSITION_REQUEST_INTERVAL_S)
 
     def get_position(self):
         """Returns the last known position in a thread-safe way."""
         with self.lock:
             return self.position_xyz
+
+    def get_orientation(self):
+        """Returns the last known orientation in a thread-safe way."""
+        with self.lock:
+            return self.orientation_rpy_deg
 
     def close(self):
         self.running = False
@@ -136,11 +166,15 @@ class CLI_UI:
         pos_str = f"Position (X,Y,Z): {pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}"
         self.stdscr.addstr(3, 2, pos_str, curses.color_pair(1))
 
+        orient = self.client.get_orientation()
+        orient_str = f"Orient (R,P,Y): {orient[0]:.1f}, {orient[1]:.1f}, {orient[2]:.1f}"
+        self.stdscr.addstr(4, 2, orient_str, curses.color_pair(1))
+
         gripper_str = f"Gripper Angle: {self.gripper_angle:.1f}° (0-120)"
-        self.stdscr.addstr(4, 2, gripper_str, curses.color_pair(1))
+        self.stdscr.addstr(5, 2, gripper_str, curses.color_pair(1))
 
         # Instructions
-        y = 6
+        y = 7
         self.stdscr.addstr(y, 2, "--- Controls ---", curses.A_UNDERLINE)
         
         if self.mode == 'pan':
@@ -148,7 +182,7 @@ class CLI_UI:
             self.stdscr.addstr(y+2, 4, "[A] Left (-Y)      [D] Right (+Y)")
             self.stdscr.addstr(y+3, 4, "[Shift+W] Up (+Z)  [Shift+S] Down (-Z)")
         else: # orient
-            self.stdscr.addstr(y+1, 4, "[W] Pitch Up (+Y)  [S] Pitch Down (-Y)")
+            self.stdscr.addstr(y+1, 4, "[W] Pitch Down (-Y)  [S] Pitch Up (+Y)")
             self.stdscr.addstr(y+2, 4, "[A] Yaw Left (+Z)  [D] Yaw Right (-Z)")
             self.stdscr.addstr(y+3, 4, "[Shift+W] Roll (+) [Shift+S] Roll (-)")
 
@@ -168,6 +202,41 @@ class CLI_UI:
 
         self.stdscr.refresh()
 
+    def _handle_pan_input(self, key):
+        """Handles keyboard input for panning mode."""
+        pan_map = {
+            ord('w'): f"MOVE_LINE_RELATIVE,{PAN_STEP_M},0,0",
+            ord('s'): f"MOVE_LINE_RELATIVE,{-PAN_STEP_M},0,0",
+            ord('a'): f"MOVE_LINE_RELATIVE,0,{PAN_STEP_M},0",
+            ord('d'): f"MOVE_LINE_RELATIVE,0,{-PAN_STEP_M},0",
+            ord('W'): f"MOVE_LINE_RELATIVE,0,0,{PAN_STEP_M}",
+            ord('S'): f"MOVE_LINE_RELATIVE,0,0,{-PAN_STEP_M}",
+        }
+        return pan_map.get(key)
+
+    def _handle_orient_input(self, key):
+        """Handles keyboard input for orientation mode."""
+        orient_map = {
+            ord('w'): (0, 1, 0),  # Pitch Up (+Y)
+            ord('s'): (0, -1, 0), # Pitch Down (-Y)
+            ord('a'): (0, 0, 1),  # Yaw Left (+Z)
+            ord('d'): (0, 0, -1), # Yaw Right (-Z)
+            ord('W'): (1, 0, 0),  # Roll + (+X)
+            ord('S'): (-1, 0, 0), # Roll - (-X)
+        }
+        delta = orient_map.get(key)
+        if delta is None:
+            return None
+
+        current_rpy = self.client.get_orientation()
+        new_rpy = [
+            current_rpy[0] + delta[0] * ORIENT_STEP_DEG,
+            current_rpy[1] + delta[1] * ORIENT_STEP_DEG,
+            current_rpy[2] + delta[2] * ORIENT_STEP_DEG,
+        ]
+        # Use a short duration for responsive jogging
+        return f"SET_ORIENTATION,{new_rpy[0]},{new_rpy[1]},{new_rpy[2]},duration_s=0.2"
+
     def _handle_input(self, key):
         cmd = None
         if key in [ord('q'), ord('Q')]:
@@ -176,40 +245,30 @@ class CLI_UI:
         # Mode switching
         if key == ord('\t') or key == 9:
             self.mode = 'orient' if self.mode == 'pan' else 'pan'
-        
-        # Presets
-        elif key == ord('1'):
-            cmd = ",".join(map(str, POS_REST))
-        elif key == ord('2'):
-            cmd = ",".join(map(str, POS_HOME))
-        elif key == ord('3'):
-            cmd = ",".join(map(str, POS_ZERO))
+            return True
+
+        # Key-to-command mapping for simple cases
+        simple_commands = {
+            ord('1'): ",".join(map(str, POS_REST)),
+            ord('2'): ",".join(map(str, POS_HOME)),
+            ord('3'): ",".join(map(str, POS_ZERO)),
+        }
+        cmd = simple_commands.get(key)
 
         # Gripper controls
-        elif key in [ord('r'), ord('R')]:
+        if key in [ord('r'), ord('R')]:
             self.gripper_angle = min(120.0, self.gripper_angle + GRIPPER_STEP_DEG)
             cmd = f"SET_GRIPPER,{self.gripper_angle}"
         elif key in [ord('f'), ord('F')]:
             self.gripper_angle = max(0.0, self.gripper_angle - GRIPPER_STEP_DEG)
             cmd = f"SET_GRIPPER,{self.gripper_angle}"
 
-        # Movement
-        elif self.mode == 'pan':
-            if key == ord('w'): cmd = f"MOVE_LINE_RELATIVE,{PAN_STEP_M},0,0"
-            elif key == ord('s'): cmd = f"MOVE_LINE_RELATIVE,{-PAN_STEP_M},0,0"
-            elif key == ord('a'): cmd = f"MOVE_LINE_RELATIVE,0,{PAN_STEP_M},0"
-            elif key == ord('d'): cmd = f"MOVE_LINE_RELATIVE,0,{-PAN_STEP_M},0"
-            # Shift combinations might not be standard; check for uppercase
-            elif key == ord('W'): cmd = f"MOVE_LINE_RELATIVE,0,0,{PAN_STEP_M}"
-            elif key == ord('S'): cmd = f"MOVE_LINE_RELATIVE,0,0,{-PAN_STEP_M}"
-        
-        elif self.mode == 'orient':
-            if key == ord('w'): cmd = f"ROTATE,y,{ORIENT_STEP_DEG}"
-            elif key == ord('s'): cmd = f"ROTATE,y,{-ORIENT_STEP_DEG}"
-            elif key == ord('a'): cmd = f"ROTATE,z,{ORIENT_STEP_DEG}"
-            elif key == ord('d'): cmd = f"ROTATE,z,{-ORIENT_STEP_DEG}"
-            elif key == ord('W'): cmd = f"ROTATE,x,{ORIENT_STEP_DEG}"
-            elif key == ord('S'): cmd = f"ROTATE,x,{-ORIENT_STEP_DEG}"
+        # Mode-dependent movement
+        if cmd is None:
+            if self.mode == 'pan':
+                cmd = self._handle_pan_input(key)
+            else: # orient
+                cmd = self._handle_orient_input(key)
 
         if cmd:
             err = self.client.send_command(cmd)

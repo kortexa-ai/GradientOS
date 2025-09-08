@@ -1,4 +1,4 @@
-# Contains the high-level command handlers that parse and react to UDP messages. 
+# Contains the high-level command handlers that parse and react to UDP messages.
 import os
 import json
 import time
@@ -860,6 +860,41 @@ def handle_get_position(sock: 'socket.socket', addr: tuple):
         except Exception as e:
             print(f"[Pi] Error sending FK_FAILED error to {addr}: {e}")
 
+def handle_get_orientation(sock: 'socket.socket', addr: tuple):
+    """
+    Handles the 'GET_ORIENTATION' command.
+    Calculates the current end-effector orientation (as a rotation matrix) using FK
+    and sends it back to the requester.
+    """
+    print(f"[Pi] Received GET_ORIENTATION from {addr}.")
+
+    current_angles = utils.current_logical_joint_angles_rad
+
+    # Get the current orientation using Forward Kinematics
+    current_pose_matrix = ik_solver.get_fk_matrix(current_angles)
+
+    if current_pose_matrix is not None:
+        current_orientation = current_pose_matrix[:3, :3]
+        
+        # Round the orientation matrix for cleaner display
+        orientation_rounded = np.round(current_orientation, 4)
+
+        orientation_str = ",".join(map(str, orientation_rounded.flatten()))
+
+        print(f"[Pi] Sending orientation: {orientation_str}")
+
+        reply_msg = f"CURRENT_ORIENTATION,{orientation_str}"
+
+        try:
+            sock.sendto(reply_msg.encode("utf-8"), addr)
+        except Exception as e:
+            print(f"[Pi] Error sending CURRENT_ORIENTATION to {addr}: {e}")
+    else:
+        print("[Pi] ERROR: Could not calculate current orientation (FK failed).")
+        try:
+            sock.sendto("ERROR,FK_FAILED".encode("utf-8"), addr)
+        except Exception as e:
+            print(f"[Pi] Error sending FK_FAILED error to {addr}: {e}")
 
 def handle_move_line(target_x: float, target_y: float, target_z: float, velocity: float, acceleration: float, closed_loop: bool = True):
     """Convenience wrapper that calls the main profiled move handler, defaulting to closed-loop."""
@@ -1292,4 +1327,3 @@ def _load_trajectory_by_name(name: str):
         print(f"[Pi Trajectory] ERROR: Could not load fallback trajectories.json: {e}")
 
     return None
-
