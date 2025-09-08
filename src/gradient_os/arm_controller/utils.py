@@ -116,13 +116,13 @@ SERVO_ADDR_POS_KD = 0x16
 
 DEFAULT_KP = 60  
 DEFAULT_KI = 20   
-DEFAULT_KD = 5
+DEFAULT_KD = 0
 
 # Default PID gains for the servos
-J1_PID_GAINS = (150, 5, 1) # J1 pattern is  (KP, KI, KD)
-J2_PID_GAINS = (70, 20, 5) # J2 pattern is  (KP, KI, KD)
-J3_PID_GAINS = (60, 20, 5) # J3 pattern is  (KP, KI, KD)
-J4_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J4 pattern is  (KP, KI, KD)
+J1_PID_GAINS = (150, 70, 0) # J1 pattern is  (KP, KI, KD)
+J2_PID_GAINS = (150, 20, 0) # J2 pattern is  (KP, KI, KD)
+J3_PID_GAINS = (150, 20, 0) # J3 pattern is  (KP, KI, KD)
+J4_PID_GAINS = (100, DEFAULT_KI, DEFAULT_KD) # J4 pattern is  (KP, KI, KD)
 J5_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J5 pattern is  (KP, KI, KD)
 J6_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # J6 pattern is  (KP, KI, KD)
 Gripper_PID_GAINS = (DEFAULT_KP, DEFAULT_KI, DEFAULT_KD) # Gripper pattern is  (KP, KI, KD)
