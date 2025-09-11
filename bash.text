@@ -1,0 +1,7 @@
+# use this file to pass text between my computer and the raspberry pi
+
+cd /home/gradientrobotics/Desktop/GradientOS
+./activate_with_system_libs.sh
+python scripts/stream_camera.py --camera 0 --port 8080
+
+rpicam-vid -t 0 --inline --listen --camera 0 -o tcp://0.0.0.0:8554

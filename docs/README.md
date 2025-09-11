@@ -4,26 +4,33 @@ This documentation provides a comprehensive overview of the Mini Arm Controller 
 
 ## Installation 
 
-```
+```bash
 git clone https://github.com/terrorproforma/GradientOS.git --verbose
 cd GradientOS
 python3 -m venv .venv
-. .venv/bin/activate
-pip install .
+source ./start-env.sh   # Important: source, do not execute
+
+# Install in editable mode to register console scripts during development
+pip install -e .
 ```
 
-The package provides three command-line tools:
-```
-gradient-controller  # Main controller for UDP commands
-gradient-ui         # Graphical user interface
-gradient-cli        # Command-line interface
+The package provides command-line tools (available after activation and install):
+```bash
+gradient-controller   # Main controller for UDP commands
+gradient-ui           # Graphical user interface
+gradient-cli          # Command-line interface
+gradient-vision       # Vision module CLI (cameras, processing, streaming)
 ```
 
-You may need to exit and re-enter the venv to run 
-`gradient-controller` and
-`gradient-ui`.
+Notes:
+- If you prefer not to install console scripts yet, aliases are provided after activation:
+  - gradient-vision → python -m gradient_os.vision
+  - gradient-ui → python -m gradient_os.ui_start
+  - gradient-controller → python -m gradient_os.run_controller
+  - gradient-cli → python -m gradient_os.cli_controller
+- Always activate with `source ./start-env.sh`. Executing the script will not persist the environment.
 
-`gradient-ui` can be run remotely and can connect to you pi or other baord via UDP. `gradient-controller` must run locally on you pi or board connected to the motor controller. 
+`gradient-ui` can be run remotely and can connect to your pi or other board via UDP. `gradient-controller` must run locally on your pi or board connected to the motor controller. 
 
 
 # command CLI 
@@ -75,6 +82,24 @@ This checklist tracks the progress of documenting each component of the system a
 - [x] `tests/test_end_to_end.py` (Mocked Hardware)
 
 ---
+
+## Vision Module
+
+For camera setup, streaming, and image processing, see the Vision README:
+- Vision README: `src/gradient_os/vision/README.md`
+
+Quick usage (after activation and install):
+```bash
+gradient-vision                  # Streams with Pi defaults (cam0, 1280x720@30)
+gradient-vision list
+gradient-vision init --camera 0 --width 640 --height 480 --fps 30
+gradient-vision stream --camera 0 --width 640 --height 480 --fps 30 --duration 10
+gradient-vision mjpeg         # HTTP server (auto-dual if 2 cams). Visit http://<host>:8080/
+gradient-vision mjpeg img-proc --object-detection --color red --vflip --hflip
+gradient-vision mjpeg ai --weights yolo11n.pt --conf 0.25 --imgsz 640 --device cpu --vflip --hflip
+gradient-vision mjpeg ai-seg --weights yolo11n-seg.pt --conf 0.25 --imgsz 640 --device cpu
+gradient-vision mjpeg ai-pose --weights yolo11n-pose.pt --conf 0.25 --imgsz 640 --device cpu
+```
 
 ## System Overview and Data Flow
 
