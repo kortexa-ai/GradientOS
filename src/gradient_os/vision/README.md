@@ -94,10 +94,10 @@ cd .
 pip install -e .
 ```
 
-Run the vision CLI (you can also use the module form shown below). With no subcommand, it defaults to streaming using sensible Pi defaults (camera 0, 1280x720 @ 30 FPS):
+Run the vision CLI (you can also use the module form shown below). With no subcommand, it defaults to streaming using full-sensor friendly 4:3 defaults (camera 0, 1280x960 @ 30 FPS) to maximize FOV:
 
 ```bash
-gradient-vision            # Streams from camera 0 at 1280x720@30
+gradient-vision            # Streams from camera 0 at 1280x960@30 (4:3 for full sensor FOV)
 
 # List available cameras
 gradient-vision list
@@ -112,7 +112,7 @@ gradient-vision processing --camera 0 --width 640 --height 480 --fps 30
 gradient-vision stream --camera 0 --width 640 --height 480 --fps 30 --duration 10
 # MJPEG HTTP server (auto-dual if two cameras detected; stacked vertically)
 gradient-vision mjpeg
-  # Defaults: host=0.0.0.0, port=8080, width=1280, height=720, fps=30, jpeg_quality=80
+  # Defaults: host=0.0.0.0, port=8080, width=1280, height=960, fps=30, jpeg_quality=80
   # Visit http://<host>:8080/  (cam0 and cam1 vertically stacked if both present)
 
 # MJPEG with image processing overlay (e.g., color-based object detection)
@@ -120,7 +120,7 @@ gradient-vision mjpeg img-proc --object-detection --color yellow --vflip --hflip
   # Overlay text shows which color is detected, HSV range, min_area, and count
 
 # MJPEG with Ultralytics AI detection overlay (generic)
-gradient-vision mjpeg ai --weights <ultralytics-weights> --conf 0.25 --imgsz 640 --device cpu
+gradient-vision mjpeg ai --weights <ultralytics-weights> --conf 0.25 --imgsz 640 --device cpu --vflip --hflip
   # Works with most Ultralytics weights via a unified API. Examples:
   #  - YOLO11 detection: --weights yolo11n.pt
   #  - YOLO11 segmentation: use subcommand ai-seg and seg weights (yolo11n-seg.pt)
@@ -147,7 +147,7 @@ gradient-vision list -v
 If you prefer not to install console scripts, you can run the module directly. With no args it streams using the same defaults:
 
 ```bash
-python -m gradient_os.vision         # Streams using defaults
+python -m gradient_os.vision         # Streams using defaults (1280x960@30, 4:3)
 python -m gradient_os.vision list
 python -m gradient_os.vision init --camera 0 --width 640 --height 480 --fps 30
 python -m gradient_os.vision processing --camera 0 --width 640 --height 480 --fps 30

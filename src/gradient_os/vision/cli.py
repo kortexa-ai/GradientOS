@@ -503,7 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
         command="stream",
         camera=0,
         width=1280,
-        height=720,
+        height=960,
         fps=30,
         duration=0,
     )
@@ -515,21 +515,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = subparsers.add_parser("init", help="Test camera initialization and capture one frame")
     p_init.add_argument("--camera", type=int, default=0)
     p_init.add_argument("--width", type=int, default=1280)
-    p_init.add_argument("--height", type=int, default=720)
+    p_init.add_argument("--height", type=int, default=960)
     p_init.add_argument("--fps", type=int, default=30)
 
     # processing
     p_proc = subparsers.add_parser("processing", help="Run basic image processing checks")
     p_proc.add_argument("--camera", type=int, default=0)
     p_proc.add_argument("--width", type=int, default=1280)
-    p_proc.add_argument("--height", type=int, default=720)
+    p_proc.add_argument("--height", type=int, default=960)
     p_proc.add_argument("--fps", type=int, default=30)
 
     # stream
     p_stream = subparsers.add_parser("stream", help="Stream frames and print FPS to console")
     p_stream.add_argument("--camera", type=int, default=0)
     p_stream.add_argument("--width", type=int, default=1280)
-    p_stream.add_argument("--height", type=int, default=720)
+    p_stream.add_argument("--height", type=int, default=960)
     p_stream.add_argument("--fps", type=int, default=30)
     p_stream.add_argument("--duration", type=int, default=0, help="Duration in seconds (0 = until Ctrl+C)")
 
@@ -539,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_http.add_argument("--port", type=int, default=8080)
     p_http.add_argument("--camera", type=int, default=None, help="Camera index for single-camera mode (omit to auto-use dual if available)")
     p_http.add_argument("--width", type=int, default=1280)
-    p_http.add_argument("--height", type=int, default=720)
+    p_http.add_argument("--height", type=int, default=960)
     p_http.add_argument("--fps", type=int, default=30)
     p_http.add_argument("--jpeg-quality", type=int, default=80)
     p_http.add_argument("--vflip", action="store_true")
