@@ -1,0 +1,122 @@
+* {
+    background-color: #000000;
+    color: #FFFFFF;
+}
+
+QPushButton {
+    background-color: #333333;
+    border: 2px solid #FF6600;  /* Evangelion orange */
+    padding: 5px;
+    min-width: 100px;
+    min-height: 50px; /* Reduced from 100px */
+}
+QPushButton:hover {
+    background-color: #FF6600;
+    color: #000000;
+}
+QPushButton:pressed {
+    background-color: #CC0000;  /* Red for activation */
+}
+QPushButton[role="danger"] {
+    background-color: #CC0000;
+    color: #FFFFFF;
+}
+QPushButton:checked {
+    background-color: #FF9933; /* A lighter orange for selection */
+    color: #000000;
+    border: 2px solid #FFFFFF;
+}
+
+QLineEdit {
+    border: 1px solid #FF6600;
+    padding: 2px;
+}
+QSlider {
+    background-color: #222222;
+}
+QLabel {
+    color: #FF6600;
+}
+QLabel#TitleMain {
+    font-size: 24px;
+    font-weight: bold;
+    color: #FF6600;
+}
+QLabel#TitleRobot {
+    font-size: 14px;
+    color: #CCCCCC;
+}
+QLabel[emphasis="bold"] {
+    font-weight: bold;
+}
+QStatusBar {
+    background-color: #111111;
+    color: #FF6600;
+}
+QTableWidget::item {
+    color: white;
+}
+QPushButton#JogButton {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+}
+
+/* Log widgets */
+QPlainTextEdit {
+    background-color: #111111;
+    color: #FF6600;
+    font-family: 'Courier New', monospace;
+}
+QTextEdit {
+    background-color: #111111;
+    color: #FF6600;
+    font-family: 'Courier New', monospace;
+}
+
+/* Warning label */
+QLabel[role="warning"] {
+    color: red;
+}
+
+/* Live status banner blinking styles */
+QLabel#LiveStatus {
+    color: #FFFFFF;
+    font-weight: bold;
+    font-size: 20px;
+}
+QLabel#LiveStatus[alertOn="true"] {
+    background-color: #FF0000;
+}
+QLabel#LiveStatus[alertOn="false"] {
+    background-color: #000000;
+}
+
+/* Activate/Deactivate button states styled via enabled/disabled */
+QPushButton#ActivateBtn:enabled {
+    background-color: lime;
+    color: black;
+    font-weight: bold;
+    font-size: 16px;
+}
+QPushButton#ActivateBtn:disabled {
+    background-color: darkgreen;
+    color: gray;
+    font-weight: bold;
+    font-size: 16px;
+}
+QPushButton#DeactivateBtn:enabled {
+    background-color: red;
+    color: black;
+    font-weight: bold;
+    font-size: 16px;
+}
+QPushButton#DeactivateBtn:disabled {
+    background-color: darkred;
+    color: gray;
+    font-weight: bold;
+    font-size: 16px;
+}
+
+
