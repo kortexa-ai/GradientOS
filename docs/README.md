@@ -8,7 +8,7 @@ This documentation provides a comprehensive overview of the Mini Arm Controller 
 git clone https://github.com/terrorproforma/GradientOS.git --verbose
 cd GradientOS
 python3 -m venv .venv
-source ./start-env.sh   # Important: source, do not execute
+source ./start.sh   # Important: source, do not execute
 
 # Install in editable mode to register console scripts during development
 pip install -e .
