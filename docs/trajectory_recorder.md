@@ -76,6 +76,16 @@ Details:
 * **Storage path:** `recorded_trajectories/` (auto-created).
 * **Playback:** `handle_run_trajectory()` now searches the recorded folder *before* falling back to `trajectories.json`.
 
+### Telemetry recorder (episodes)
+- Start/stop from UI Real Control page under "Telemetry Recorder" (leave camera URLs blank to auto-start the built-in MJPEG server on port 8080 and use both cameras, if available; server starts with `--vflip --hflip` by default).
+- Controller commands:
+  - `START_RECORDER,episodes_dir,prompt,base_cam,wrist_cam,fps,resize[,state_udp[,action_udp]]` — set `base_cam`/`wrist_cam` to empty or `auto` to auto-start the internal streamer and use `http://127.0.0.1:8080/cam0.mjpg` and `/cam1.mjpg`.
+  - `STOP_RECORDER`
+- Additionally, you can control the raw telemetry stream directly:
+  - `START_TELEMETRY,host:port[,hz]`
+  - `STOP_TELEMETRY`
+- Episodes are created under `episodes_dir/YYYYMMDD_HHMMSS/` with `metadata.json`, `steps.jsonl`, and image subfolders `base/` and `wrist/`. Default `episodes_dir` is `recorded_episodes/` at the repo root; the folder is tracked but contents are git-ignored.
+
 ---
 
 ## Roadmap

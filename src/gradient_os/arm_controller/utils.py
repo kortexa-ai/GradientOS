@@ -124,13 +124,13 @@ DEFAULT_KI = 1
 DEFAULT_KD = 30
 
 # Default PID gains for the servos (per-joint tuned baseline)
-J1_PID_GAINS = (60, 2, 40) # J1 pattern is  (KP, KI, KD)
-J2_PID_GAINS = (75, 1, 40) # J2 pattern is  (KP, KI, KD)
-J3_PID_GAINS = (60, 1, 25) # J3 pattern is  (KP, KI, KD)
-J4_PID_GAINS = (60, 1, 30) # J4 pattern is  (KP, KI, KD)
-J5_PID_GAINS = (60, 1, 30) # J5 pattern is  (KP, KI, KD)
-J6_PID_GAINS = (60, 1, 30) # J6 pattern is  (KP, KI, KD)
-Gripper_PID_GAINS = (50, 1, 30) # Gripper pattern is  (KP, KI, KD)
+J1_PID_GAINS = (50, 1, 20) # J1 pattern is  (KP, KI, KD)
+J2_PID_GAINS = (65, 1, 30) # J2 pattern is  (KP, KI, KD)
+J3_PID_GAINS = (50, 1, 25) # J3 pattern is  (KP, KI, KD)
+J4_PID_GAINS = (50, 0, 10) # J4 pattern is  (KP, KI, KD)
+J5_PID_GAINS = (50, 0, 10) # J5 pattern is  (KP, KI, KD)
+J6_PID_GAINS = (50, 0, 10) # J6 pattern is  (KP, KI, KD)
+Gripper_PID_GAINS = (40, 0, 10) # Gripper pattern is  (KP, KI, KD)
 
 # Per-servo default PID gains (Kp, Ki, Kd), keyed by hardware Servo ID.
 # If a servo ID is missing from this map, the controller falls back to
