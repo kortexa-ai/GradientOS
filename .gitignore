@@ -35,6 +35,10 @@ trajectory_cache/
 closed_loop/
 open_loop/
 
+# Recorded episodes (keep folder, ignore contents)
+recorded_episodes/*
+!recorded_episodes/.gitkeep
+
 # IDE and Editor files
 # ----------------------------------------------------------------
 .vscode/

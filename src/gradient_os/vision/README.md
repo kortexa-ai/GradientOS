@@ -114,6 +114,7 @@ gradient-vision stream --camera 0 --width 640 --height 480 --fps 30 --duration 1
 gradient-vision mjpeg
   # Defaults: host=0.0.0.0, port=8080, width=1280, height=960, fps=30, jpeg_quality=80
   # Visit http://<host>:8080/  (cam0 and cam1 vertically stacked if both present)
+  gradient-vision mjpeg --vflip --hflip
 
 # MJPEG with image processing overlay (e.g., color-based object detection)
 gradient-vision mjpeg img-proc --object-detection --color yellow --vflip --hflip
