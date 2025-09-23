@@ -24,7 +24,7 @@ The planning phase is responsible for creating a complete, point-by-point recipe
 
 #### 2. Path Execution (`_closed_loop_executor_thread`)
 
-Once a path is planned, it is handed to the executor thread. This thread is responsible for making the robot follow the planned path accurately in real-time. It runs a high-frequency control loop (e.g., 200 Hz) that is independent of the main command loop.
+Once a path is planned, it is handed to the executor thread. This thread is responsible for making the robot follow the planned path accurately in real-time. It runs a high-frequency control loop (default 50 Hz) that is independent of the main command loop.
 
 The logic for each cycle of the control loop is as follows:
 

@@ -162,8 +162,8 @@ def handle_set_orientation_command(
     2.  Solves IK in a single batched call for every intermediate pose, so the
         position constraint is enforced at all times.
     3.  Executes the resulting joint path either:
-        • **Closed-loop** at 400 Hz (default, high-precision)
-        • **Open-loop** at 1300 Hz (`closed_loop=False`, high-speed)
+        • **Closed-loop** at 50 Hz (default)
+        • **Open-loop** at 100 Hz (`closed_loop=False`)
 
     Because the path is pre-planned, the function is *blocking*: it only
     returns after the motion (≈ `duration_s`) has finished.
@@ -173,8 +173,7 @@ def handle_set_orientation_command(
     roll, pitch, yaw : float
         Absolute tool orientation in degrees, XYZ intrinsic Euler order.
     closed_loop : bool, optional
-        Run the high-precision closed-loop executor at 400 Hz instead of the
-        high-speed open-loop executor.  Default `True`.
+        Executes at 50 Hz in both modes. Default `True` for closed-loop.
     duration_s : float, optional
         Desired motion duration (≥ 0.1 s).  Controls the smoothness/speed by
         scaling the number of interpolation steps.  Default `1.0`.
@@ -222,7 +221,8 @@ def handle_set_orientation_command(
     # ------------------------------------------------------------
     #   3. Determine execution parameters
     # ------------------------------------------------------------
-    frequency_hz = 100 if closed_loop else 1300  # Align with other commands
+    # Default both modes to 100 Hz
+    frequency_hz = 50
 
     # Use caller-provided duration (default 1 s) to scale interpolation density.
     duration_s = max(0.1, duration_s)  # clamp to sane minimum
@@ -338,11 +338,10 @@ def handle_move_profiled(target_x: float,
         utils.trajectory_state['diagnostics_folder_type'] = "closed_loop" if closed_loop else "open_loop"
 
     if closed_loop:
-        frequency = 100
+        frequency = 50
     else:
-        # With diagnostics, the open-loop executor reads feedback and is much slower.
-        # We must plan the trajectory at the slower rate to ensure the move duration is correct.
-        frequency = 400 if diagnostics_enabled else 600
+        # Standardize default open-loop planning/execution to 100 Hz as well
+        frequency = 100
 
     # 2. Plan the entire move.
     joint_path = trajectory_execution._plan_smooth_move(
@@ -969,7 +968,7 @@ def handle_tune_pid_joint(joint_index: int, amplitude_deg: float = 5.0, frequenc
         print(f"[PID Tune] ERROR: {e}")
 
 
-def handle_tune_pid_all(amplitude_deg: float = 5.0, frequency_hz: int = 200, duration_s: float = 3.0, move_to_zero_first_each: bool = True):
+def handle_tune_pid_all(amplitude_deg: float = 5.0, frequency_hz: int = 50, duration_s: float = 3.0, move_to_zero_first_each: bool = True):
     """Tunes all logical joints sequentially (blocking)."""
     for j in range(utils.NUM_LOGICAL_JOINTS):
         if utils.trajectory_state.get("is_running"):
@@ -980,7 +979,7 @@ def handle_tune_pid_all(amplitude_deg: float = 5.0, frequency_hz: int = 200, dur
 # -----------------------------------------------------------------------------
 # Gripper Control
 # -----------------------------------------------------------------------------
-def handle_set_gripper_state(angle_deg: float, speed: int = 100, accel: int = 0):
+def handle_set_gripper_state(angle_deg: float, speed: int = 50, accel: int = 0):
     """
     Handles the 'SET_GRIPPER' command. Commands the gripper to a specific angle.
     

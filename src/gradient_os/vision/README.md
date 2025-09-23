@@ -151,6 +151,60 @@ gradient-vision mjpeg ai-pose --weights yolo11n-pose.pt --conf 0.25 --imgsz 640 
 gradient-vision list -v
 ```
 
+### Using cameras with the telemetry recorder
+
+You can record synchronized frames and robot state via `record_episode.py`. If your camera MJPEG endpoints are not already running, the recorder can auto-start the MJPEG server.
+
+Default behavior: cameras ON (auto-start MJPEG, dual endpoints if available)
+
+```bash
+python -m gradient_os.telemetry.record_episode
+# Uses http://127.0.0.1:8080/cam0.mjpg and /cam1.mjpg if available, otherwise falls back gracefully.
+```
+
+Single camera (auto-start MJPEG on localhost and record):
+
+```bash
+python -m gradient_os.telemetry.record_episode \
+  --auto-start-mjpeg \
+  --mjpeg-port 8080 \
+  --fps 10 \
+  --resize 256
+# The recorder will read frames from http://127.0.0.1:8080/stream.mjpg
+```
+
+Dual cameras (auto-start dual MJPEG; recorder uses cam0 and cam1):
+
+```bash
+python -m gradient_os.telemetry.record_episode \
+  --auto-start-mjpeg \
+  --mjpeg-port 8080 \
+  --mjpeg-both \
+  --fps 10 \
+  --resize 256
+# The recorder will read cam0 from /cam0.mjpg and cam1 from /cam1.mjpg
+```
+
+If you already have an MJPEG server running, pass the URLs directly:
+
+```bash
+python -m gradient_os.telemetry.record_episode \
+  --base-cam http://127.0.0.1:8080/stream.mjpg \
+  --fps 10 --resize 256
+
+# Dual:
+python -m gradient_os.telemetry.record_episode \
+  --base-cam http://127.0.0.1:8080/cam0.mjpg \
+  --wrist-cam http://127.0.0.1:8080/cam1.mjpg \
+  --fps 10 --resize 256
+```
+
+Disable cameras (e.g., state-only recording):
+
+```bash
+python -m gradient_os.telemetry.record_episode --no-cameras --fps 10
+```
+
 If you prefer not to install console scripts, you can run the module directly. With no args it streams using the same defaults:
 
 ```bash

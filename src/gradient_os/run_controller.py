@@ -503,27 +503,36 @@ def main():
                         prompt = parts[2] if len(parts) > 2 else ""
                         base_cam = parts[3] if len(parts) > 3 and parts[3] != "" else None
                         wrist_cam = parts[4] if len(parts) > 4 and parts[4] != "" else None
+                        # Honor explicit camera disable sentinels
+                        disable_vals = {"off", "none", "disabled"}
+                        base_disabled = isinstance(base_cam, str) and base_cam.lower() in disable_vals
+                        wrist_disabled = isinstance(wrist_cam, str) and wrist_cam.lower() in disable_vals
+                        if base_disabled:
+                            base_cam = None
+                        if wrist_disabled:
+                            wrist_cam = None
                         fps = int(parts[5]) if len(parts) > 5 and parts[5] != "" else 10
                         resize = int(parts[6]) if len(parts) > 6 and parts[6] != "" else 256
                         state_udp = parts[7] if len(parts) > 7 and parts[7] != "" else "0.0.0.0:5555"
                         action_udp = parts[8] if len(parts) > 8 and parts[8] != "" else None
 
                         # If camera URLs are not provided or set to 'auto', start internal MJPEG server(s)
-                        need_auto_cams = (base_cam in (None, "", "auto")) and (wrist_cam in (None, "", "auto"))
+                        need_auto_cams = (base_cam in (None, "", "auto")) and (wrist_cam in (None, "", "auto")) and not (base_disabled and wrist_disabled)
                         if need_auto_cams:
                             try:
-                                scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "stream_camera.py"))
                                 cam_cmd = [
-                                    sys.executable, scripts_path,
+                                    sys.executable, "-m", "gradient_os.vision", "mjpeg",
                                     "--host", "0.0.0.0",
                                     "--port", "8080",
                                     "--both",
-                                    "--width", "1280", "--height", "720",
+                                    # Prefer training-friendly 2:1 output to avoid post-resize
+                                    "--width", "640", "--height", "320",
                                     "--fps", "30",
                                     "--vflip",
                                     "--hflip",
+                                    "--no-overlay",
                                 ]
-                                print(f"[Controller] Auto-starting camera streamer: {' '.join(cam_cmd)}")
+                                print(f"[Controller] Auto-starting camera streamer (vision.mjpeg): {' '.join(cam_cmd)}")
                                 # Stop existing camera proc if any
                                 if camera_proc and camera_proc.poll() is None:
                                     try:
@@ -552,9 +561,13 @@ def main():
                             "--episodes-dir", episodes_dir,
                             "--prompt", prompt,
                             "--fps", str(fps),
-                            "--resize", str(resize),
                             "--state-udp", state_udp,
+                            "--no-mjpeg-autostart",
                         ]
+                        if resize and int(resize) > 0:
+                            cmd += ["--resize", str(resize)]
+                        if base_disabled and wrist_disabled:
+                            cmd += ["--no-cameras"]
                         if base_cam: cmd += ["--base-cam", base_cam]
                         if wrist_cam: cmd += ["--wrist-cam", wrist_cam]
                         if action_udp: cmd += ["--action-udp", action_udp]
