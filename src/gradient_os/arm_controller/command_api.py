@@ -173,7 +173,8 @@ def handle_set_orientation_command(
     roll, pitch, yaw : float
         Absolute tool orientation in degrees, XYZ intrinsic Euler order.
     closed_loop : bool, optional
-        Executes at 50 Hz in both modes. Default `True` for closed-loop.
+        Executes closed-loop at 50 Hz; open-loop at 100 Hz when `False`.
+        Default `True` for closed-loop.
     duration_s : float, optional
         Desired motion duration (≥ 0.1 s).  Controls the smoothness/speed by
         scaling the number of interpolation steps.  Default `1.0`.
@@ -221,8 +222,7 @@ def handle_set_orientation_command(
     # ------------------------------------------------------------
     #   3. Determine execution parameters
     # ------------------------------------------------------------
-    # Default both modes to 100 Hz
-    frequency_hz = 50
+    frequency_hz = 50 if closed_loop else 100
 
     # Use caller-provided duration (default 1 s) to scale interpolation density.
     duration_s = max(0.1, duration_s)  # clamp to sane minimum
