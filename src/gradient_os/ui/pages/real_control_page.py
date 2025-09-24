@@ -179,9 +179,6 @@ class RealControlPage(QWidget):
         state_layout.addWidget(QLabel("Gripper:"), 3, 0)
         self.gripper_val_label = QLabel("0.0°")
         state_layout.addWidget(self.gripper_val_label, 3, 1)
-        refresh_btn = QPushButton("Refresh Position")
-        refresh_btn.clicked.connect(self.refresh_state)
-        state_layout.addWidget(refresh_btn, 4, 0, 1, 4)
         state_group_box.setLayout(state_layout)
         right_side_layout.addWidget(state_group_box)
 
@@ -301,6 +298,8 @@ class RealControlPage(QWidget):
         self.jog_timer.setInterval(40)
         self.jog_timer.timeout.connect(self._send_jog_velocity_tick)
 
+        # Removed periodic state polling; we'll refresh on motion completion instead
+
         # Reduce UI/network load by only sending on change or periodic keepalive
         self._last_jog_sent = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._last_grip_sent = 0.0
@@ -375,7 +374,7 @@ class RealControlPage(QWidget):
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
         cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]},{speed_multiplier},{closed_str}"
         self.parent.send_command(cmd)
-        self.refresh_state()
+        self._refresh_on_motion_complete()
 
     def refresh_trajectory_list(self):
         self.log_message("Requesting trajectory list...")
@@ -389,6 +388,7 @@ class RealControlPage(QWidget):
         cmd = f"SET_ORIENTATION,{r},{p},{y}"
         self.parent.send_command(cmd)
         self.update_state_display()
+        self.refresh_state()
 
     def update_state_display(self):
         self.x_val_label.setText(f"{self.current_pos[0]:.3f}")
@@ -458,6 +458,8 @@ class RealControlPage(QWidget):
             cmd_str = "|".join(cmd_parts)
             self.parent.send_command(cmd_str)
             self.log_message(f"Sent: {cmd_str}")
+            # For composite inputs, assume motion may be non-blocking → refresh on completion
+            self._refresh_on_motion_complete()
 
     def log_message(self, msg):
         self.log.append(msg)
@@ -472,16 +474,19 @@ class RealControlPage(QWidget):
     def go_home(self):
         self.parent.send_command("HOME")
         self.log_message("Sent Home")
+        self._refresh_on_motion_complete()
 
     def go_zero(self):
         cmd = ",".join(map(str, POS_ZERO))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Zero: {cmd}")
+        self._refresh_on_motion_complete()
 
     def go_rest(self):
         cmd = ",".join(map(str, POS_REST))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Rest: {cmd}")
+        self._refresh_on_motion_complete()
 
     def get_position(self):
         self.parent.send_command("GET_POSITION")
@@ -509,6 +514,7 @@ class RealControlPage(QWidget):
         else:
             cmd = f"MOVE_LINE,{input_str}"
         self.parent.send_command(cmd)
+        self._refresh_on_motion_complete()
 
     def send_move_line_rel(self):
         input_str = self.move_line_rel_input.text()
@@ -522,10 +528,12 @@ class RealControlPage(QWidget):
         else:
             cmd = f"MOVE_LINE_RELATIVE,{input_str}"
         self.parent.send_command(cmd)
+        self._refresh_on_motion_complete()
 
     def send_set_orientation(self):
         input_str = self.set_ori_input.text()
         self.parent.send_command(f"SET_ORIENTATION,{input_str}")
+        self.refresh_state()
 
     def send_run_trajectory(self):
         name = self.run_traj_combo.currentText()
@@ -556,10 +564,12 @@ class RealControlPage(QWidget):
     def send_translate(self):
         input_str = self.translate_input.text()
         self.parent.send_command(f"TRANSLATE,{input_str}")
+        self.refresh_state()
 
     def send_rotate(self):
         input_str = self.rotate_input.text()
         self.parent.send_command(f"ROTATE,{input_str}")
+        self.refresh_state()
 
     def _on_speed_dial_changed(self, value):
         mult = self._current_speed_multiplier()
@@ -613,6 +623,8 @@ class RealControlPage(QWidget):
             # Also explicitly disable deadman at backend for safety
             self.parent.send_command("SET_JOG_DEADMAN,false")
             self.jog_toggle_btn.setText("Start Jog")
+            # After stopping jog, sync the final pose once
+            self.refresh_state()
 
     def _update_jog_labels(self):
         pass
@@ -673,6 +685,7 @@ class RealControlPage(QWidget):
         self.parent.send_command(f"SET_JOG_DEADMAN,{flag}")
         if not checked:
             self._jog_zero_all()
+            self.refresh_state()
 
     def _on_jog_debug_toggled(self, checked):
         flag = "true" if checked else "false"
@@ -706,5 +719,14 @@ class RealControlPage(QWidget):
             self._jog_linear_counts[axis] = self._jog_linear_counts.get(axis, 0) + delta
         # Mark last sent as stale so timer will send immediately next tick without spamming
         self._last_jog_send_time_ms = 0
+
+    def _refresh_on_motion_complete(self):
+        # Ask the controller to block until current motion completes, then query state
+        try:
+            self.parent.send_command("WAIT_FOR_IDLE")
+        except Exception:
+            pass
+        self.parent.send_command("GET_POSITION")
+        self.parent.send_command("GET_GRIPPER_STATE")
 
 
