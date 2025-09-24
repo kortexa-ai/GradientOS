@@ -364,6 +364,8 @@ class RealControlPage(QWidget):
         return button
 
     def _send_jog_move(self, axis, direction):
+        # Pause jog if active to avoid controller thread snapping back
+        self._pause_jog_if_active()
         increment_mm = float(self.pos_increment_combo.currentText())
         increment_m = increment_mm / 1000.0
         delta = {
@@ -376,6 +378,7 @@ class RealControlPage(QWidget):
         cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]},{speed_multiplier},{closed_str}"
         self.parent.send_command(cmd)
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def refresh_trajectory_list(self):
         self.log_message("Requesting trajectory list...")
@@ -383,6 +386,8 @@ class RealControlPage(QWidget):
         # Results will be handled asynchronously by the main window dispatcher
 
     def _send_orientation_jog(self, axis_index, direction):
+        # Pause jog for orientation moves to avoid competing controllers
+        self._pause_jog_if_active()
         increment_deg = float(self.ori_increment_combo.currentText())
         self.current_ori[axis_index] += increment_deg * direction
         r, p, y = self.current_ori
@@ -390,6 +395,7 @@ class RealControlPage(QWidget):
         self.parent.send_command(cmd)
         self.update_state_display()
         self.refresh_state()
+        self._resume_jog_if_needed()
 
     def update_state_display(self):
         self.x_val_label.setText(f"{self.current_pos[0]:.3f}")
@@ -448,6 +454,7 @@ class RealControlPage(QWidget):
         self.gripper_slider.setValue(0)
 
     def send_command_from_inputs(self):
+        self._pause_jog_if_active()
         cmd_parts = []
         if self.move_line_input.text():
             cmd_parts.append(f"MOVE_LINE,{self.move_line_input.text()}")
@@ -461,6 +468,7 @@ class RealControlPage(QWidget):
             self.log_message(f"Sent: {cmd_str}")
             # For composite inputs, assume motion may be non-blocking → refresh on completion
             self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def log_message(self, msg):
         self.log.append(msg)
@@ -473,21 +481,27 @@ class RealControlPage(QWidget):
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
 
     def go_home(self):
+        self._pause_jog_if_active()
         self.parent.send_command("HOME")
         self.log_message("Sent Home")
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def go_zero(self):
+        self._pause_jog_if_active()
         cmd = ",".join(map(str, POS_ZERO))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Zero: {cmd}")
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def go_rest(self):
+        self._pause_jog_if_active()
         cmd = ",".join(map(str, POS_REST))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Rest: {cmd}")
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def get_position(self):
         self.parent.send_command("GET_POSITION")
@@ -498,6 +512,7 @@ class RealControlPage(QWidget):
             self.log_message("No response or timeout.")
 
     def send_move_line(self):
+        self._pause_jog_if_active()
         input_str = self.move_line_input.text()
         parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
@@ -516,8 +531,10 @@ class RealControlPage(QWidget):
             cmd = f"MOVE_LINE,{input_str}"
         self.parent.send_command(cmd)
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def send_move_line_rel(self):
+        self._pause_jog_if_active()
         input_str = self.move_line_rel_input.text()
         parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
@@ -530,11 +547,14 @@ class RealControlPage(QWidget):
             cmd = f"MOVE_LINE_RELATIVE,{input_str}"
         self.parent.send_command(cmd)
         self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def send_set_orientation(self):
+        self._pause_jog_if_active()
         input_str = self.set_ori_input.text()
         self.parent.send_command(f"SET_ORIENTATION,{input_str}")
         self.refresh_state()
+        self._resume_jog_if_needed()
 
     def send_run_trajectory(self):
         name = self.run_traj_combo.currentText()
@@ -563,14 +583,18 @@ class RealControlPage(QWidget):
             self.parent.send_command(f"FACTORY_RESET,{id_str}")
 
     def send_translate(self):
+        self._pause_jog_if_active()
         input_str = self.translate_input.text()
         self.parent.send_command(f"TRANSLATE,{input_str}")
         self.refresh_state()
+        self._resume_jog_if_needed()
 
     def send_rotate(self):
+        self._pause_jog_if_active()
         input_str = self.rotate_input.text()
         self.parent.send_command(f"ROTATE,{input_str}")
         self.refresh_state()
+        self._resume_jog_if_needed()
 
     def _on_speed_dial_changed(self, value):
         mult = self._current_speed_multiplier()
@@ -729,5 +753,31 @@ class RealControlPage(QWidget):
             pass
         self.parent.send_command("GET_POSITION")
         self.parent.send_command("GET_GRIPPER_STATE")
+
+    def _pause_jog_if_active(self):
+        # If jog is currently active, stop it and mark for resume to avoid conflicts
+        try:
+            self._resume_jog_after_motion = False
+            if self.jog_toggle_btn.isChecked():
+                self._resume_jog_after_motion = True
+                self.jog_timer.stop()
+                self.parent.send_command("JOG_STOP")
+                self.parent.send_command("SET_JOG_DEADMAN,false")
+        except Exception:
+            pass
+
+    def _resume_jog_if_needed(self):
+        # Restart jog mode if it was active before the motion, syncing switches
+        try:
+            if getattr(self, "_resume_jog_after_motion", False):
+                self.parent.send_command("JOG_START")
+                # Ensure backend reflects current UI toggles
+                self._on_deadman_switch_toggled(self.jog_deadman_switch.isChecked())
+                self._on_jog_debug_toggled(self.jog_debug_checkbox.isChecked())
+                self.jog_timer.start()
+                self.jog_toggle_btn.setChecked(True)
+                self._resume_jog_after_motion = False
+        except Exception:
+            pass
 
 
