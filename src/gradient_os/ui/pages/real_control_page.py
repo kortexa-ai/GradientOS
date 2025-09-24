@@ -291,7 +291,8 @@ class RealControlPage(QWidget):
         self._jog_cmd = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
         jog_group.setLayout(jog_layout)
-        right_side_layout.addWidget(jog_group)
+        # Place realtime jog at the top of the left column, above Position Jog
+        left_controls_layout.insertWidget(0, jog_group)
 
         # Timer to stream jog velocities at 25 Hz
         self.jog_timer = QTimer(self)
