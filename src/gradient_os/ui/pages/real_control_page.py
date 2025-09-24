@@ -232,6 +232,46 @@ class RealControlPage(QWidget):
         speed_layout.addWidget(self.diagnostics_checkbox)
         speed_group.setLayout(speed_layout)
         right_side_layout.addWidget(speed_group)
+
+        # Telemetry Recorder Controls
+        recorder_group = QGroupBox("Telemetry Recorder")
+        rec_layout = QGridLayout()
+        rec_layout.addWidget(QLabel("Episodes Dir:"), 0, 0)
+        self.rec_dir_input = QLineEdit("recorded_episodes")
+        rec_layout.addWidget(self.rec_dir_input, 0, 1, 1, 3)
+        rec_layout.addWidget(QLabel("Prompt:"), 1, 0)
+        self.rec_prompt_input = QLineEdit("")
+        rec_layout.addWidget(self.rec_prompt_input, 1, 1, 1, 3)
+        rec_layout.addWidget(QLabel("Base Cam URL (blank=auto):"), 2, 0)
+        self.rec_base_cam_input = QLineEdit("")
+        rec_layout.addWidget(self.rec_base_cam_input, 2, 1, 1, 3)
+        rec_layout.addWidget(QLabel("Wrist Cam URL (blank=auto):"), 3, 0)
+        self.rec_wrist_cam_input = QLineEdit("")
+        rec_layout.addWidget(self.rec_wrist_cam_input, 3, 1, 1, 3)
+        self.rec_cameras_checkbox = QCheckBox("Record Cameras")
+        self.rec_cameras_checkbox.setChecked(True)
+        self.rec_cameras_checkbox.setToolTip("If unchecked, recording will not start/consume camera streams.")
+        rec_layout.addWidget(self.rec_cameras_checkbox, 4, 0, 1, 2)
+        rec_layout.addWidget(QLabel("FPS:"), 5, 0)
+        self.rec_fps_input = QLineEdit("10")
+        rec_layout.addWidget(self.rec_fps_input, 5, 1)
+        rec_layout.addWidget(QLabel("Resize (0=native):"), 5, 2)
+        self.rec_resize_input = QLineEdit("0")
+        rec_layout.addWidget(self.rec_resize_input, 5, 3)
+        rec_layout.addWidget(QLabel("State UDP bind:"), 6, 0)
+        self.rec_state_udp_input = QLineEdit("0.0.0.0:5555")
+        rec_layout.addWidget(self.rec_state_udp_input, 6, 1)
+        rec_layout.addWidget(QLabel("Action UDP bind:"), 6, 2)
+        self.rec_action_udp_input = QLineEdit("")
+        rec_layout.addWidget(self.rec_action_udp_input, 6, 3)
+        start_rec_btn = QPushButton("Start Recorder")
+        start_rec_btn.clicked.connect(self.start_recorder)
+        stop_rec_btn = QPushButton("Stop Recorder")
+        stop_rec_btn.clicked.connect(self.stop_recorder)
+        rec_layout.addWidget(start_rec_btn, 7, 0, 1, 2)
+        rec_layout.addWidget(stop_rec_btn, 7, 2, 1, 2)
+        recorder_group.setLayout(rec_layout)
+        right_side_layout.addWidget(recorder_group)
         
         main_layout.addLayout(right_side_layout)
         self.setLayout(main_layout)
@@ -464,5 +504,22 @@ class RealControlPage(QWidget):
     def _on_diagnostics_toggled(self, checked):
         mode = "ON" if checked else "OFF"
         self.parent.send_command(f"DIAGNOSTICS,{mode}")
+
+    def start_recorder(self):
+        episodes_dir = self.rec_dir_input.text()
+        prompt = self.rec_prompt_input.text()
+        base_cam = self.rec_base_cam_input.text().strip()
+        wrist_cam = self.rec_wrist_cam_input.text().strip()
+        fps = self.rec_fps_input.text().strip()
+        resize = self.rec_resize_input.text().strip()
+        state_udp = self.rec_state_udp_input.text().strip()
+        action_udp = self.rec_action_udp_input.text().strip()
+        # Normalize commas in command; empty strings are allowed for cams/action_udp
+        parts = ["START_RECORDER", episodes_dir, prompt, base_cam, wrist_cam, fps, resize, state_udp, action_udp]
+        cmd = ",".join(parts)
+        self.parent.send_command(cmd)
+
+    def stop_recorder(self):
+        self.parent.send_command("STOP_RECORDER")
 
 

@@ -21,12 +21,18 @@ picamera2==0.3.30
 pillow==11.2.1
 imageio==2.37.0
 numpy-stl==3.2.0
+requests==2.32.3
 
 # Optional AI/YOLO (install wheels appropriate for your platform)
 ultralytics
 torch
 torchvision
 torchaudio
+
+# =============================================================================
+# DATASETS & EXPORT (OPTIONAL)
+# =============================================================================
+lerobot
 
 # =============================================================================
 # VISUALIZATION & GUI
@@ -52,6 +58,7 @@ pandas==2.3.0
 pytest==8.4.1
 pytest-mock==3.14.1
 pre_commit==4.2.0
+tyro==0.8.7
 
 # =============================================================================
 # UTILITY PACKAGES

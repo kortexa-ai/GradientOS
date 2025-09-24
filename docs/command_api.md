@@ -59,7 +59,7 @@ This module contains a `handle_...` function for every high-level action the rob
 -   **Parameters:**
     -   `roll, pitch, yaw` (float, required): Target orientation in degrees, XYZ Euler order.
     -   `duration_s` (float, optional): Desired motion duration in seconds (≥ 0.1 s). Defaults to `1.0` for a gentle re-orientation.
-    -   `closed_loop` (bool, optional): If `true`, executes in 400 Hz closed-loop mode for maximum accuracy; otherwise runs open-loop at 1300 Hz (default).
+    -   `closed_loop` (bool, optional): If `true`, executes in 50 Hz closed-loop mode for maximum accuracy; otherwise runs open-loop at 100 Hz (default).
 -   **Blocking:** Yes — the command returns only after the orientation move has finished.
 
 ##### Effect of `duration_s`

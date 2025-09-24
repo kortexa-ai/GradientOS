@@ -7,6 +7,9 @@ import sys
 import os
 import numpy as np # Added for gripper angle conversion
 import argparse
+import threading
+import subprocess
+import json
 
 try:
     from .arm_controller import (
@@ -88,6 +91,32 @@ def main():
         in_calibration_mode = False
         calibrating_servo_id = None
         calibration_client_addr = None
+
+        # --- Telemetry publisher state ---
+        telemetry_thread = None
+        telemetry_stop_event = threading.Event()
+        telemetry_target = None  # (ip, port)
+        telemetry_hz = 10
+
+        def _telemetry_loop():
+            period = 1.0 / max(1, int(telemetry_hz))
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            while not telemetry_stop_event.is_set():
+                try:
+                    q = servo_driver.get_current_arm_state_rad(verbose=False)
+                    g = utils.current_gripper_angle_rad if utils.gripper_present else None
+                    msg = {"t": time.time(), "joints": [float(x) for x in q]}
+                    if g is not None:
+                        msg["gripper"] = float(g)
+                    if telemetry_target is not None:
+                        udp.sendto(json.dumps(msg).encode("utf-8"), telemetry_target)
+                except Exception:
+                    pass
+                time.sleep(period)
+
+        # --- Episode recorder process state ---
+        recorder_proc = None
+        camera_proc = None
 
         while True:
             try:
@@ -427,6 +456,181 @@ def main():
                         command_api.handle_run_trajectory(name, use_cache=cache, loop_override=loop_override)
                     except IndexError:
                         print("[Controller] Error: Invalid RUN_TRAJECTORY command. Use 'RUN_TRAJECTORY,name,[use_cache],[loop_override]'.")
+
+                # ------------------------------------------------------------------
+                # Telemetry control and episode recorder
+                # ------------------------------------------------------------------
+                elif command == "START_TELEMETRY":
+                    try:
+                        target = parts[1]
+                        hz = int(parts[2]) if len(parts) > 2 and parts[2].strip() != "" else 10
+                        host, port = target.rsplit(":", 1)
+                        telemetry_hz = max(1, hz)
+                        telemetry_target = (host, int(port))
+                        if telemetry_thread and telemetry_thread.is_alive():
+                            telemetry_stop_event.set()
+                            telemetry_thread.join(timeout=0.5)
+                            telemetry_stop_event.clear()
+                        telemetry_thread = threading.Thread(target=_telemetry_loop, daemon=True)
+                        telemetry_thread.start()
+                        try:
+                            sock.sendto(f"ACK,START_TELEMETRY,{target},{telemetry_hz}".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                        print(f"[Controller] Telemetry started to {telemetry_target} at {telemetry_hz} Hz")
+                    except Exception as e:
+                        print(f"[Controller] Error starting telemetry: {e}")
+
+                elif command == "STOP_TELEMETRY":
+                    try:
+                        if telemetry_thread and telemetry_thread.is_alive():
+                            telemetry_stop_event.set()
+                            telemetry_thread.join(timeout=0.5)
+                        telemetry_thread = None
+                        telemetry_stop_event.clear()
+                        try:
+                            sock.sendto("ACK,STOP_TELEMETRY".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                        print("[Controller] Telemetry stopped")
+                    except Exception:
+                        pass
+
+                elif command == "START_RECORDER":
+                    # START_RECORDER,episodes_dir,prompt,base_cam,wrist_cam,fps,resize[,state_udp[,action_udp]]
+                    try:
+                        episodes_dir = parts[1]
+                        prompt = parts[2] if len(parts) > 2 else ""
+                        base_cam = parts[3] if len(parts) > 3 and parts[3] != "" else None
+                        wrist_cam = parts[4] if len(parts) > 4 and parts[4] != "" else None
+                        # Honor explicit camera disable sentinels
+                        disable_vals = {"off", "none", "disabled"}
+                        base_disabled = isinstance(base_cam, str) and base_cam.lower() in disable_vals
+                        wrist_disabled = isinstance(wrist_cam, str) and wrist_cam.lower() in disable_vals
+                        if base_disabled:
+                            base_cam = None
+                        if wrist_disabled:
+                            wrist_cam = None
+                        fps = int(parts[5]) if len(parts) > 5 and parts[5] != "" else 10
+                        resize = int(parts[6]) if len(parts) > 6 and parts[6] != "" else 256
+                        state_udp = parts[7] if len(parts) > 7 and parts[7] != "" else "0.0.0.0:5555"
+                        action_udp = parts[8] if len(parts) > 8 and parts[8] != "" else None
+
+                        # If camera URLs are not provided or set to 'auto', start internal MJPEG server(s)
+                        need_auto_cams = (base_cam in (None, "", "auto")) and (wrist_cam in (None, "", "auto")) and not (base_disabled and wrist_disabled)
+                        if need_auto_cams:
+                            try:
+                                cam_cmd = [
+                                    sys.executable, "-m", "gradient_os.vision", "mjpeg",
+                                    "--host", "0.0.0.0",
+                                    "--port", "8080",
+                                    "--both",
+                                    # Prefer training-friendly 2:1 output to avoid post-resize
+                                    "--width", "640", "--height", "320",
+                                    "--fps", "30",
+                                    "--vflip",
+                                    "--hflip",
+                                    "--no-overlay",
+                                ]
+                                print(f"[Controller] Auto-starting camera streamer (vision.mjpeg): {' '.join(cam_cmd)}")
+                                # Stop existing camera proc if any
+                                if camera_proc and camera_proc.poll() is None:
+                                    try:
+                                        camera_proc.terminate(); camera_proc.wait(timeout=1.0)
+                                    except Exception:
+                                        pass
+                                camera_proc = subprocess.Popen(cam_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                # Assign local URLs for recorder
+                                base_cam = "http://127.0.0.1:8080/cam0.mjpg"
+                                wrist_cam = "http://127.0.0.1:8080/cam1.mjpg"
+                                print(f"[Controller] Cameras will be read from {base_cam} and {wrist_cam}")
+                            except Exception as e:
+                                print(f"[Controller] WARNING: Failed to auto-start cameras: {e}")
+
+                        # Stop existing recorder if running
+                        if recorder_proc and recorder_proc.poll() is None:
+                            print("[Controller] Recorder already running; restarting with new settings...")
+                            try:
+                                recorder_proc.terminate()
+                                recorder_proc.wait(timeout=1.0)
+                            except Exception:
+                                pass
+
+                        cmd = [
+                            sys.executable, "-m", "gradient_os.telemetry.record_episode",
+                            "--episodes-dir", episodes_dir,
+                            "--prompt", prompt,
+                            "--fps", str(fps),
+                            "--state-udp", state_udp,
+                            "--no-mjpeg-autostart",
+                        ]
+                        if resize and int(resize) > 0:
+                            cmd += ["--resize", str(resize)]
+                        if base_disabled and wrist_disabled:
+                            cmd += ["--no-cameras"]
+                        if base_cam: cmd += ["--base-cam", base_cam]
+                        if wrist_cam: cmd += ["--wrist-cam", wrist_cam]
+                        if action_udp: cmd += ["--action-udp", action_udp]
+
+                        print(f"[Controller] Starting recorder: {' '.join(cmd)}")
+                        recorder_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+                        # Start internal telemetry publisher to localhost if state_udp is localhost-bound
+                        try:
+                            host, port = state_udp.rsplit(":", 1)
+                            # If binding to 0.0.0.0, send to 127.0.0.1
+                            send_host = "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+                            telemetry_hz = max(1, fps)
+                            telemetry_target = (send_host, int(port))
+                            if telemetry_thread and telemetry_thread.is_alive():
+                                telemetry_stop_event.set()
+                                telemetry_thread.join(timeout=0.5)
+                                telemetry_stop_event.clear()
+                            telemetry_thread = threading.Thread(target=_telemetry_loop, daemon=True)
+                            telemetry_thread.start()
+                        except Exception:
+                            pass
+
+                        try:
+                            sock.sendto("ACK,START_RECORDER".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[Controller] Error starting recorder: {e}")
+                        try:
+                            sock.sendto("ERROR,START_RECORDER".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+
+                elif command == "STOP_RECORDER":
+                    try:
+                        if recorder_proc and recorder_proc.poll() is None:
+                            recorder_proc.terminate()
+                            try:
+                                recorder_proc.wait(timeout=1.5)
+                            except Exception:
+                                pass
+                        recorder_proc = None
+                        # Stop auto-started camera streamer if we launched it
+                        if camera_proc and camera_proc.poll() is None:
+                            try:
+                                camera_proc.terminate(); camera_proc.wait(timeout=1.5)
+                            except Exception:
+                                pass
+                        camera_proc = None
+                        # Optionally stop telemetry if we started it for recorder
+                        if telemetry_thread and telemetry_thread.is_alive():
+                            telemetry_stop_event.set()
+                            telemetry_thread.join(timeout=0.5)
+                            telemetry_thread = None
+                            telemetry_stop_event.clear()
+                        try:
+                            sock.sendto("ACK,STOP_RECORDER".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                        print("[Controller] Recorder stopped")
+                    except Exception as e:
+                        print(f"[Controller] Error stopping recorder: {e}")
 
                 # Default case for raw joint angles
                 else:

@@ -18,7 +18,7 @@ python3 run_controller.py
 
 Now, any relevant move command you send to the running controller will create a new diagnostic session.
 
-**Note:** When live diagnostics are active, the open-loop executor will be capped at **400 Hz** (instead of its usual 1300 Hz) to account for the overhead of reading servo feedback for error reporting. A warning will be printed to the console when this happens.
+**Note:** When live diagnostics are active, the open-loop executor remains at the default **100 Hz**. Historical mentions of higher open-loop frequencies are deprecated.
 
 ### Output Folder Structure
 

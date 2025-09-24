@@ -783,7 +783,7 @@ def _closed_loop_executor_thread(
 
     Args:
         joint_path: The dense list of target joint angle configurations.
-        frequency: The target execution frequency for the control loop (e.g., 200 Hz).
+        frequency: The target execution frequency for the control loop (default 50 Hz).
         diagnostics: Whether to generate and save timing and error charts.
     """
     # Honor global diagnostics toggle

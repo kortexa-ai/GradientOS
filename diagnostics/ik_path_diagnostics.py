@@ -22,8 +22,7 @@ Arguments
 
 --json  file           Use points loaded from a JSON file (list of [x,y,z]).
 
---closed-loop          If passed, the script will also compute closed-loop
-                       metrics assuming a 400 Hz execution (joint velocity &
+                       metrics assuming a 50 Hz execution (joint velocity &
                        acceleration).
 
 Outputs
@@ -72,7 +71,7 @@ def main() -> None:
                     help="Generate N-point straight line from current tip offset by (dx,dy,dz)")
     ap.add_argument("--json", type=Path, help="Load list of [x,y,z] points from JSON file")
     ap.add_argument("--closed-loop", action="store_true", dest="closed_loop",
-                    help="Compute closed-loop metrics (400 Hz) in addition to open-loop")
+                    help="Compute closed-loop metrics (50 Hz) in addition to open-loop")
     args = ap.parse_args()
 
     if not args.line and not args.json:

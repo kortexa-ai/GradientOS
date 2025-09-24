@@ -151,7 +151,8 @@ def mjpeg_server(host: str,
                  hflip: bool,
                  force_both: bool,
                  proc_cfg: Optional[dict] = None,
-                 ai_cfg: Optional[dict] = None) -> int:
+                 ai_cfg: Optional[dict] = None,
+                 overlay_status: bool = True) -> int:
     """Serve MJPEG over HTTP. Auto-uses two cameras if available unless forced single."""
     if not PICAMERA2_AVAILABLE:
         print("❌ PiCamera2 not available. Install with: pip install picamera2")
@@ -352,24 +353,26 @@ def mjpeg_server(host: str,
                                     pass
                         if res.get("keypoints"):
                             frame_out = YOLODetector.draw_keypoints(frame_out, res["keypoints"])
-                        # Always render YOLO status even with 0 detections
-                        try:
-                            import cv2
-                            cv2.putText(frame_out, f"{model_label}: {len(dets)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
-                        except Exception:
-                            pass
+                        if overlay_status:
+                            # Render YOLO status even with 0 detections
+                            try:
+                                import cv2
+                                cv2.putText(frame_out, f"{model_label}: {len(dets)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+                            except Exception:
+                                pass
                     else:
-                        # Indicate YOLO is not active/available
-                        try:
-                            import cv2
-                            status = f"{model_label}: OFF"
-                            if ai_cfg:
-                                err = ai_cfg.get("_init_error", "")
-                                if err:
-                                    status = f"{model_label}: OFF ({err[:30]})"
-                            cv2.putText(frame_out, status, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        except Exception:
-                            pass
+                        if overlay_status:
+                            # Indicate YOLO is not active/available
+                            try:
+                                import cv2
+                                status = f"{model_label}: OFF"
+                                if ai_cfg:
+                                    err = ai_cfg.get("_init_error", "")
+                                    if err:
+                                        status = f"{model_label}: OFF ({err[:30]})"
+                                cv2.putText(frame_out, status, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            except Exception:
+                                pass
 
                     jpeg = encode_jpeg(frame_out, jpeg_quality)
                     if jpeg is None:
@@ -447,22 +450,24 @@ def mjpeg_server(host: str,
                             pass
                 if res.get("keypoints"):
                     frame_out = YOLODetector.draw_keypoints(frame_out, res["keypoints"])
-                try:
-                    import cv2
-                    cv2.putText(frame_out, f"{model_label}: {len(dets)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
-                except Exception:
-                    pass
+                if overlay_status:
+                    try:
+                        import cv2
+                        cv2.putText(frame_out, f"{model_label}: {len(dets)}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+                    except Exception:
+                        pass
             else:
-                try:
-                    import cv2
-                    status = f"{model_label}: OFF"
-                    if ai_cfg:
-                        err = ai_cfg.get("_init_error", "")
-                        if err:
-                            status = f"{model_label}: OFF ({err[:30]})"
-                    cv2.putText(frame_out, status, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                except Exception:
-                    pass
+                if overlay_status:
+                    try:
+                        import cv2
+                        status = f"{model_label}: OFF"
+                        if ai_cfg:
+                            err = ai_cfg.get("_init_error", "")
+                            if err:
+                                status = f"{model_label}: OFF ({err[:30]})"
+                        cv2.putText(frame_out, status, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    except Exception:
+                        pass
 
             jpeg = encode_jpeg(frame_out, jpeg_quality)
             if jpeg is None:
@@ -502,8 +507,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(
         command="stream",
         camera=0,
-        width=1280,
-        height=960,
+        width=640,
+        height=480,
         fps=30,
         duration=0,
     )
@@ -514,22 +519,22 @@ def build_parser() -> argparse.ArgumentParser:
     # init
     p_init = subparsers.add_parser("init", help="Test camera initialization and capture one frame")
     p_init.add_argument("--camera", type=int, default=0)
-    p_init.add_argument("--width", type=int, default=1280)
-    p_init.add_argument("--height", type=int, default=960)
+    p_init.add_argument("--width", type=int, default=640)
+    p_init.add_argument("--height", type=int, default=480)
     p_init.add_argument("--fps", type=int, default=30)
 
     # processing
     p_proc = subparsers.add_parser("processing", help="Run basic image processing checks")
     p_proc.add_argument("--camera", type=int, default=0)
-    p_proc.add_argument("--width", type=int, default=1280)
-    p_proc.add_argument("--height", type=int, default=960)
+    p_proc.add_argument("--width", type=int, default=640)
+    p_proc.add_argument("--height", type=int, default=480)
     p_proc.add_argument("--fps", type=int, default=30)
 
     # stream
     p_stream = subparsers.add_parser("stream", help="Stream frames and print FPS to console")
     p_stream.add_argument("--camera", type=int, default=0)
-    p_stream.add_argument("--width", type=int, default=1280)
-    p_stream.add_argument("--height", type=int, default=960)
+    p_stream.add_argument("--width", type=int, default=640)
+    p_stream.add_argument("--height", type=int, default=480)
     p_stream.add_argument("--fps", type=int, default=30)
     p_stream.add_argument("--duration", type=int, default=0, help="Duration in seconds (0 = until Ctrl+C)")
 
@@ -538,13 +543,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_http.add_argument("--host", type=str, default="0.0.0.0")
     p_http.add_argument("--port", type=int, default=8080)
     p_http.add_argument("--camera", type=int, default=None, help="Camera index for single-camera mode (omit to auto-use dual if available)")
-    p_http.add_argument("--width", type=int, default=1280)
-    p_http.add_argument("--height", type=int, default=960)
+    p_http.add_argument("--width", type=int, default=640)
+    p_http.add_argument("--height", type=int, default=480)
     p_http.add_argument("--fps", type=int, default=30)
     p_http.add_argument("--jpeg-quality", type=int, default=80)
     p_http.add_argument("--vflip", action="store_true")
     p_http.add_argument("--hflip", action="store_true")
     p_http.add_argument("--both", action="store_true", help="Force dual-camera mode (cam 0 and 1)")
+    p_http.add_argument("--no-overlay", action="store_true", help="Disable on-frame status overlays")
 
     # Sub-mode: image processing overlay
     http_sub = p_http.add_subparsers(dest="http_mode")
@@ -688,6 +694,7 @@ def main() -> int:
             force_both=getattr(args, "both", False),
             proc_cfg=proc_cfg,
             ai_cfg=ai_cfg,
+            overlay_status=not getattr(args, "no_overlay", False),
         )
 
     parser.error("Unknown command")
