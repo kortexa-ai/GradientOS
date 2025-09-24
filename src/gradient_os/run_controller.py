@@ -267,6 +267,61 @@ def main():
                         print(f"[Controller] Error parsing DIAGNOSTICS command: {e}")
                         sock.sendto("ERROR,DIAGNOSTICS".encode("utf-8"), addr)
 
+                # ------------------------------------------------------------------
+                # NEW: Real-time Cartesian Jogging
+                # ------------------------------------------------------------------
+                elif command == "JOG_START":
+                    try:
+                        command_api.handle_jog_start()
+                        try:
+                            sock.sendto("ACK,JOG_START".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[Controller] Error starting jog: {e}")
+
+                elif command == "JOG_STOP":
+                    try:
+                        command_api.handle_jog_stop()
+                        try:
+                            sock.sendto("ACK,JOG_STOP".encode("utf-8"), addr)
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        print(f"[Controller] Error stopping jog: {e}")
+
+                elif command == "SET_JOG_VELOCITY":
+                    try:
+                        # Expect 6 numeric values: vx, vy, vz (m/s), v_roll, v_pitch, v_yaw (deg/s)
+                        if len(parts) < 7:
+                            print("[Controller] Error: SET_JOG_VELOCITY requires 6 values.")
+                        else:
+                            vx, vy, vz, v_roll, v_pitch, v_yaw = map(float, parts[1:7])
+                            command_api.handle_set_jog_velocity(vx, vy, vz, v_roll, v_pitch, v_yaw)
+                    except ValueError:
+                        print("[Controller] Error: Non-numeric value in SET_JOG_VELOCITY.")
+
+                elif command == "SET_GRIPPER_JOG_VELOCITY":
+                    try:
+                        rate = float(parts[1]) if len(parts) > 1 else 0.0
+                        command_api.handle_set_gripper_jog_velocity(rate)
+                    except ValueError:
+                        print("[Controller] Error: Non-numeric value in SET_GRIPPER_JOG_VELOCITY.")
+
+                elif command == "SET_JOG_DEADMAN":
+                    try:
+                        flag = parts[1].strip().lower() in {"true","1","yes","on","hold"}
+                        command_api.handle_set_jog_deadman(flag)
+                    except Exception:
+                        print("[Controller] Error parsing SET_JOG_DEADMAN.")
+
+                elif command == "SET_JOG_DEBUG":
+                    try:
+                        flag = parts[1].strip().lower() in {"true","1","yes","on"}
+                        command_api.handle_set_jog_debug(flag)
+                    except Exception:
+                        print("[Controller] Error parsing SET_JOG_DEBUG.")
+
                 elif command == "GET_JOINT_ANGLES":
                     arm_deg = np.rad2deg(utils.current_logical_joint_angles_rad)
                     reply = "JOINT_ANGLES," + ",".join(f"{deg:.2f}" for deg in arm_deg)
@@ -342,9 +397,8 @@ def main():
 
                 elif command == "GET_TRAJECTORIES":
                     try:
-                        # Define the path relative to this script's location
-                        script_dir = os.path.dirname(__file__)
-                        traj_dir = os.path.abspath(os.path.join(script_dir, '.', 'recorded_trajectories'))
+                        # Use the canonical recorded trajectories dir from command_api (root-level)
+                        traj_dir = command_api.RECORDED_TRAJ_DIR
 
                         if not os.path.isdir(traj_dir):
                             print(f"[Controller] Trajectory directory not found: {traj_dir}")

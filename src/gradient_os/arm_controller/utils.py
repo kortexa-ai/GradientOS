@@ -166,6 +166,10 @@ trajectory_state = {
     # 6D vector: [vx, vy, vz, v_roll, v_pitch, v_yaw]
     "jog_velocities": np.zeros(6, dtype=float),
     "last_jog_command_time": 0.0,
+    # Deadman gate for jog (must be True to apply non-zero velocities)
+    "jog_deadman": False,
+    # Jog debug logging verbosity flag
+    "jog_debug": False,
 }
 
 

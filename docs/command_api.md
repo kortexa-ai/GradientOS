@@ -91,6 +91,35 @@ SET_ORIENTATION,0,30,0,0.25
 SET_ORIENTATION,0,30,0,1.5,true
 ```
 
+#### `JOG_START`
+-   **Syntax:** `JOG_START`
+-   **Description:** Enables real-time Cartesian jogging mode. While active, the controller runs a high-frequency loop (100 Hz) that integrates target Cartesian and angular velocities and solves IK each step. This mode can run in parallel with trajectory recording and telemetry.
+    -   Backend safety: Linear and angular jog rates are capped server-side; IK solutions are clamped to `LOGICAL_JOINT_LIMITS_RAD` before commanding.
+
+#### `SET_JOG_VELOCITY`
+-   **Syntax:** `SET_JOG_VELOCITY,vx,vy,vz,v_roll,v_pitch,v_yaw`
+-   **Description:** Updates the target jogging velocities.
+-   **Parameters:**
+    -   `vx, vy, vz` (float, required): Linear velocities in meters/second (base frame).
+    -   `v_roll, v_pitch, v_yaw` (float, required): Angular rates in degrees/second (XYZ intrinsic order).
+-   Notes: If no `SET_JOG_VELOCITY` is received for 0.2 s, velocities are auto-zeroed for safety.
+
+#### `JOG_STOP`
+-   **Syntax:** `JOG_STOP`
+-   **Description:** Disables jogging mode and sends a brake command (speed=0) to safely stop motion.
+
+#### `SET_GRIPPER_JOG_VELOCITY`
+-   **Syntax:** `SET_GRIPPER_JOG_VELOCITY,rate_deg_s`
+-   **Description:** Sets the gripper jog angular rate in degrees/second. Effective only while jog mode is active. The backend enforces safety caps and joint limits.
+
+#### `SET_JOG_DEADMAN`
+-   **Syntax:** `SET_JOG_DEADMAN,flag`
+-   **Description:** Enables (`true`) or disables (`false`) the jog deadman gate. When disabled, all jog velocities (including gripper) are forced to zero internally.
+
+#### `SET_JOG_DEBUG`
+-   **Syntax:** `SET_JOG_DEBUG,flag`
+-   **Description:** Turns verbose jog logging on/off. When enabled, the controller logs velocity updates and periodic status lines.
+
 ### State & Utility Commands
 
 #### `STOP`
