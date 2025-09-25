@@ -123,7 +123,9 @@ def main() -> None:
 
     def _build_urls(host: str, port: int, both: bool) -> Tuple[str, Optional[str]]:
         if both:
-            return (f"http://{host}:{port}/cam0.mjpg", f"http://{host}:{port}/cam1.mjpg")
+            # Note: On this platform, cam indices appear inverted versus physical mounting.
+            # Map base → cam1, wrist → cam0 to ensure files land in correct folders.
+            return (f"http://{host}:{port}/cam1.mjpg", f"http://{host}:{port}/cam0.mjpg")
         return (f"http://{host}:{port}/stream.mjpg", None)
 
     auto_enable_cams = not bool(args.no_cameras)

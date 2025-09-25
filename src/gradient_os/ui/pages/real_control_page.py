@@ -179,9 +179,6 @@ class RealControlPage(QWidget):
         state_layout.addWidget(QLabel("Gripper:"), 3, 0)
         self.gripper_val_label = QLabel("0.0°")
         state_layout.addWidget(self.gripper_val_label, 3, 1)
-        refresh_btn = QPushButton("Refresh Position")
-        refresh_btn.clicked.connect(self.refresh_state)
-        state_layout.addWidget(refresh_btn, 4, 0, 1, 4)
         state_group_box.setLayout(state_layout)
         right_side_layout.addWidget(state_group_box)
 
@@ -232,6 +229,83 @@ class RealControlPage(QWidget):
         speed_layout.addWidget(self.diagnostics_checkbox)
         speed_group.setLayout(speed_layout)
         right_side_layout.addWidget(speed_group)
+
+        # Realtime Jog (Buttons)
+        jog_group = QGroupBox("Realtime Jog (Buttons)")
+        jog_layout = QGridLayout()
+
+        # Universal speed entry (mm/s for XYZ, deg/s for RPY) with default 50
+        jog_layout.addWidget(QLabel("Linear Speed (mm/s):"), 0, 0)
+        self.jog_speed_input = QLineEdit("50")
+        self.jog_speed_input.setToolTip("Linear jog speed in mm/s (converted to m/s). Use Speed Dial to scale.")
+        jog_layout.addWidget(self.jog_speed_input, 0, 1)
+        jog_layout.addWidget(QLabel("Orientation Speed (deg/s):"), 0, 2)
+        self.jog_speed_ori_input = QLineEdit("15")
+        self.jog_speed_ori_input.setToolTip("Angular jog speed in deg/s. Use Speed Dial to scale.")
+        jog_layout.addWidget(self.jog_speed_ori_input, 0, 3)
+
+        # Start/Stop and deadman/debug row
+        self.jog_toggle_btn = QPushButton("Start Jog")
+        self.jog_toggle_btn.setCheckable(True)
+        self.jog_toggle_btn.toggled.connect(self._on_jog_toggled)
+        jog_layout.addWidget(self.jog_toggle_btn, 1, 0)
+
+        # Deadman switch (toggle) default ON
+        self.jog_deadman_switch = QCheckBox("Enable Jog (Deadman)")
+        self.jog_deadman_switch.setChecked(True)
+        self.jog_deadman_switch.toggled.connect(self._on_deadman_switch_toggled)
+        jog_layout.addWidget(self.jog_deadman_switch, 1, 1)
+        # Propagate initial ON state to backend
+        try:
+            self.parent.send_command("SET_JOG_DEADMAN,true")
+        except Exception:
+            pass
+
+        self.jog_debug_checkbox = QCheckBox("Debug jog logs")
+        self.jog_debug_checkbox.setChecked(False)
+        self.jog_debug_checkbox.toggled.connect(self._on_jog_debug_toggled)
+        jog_layout.addWidget(self.jog_debug_checkbox, 1, 2)
+
+        # Linear buttons
+        jog_layout.addWidget(self._create_rt_jog_button("+X", axis="x", sign=+1, is_rotation=False), 2, 0)
+        jog_layout.addWidget(self._create_rt_jog_button("+Y", axis="y", sign=+1, is_rotation=False), 2, 1)
+        jog_layout.addWidget(self._create_rt_jog_button("+Z", axis="z", sign=+1, is_rotation=False), 2, 2)
+        jog_layout.addWidget(self._create_rt_jog_button("-X", axis="x", sign=-1, is_rotation=False), 3, 0)
+        jog_layout.addWidget(self._create_rt_jog_button("-Y", axis="y", sign=-1, is_rotation=False), 3, 1)
+        jog_layout.addWidget(self._create_rt_jog_button("-Z", axis="z", sign=-1, is_rotation=False), 3, 2)
+
+        # Angular buttons
+        jog_layout.addWidget(self._create_rt_jog_button("+Roll", axis="roll", sign=+1, is_rotation=True), 4, 0)
+        jog_layout.addWidget(self._create_rt_jog_button("+Pitch", axis="pitch", sign=+1, is_rotation=True), 4, 1)
+        jog_layout.addWidget(self._create_rt_jog_button("+Yaw", axis="yaw", sign=+1, is_rotation=True), 4, 2)
+        jog_layout.addWidget(self._create_rt_jog_button("-Roll", axis="roll", sign=-1, is_rotation=True), 5, 0)
+        jog_layout.addWidget(self._create_rt_jog_button("-Pitch", axis="pitch", sign=-1, is_rotation=True), 5, 1)
+        jog_layout.addWidget(self._create_rt_jog_button("-Yaw", axis="yaw", sign=-1, is_rotation=True), 5, 2)
+
+        # (Zero button removed; deadman or Stop Jog will zero velocities automatically)
+
+        # Internal state for pressed buttons (counts allow multi-press compose)
+        self._jog_linear_counts = {"x": 0, "y": 0, "z": 0}
+        self._jog_angular_counts = {"roll": 0, "pitch": 0, "yaw": 0}
+        # Current commanded jog vector (vx,vy,vz, r,p,y)
+        self._jog_cmd = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        jog_group.setLayout(jog_layout)
+        # Place realtime jog at the top of the left column, above Position Jog
+        left_controls_layout.insertWidget(0, jog_group)
+
+        # Timer to stream jog velocities at 25 Hz
+        self.jog_timer = QTimer(self)
+        self.jog_timer.setInterval(40)
+        self.jog_timer.timeout.connect(self._send_jog_velocity_tick)
+
+        # Removed periodic state polling; we'll refresh on motion completion instead
+
+        # Reduce UI/network load by only sending on change or periodic keepalive
+        self._last_jog_sent = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        self._last_grip_sent = 0.0
+        self._last_jog_send_time_ms = 0
+        self._jog_keepalive_interval_ms = 200
 
         # Telemetry Recorder Controls
         recorder_group = QGroupBox("Telemetry Recorder")
@@ -290,6 +364,8 @@ class RealControlPage(QWidget):
         return button
 
     def _send_jog_move(self, axis, direction):
+        # Pause jog if active to avoid controller thread snapping back
+        self._pause_jog_if_active()
         increment_mm = float(self.pos_increment_combo.currentText())
         increment_m = increment_mm / 1000.0
         delta = {
@@ -301,7 +377,8 @@ class RealControlPage(QWidget):
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
         cmd = f"MOVE_LINE_RELATIVE,{delta[0]},{delta[1]},{delta[2]},{speed_multiplier},{closed_str}"
         self.parent.send_command(cmd)
-        self.refresh_state()
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def refresh_trajectory_list(self):
         self.log_message("Requesting trajectory list...")
@@ -309,12 +386,16 @@ class RealControlPage(QWidget):
         # Results will be handled asynchronously by the main window dispatcher
 
     def _send_orientation_jog(self, axis_index, direction):
+        # Pause jog for orientation moves to avoid competing controllers
+        self._pause_jog_if_active()
         increment_deg = float(self.ori_increment_combo.currentText())
         self.current_ori[axis_index] += increment_deg * direction
         r, p, y = self.current_ori
         cmd = f"SET_ORIENTATION,{r},{p},{y}"
         self.parent.send_command(cmd)
         self.update_state_display()
+        self.refresh_state()
+        self._resume_jog_if_needed()
 
     def update_state_display(self):
         self.x_val_label.setText(f"{self.current_pos[0]:.3f}")
@@ -373,6 +454,7 @@ class RealControlPage(QWidget):
         self.gripper_slider.setValue(0)
 
     def send_command_from_inputs(self):
+        self._pause_jog_if_active()
         cmd_parts = []
         if self.move_line_input.text():
             cmd_parts.append(f"MOVE_LINE,{self.move_line_input.text()}")
@@ -384,6 +466,9 @@ class RealControlPage(QWidget):
             cmd_str = "|".join(cmd_parts)
             self.parent.send_command(cmd_str)
             self.log_message(f"Sent: {cmd_str}")
+            # For composite inputs, assume motion may be non-blocking → refresh on completion
+            self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def log_message(self, msg):
         self.log.append(msg)
@@ -396,18 +481,27 @@ class RealControlPage(QWidget):
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
 
     def go_home(self):
+        self._pause_jog_if_active()
         self.parent.send_command("HOME")
         self.log_message("Sent Home")
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def go_zero(self):
+        self._pause_jog_if_active()
         cmd = ",".join(map(str, POS_ZERO))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Zero: {cmd}")
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def go_rest(self):
+        self._pause_jog_if_active()
         cmd = ",".join(map(str, POS_REST))
         self.parent.send_command(cmd)
         self.log_message(f"Sent Rest: {cmd}")
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def get_position(self):
         self.parent.send_command("GET_POSITION")
@@ -418,6 +512,7 @@ class RealControlPage(QWidget):
             self.log_message("No response or timeout.")
 
     def send_move_line(self):
+        self._pause_jog_if_active()
         input_str = self.move_line_input.text()
         parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
@@ -435,8 +530,11 @@ class RealControlPage(QWidget):
         else:
             cmd = f"MOVE_LINE,{input_str}"
         self.parent.send_command(cmd)
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def send_move_line_rel(self):
+        self._pause_jog_if_active()
         input_str = self.move_line_rel_input.text()
         parts = [p.strip() for p in input_str.split(',') if p.strip() != '']
         closed_str = "true" if self.closed_loop_checkbox.isChecked() else "false"
@@ -448,10 +546,15 @@ class RealControlPage(QWidget):
         else:
             cmd = f"MOVE_LINE_RELATIVE,{input_str}"
         self.parent.send_command(cmd)
+        self._refresh_on_motion_complete()
+        self._resume_jog_if_needed()
 
     def send_set_orientation(self):
+        self._pause_jog_if_active()
         input_str = self.set_ori_input.text()
         self.parent.send_command(f"SET_ORIENTATION,{input_str}")
+        self.refresh_state()
+        self._resume_jog_if_needed()
 
     def send_run_trajectory(self):
         name = self.run_traj_combo.currentText()
@@ -480,12 +583,18 @@ class RealControlPage(QWidget):
             self.parent.send_command(f"FACTORY_RESET,{id_str}")
 
     def send_translate(self):
+        self._pause_jog_if_active()
         input_str = self.translate_input.text()
         self.parent.send_command(f"TRANSLATE,{input_str}")
+        self.refresh_state()
+        self._resume_jog_if_needed()
 
     def send_rotate(self):
+        self._pause_jog_if_active()
         input_str = self.rotate_input.text()
         self.parent.send_command(f"ROTATE,{input_str}")
+        self.refresh_state()
+        self._resume_jog_if_needed()
 
     def _on_speed_dial_changed(self, value):
         mult = self._current_speed_multiplier()
@@ -521,5 +630,154 @@ class RealControlPage(QWidget):
 
     def stop_recorder(self):
         self.parent.send_command("STOP_RECORDER")
+
+    # -----------------------------
+    # Jog helpers
+    # -----------------------------
+    def _on_jog_toggled(self, checked):
+        if checked:
+            self.parent.send_command("JOG_START")
+            # Ensure backend deadman/debug reflect current UI state
+            self._on_deadman_switch_toggled(self.jog_deadman_switch.isChecked())
+            self._on_jog_debug_toggled(self.jog_debug_checkbox.isChecked())
+            self.jog_timer.start()
+            self.jog_toggle_btn.setText("Stop Jog")
+        else:
+            self.jog_timer.stop()
+            self.parent.send_command("JOG_STOP")
+            # Also explicitly disable deadman at backend for safety
+            self.parent.send_command("SET_JOG_DEADMAN,false")
+            self.jog_toggle_btn.setText("Start Jog")
+            # After stopping jog, sync the final pose once
+            self.refresh_state()
+
+    def _update_jog_labels(self):
+        pass
+
+    def _jog_zero_all(self):
+        self._jog_linear_counts = {"x": 0, "y": 0, "z": 0}
+        self._jog_angular_counts = {"roll": 0, "pitch": 0, "yaw": 0}
+        self._jog_cmd = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.parent.send_command("SET_JOG_VELOCITY,0,0,0,0,0,0")
+        self.parent.send_command("SET_GRIPPER_JOG_VELOCITY,0")
+
+    def _send_jog_velocity_tick(self):
+        # Compose command vector from pressed buttons and speed input
+        try:
+            base_speed_mm_s = float(self.jog_speed_input.text().strip())
+        except Exception:
+            base_speed_mm_s = 50.0
+        base_speed_m_s = base_speed_mm_s / 1000.0
+        try:
+            ang_base_deg_s = float(self.jog_speed_ori_input.text().strip())
+        except Exception:
+            ang_base_deg_s = 15.0
+        mult = self._current_speed_multiplier()
+
+        vx = (1 if self._jog_linear_counts["x"] > 0 else -1 if self._jog_linear_counts["x"] < 0 else 0) * base_speed_m_s * mult
+        vy = (1 if self._jog_linear_counts["y"] > 0 else -1 if self._jog_linear_counts["y"] < 0 else 0) * base_speed_m_s * mult
+        vz = (1 if self._jog_linear_counts["z"] > 0 else -1 if self._jog_linear_counts["z"] < 0 else 0) * base_speed_m_s * mult
+
+        # Angular in deg/s from separate control
+        v_roll = (1 if self._jog_angular_counts["roll"] > 0 else -1 if self._jog_angular_counts["roll"] < 0 else 0) * ang_base_deg_s * mult
+        v_pitch = (1 if self._jog_angular_counts["pitch"] > 0 else -1 if self._jog_angular_counts["pitch"] < 0 else 0) * ang_base_deg_s * mult
+        v_yaw = (1 if self._jog_angular_counts["yaw"] > 0 else -1 if self._jog_angular_counts["yaw"] < 0 else 0) * ang_base_deg_s * mult
+
+        if not self.jog_deadman_switch.isChecked():
+            vx = vy = vz = v_roll = v_pitch = v_yaw = 0.0
+
+        # Coalesce sends: only send when changed or on keepalive interval
+        now_ms = int(time.time() * 1000)
+        jog_tuple = (round(vx, 6), round(vy, 6), round(vz, 6), round(v_roll, 3), round(v_pitch, 3), round(v_yaw, 3))
+        should_send = (jog_tuple != self._last_jog_sent) or (now_ms - self._last_jog_send_time_ms >= self._jog_keepalive_interval_ms)
+        if should_send:
+            cmd = f"SET_JOG_VELOCITY,{vx},{vy},{vz},{v_roll},{v_pitch},{v_yaw}"
+            self.parent.send_command(cmd)
+            self._last_jog_sent = jog_tuple
+            self._last_jog_send_time_ms = now_ms
+
+    def _on_deadman_pressed(self):
+        # Legacy (kept for compatibility if we later add a press-and-hold variant)
+        self.parent.send_command("SET_JOG_DEADMAN,true")
+
+    def _on_deadman_released(self):
+        # Legacy (kept for compatibility if we later add a press-and-hold variant)
+        self.parent.send_command("SET_JOG_DEADMAN,false")
+        self._jog_zero_all()
+
+    def _on_deadman_switch_toggled(self, checked):
+        flag = "true" if checked else "false"
+        self.parent.send_command(f"SET_JOG_DEADMAN,{flag}")
+        if not checked:
+            self._jog_zero_all()
+            self.refresh_state()
+
+    def _on_jog_debug_toggled(self, checked):
+        flag = "true" if checked else "false"
+        self.parent.send_command(f"SET_JOG_DEBUG,{flag}")
+
+    # Real-time jog button helpers
+    def _create_rt_jog_button(self, text, axis: str, sign: int, is_rotation: bool):
+        btn = QPushButton(text)
+        btn.setCheckable(False)
+        btn.setFixedSize(100, 40)
+        # Use pressed/released to allow combinations
+        if is_rotation:
+            btn.pressed.connect(partial(self._rt_jog_change, axis, sign, True))
+            btn.released.connect(partial(self._rt_jog_change, axis, -sign, True))
+        else:
+            btn.pressed.connect(partial(self._rt_jog_change, axis, sign, False))
+            btn.released.connect(partial(self._rt_jog_change, axis, -sign, False))
+        return btn
+
+    def _rt_jog_change(self, axis: str, delta: int, is_rotation: bool):
+        # On first press, ensure jog is active and backend state synced
+        if delta > 0:
+            if not self.jog_toggle_btn.isChecked():
+                self.jog_toggle_btn.setChecked(True)  # triggers _on_jog_toggled(True)
+            # Sync deadman state again defensively
+            self._on_deadman_switch_toggled(self.jog_deadman_switch.isChecked())
+
+        if is_rotation:
+            self._jog_angular_counts[axis] = self._jog_angular_counts.get(axis, 0) + delta
+        else:
+            self._jog_linear_counts[axis] = self._jog_linear_counts.get(axis, 0) + delta
+        # Mark last sent as stale so timer will send immediately next tick without spamming
+        self._last_jog_send_time_ms = 0
+
+    def _refresh_on_motion_complete(self):
+        # Ask the controller to block until current motion completes, then query state
+        try:
+            self.parent.send_command("WAIT_FOR_IDLE")
+        except Exception:
+            pass
+        self.parent.send_command("GET_POSITION")
+        self.parent.send_command("GET_GRIPPER_STATE")
+
+    def _pause_jog_if_active(self):
+        # If jog is currently active, stop it and mark for resume to avoid conflicts
+        try:
+            self._resume_jog_after_motion = False
+            if self.jog_toggle_btn.isChecked():
+                self._resume_jog_after_motion = True
+                self.jog_timer.stop()
+                self.parent.send_command("JOG_STOP")
+                self.parent.send_command("SET_JOG_DEADMAN,false")
+        except Exception:
+            pass
+
+    def _resume_jog_if_needed(self):
+        # Restart jog mode if it was active before the motion, syncing switches
+        try:
+            if getattr(self, "_resume_jog_after_motion", False):
+                self.parent.send_command("JOG_START")
+                # Ensure backend reflects current UI toggles
+                self._on_deadman_switch_toggled(self.jog_deadman_switch.isChecked())
+                self._on_jog_debug_toggled(self.jog_debug_checkbox.isChecked())
+                self.jog_timer.start()
+                self.jog_toggle_btn.setChecked(True)
+                self._resume_jog_after_motion = False
+        except Exception:
+            pass
 
 

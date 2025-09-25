@@ -1,0 +1,24 @@
+{
+  "codebase_version": "v2.1",
+  "fps": 10,
+  "features": {
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ]
+    },
+    "observation.images.main": {
+      "dtype": "video"
+    },
+    "observation.images.secondary_0": {
+      "dtype": "video"
+    }
+  }
+}

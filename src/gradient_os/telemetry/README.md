@@ -109,17 +109,29 @@ Install optional dependency once:
 pip install lerobot
 ```
 
-Convert recorded episodes (keeps/resizes to square if requested by `--image-size`):
+Convert recorded episodes. By default, images are NOT resized; pass `--image-size S` to enforce a square resize. The converter now also copies the dataset into a timestamped folder automatically (default root: `/converted_le_robot_datasets`, with a fallback to `~/converted_le_robot_datasets` if permissions fail):
 
 ```bash
 python -m gradient_os.telemetry.convert_to_lerobot \
   --episodes-dir recorded_episodes \
   --repo-id yourname/miniarm \
   --fps 10 \
-  --image-size 256
+  # --image-size 256  # optional, only if you want square resize
 ```
 
-This uses LeRobot’s dataset APIs to pack episodes. See LeRobot for details and dataset tooling.
+This uses LeRobot’s dataset APIs to pack episodes. The local source dataset lives under `${HF_LEROBOT_HOME}/${repo_id}`. A copy is made to `/converted_le_robot_datasets/YYYY-MM-DD_HH-MM-SS/${repo_id}` (or `~/converted_le_robot_datasets/...` if root is not writable) and the final path is printed. See LeRobot for details and dataset tooling.
+
+How to push privately to the Hub:
+
+```bash
+huggingface-cli login  # once
+
+python -m gradient_os.telemetry.convert_to_lerobot \
+  --episodes-dir recorded_episodes \
+  --repo-id yourname/miniarm \
+  --fps 10 \
+  --push-to-hub  # uploads as private by default
+```
 
 ### Troubleshooting
 
