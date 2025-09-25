@@ -39,6 +39,10 @@ open_loop/
 recorded_episodes/*
 !recorded_episodes/.gitkeep
 
+# Converted LeRobot datasets
+converted_le_robot_datasets/*
+!converted_le_robot_datasets/.gitkeep
+
 # IDE and Editor files
 # ----------------------------------------------------------------
 .vscode/
