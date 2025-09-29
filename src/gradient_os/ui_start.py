@@ -137,7 +137,16 @@ class MainWindow(QMainWindow):
                 current_page = current_widget
             
             if current_page == self.real_control:
-                self.real_control.log_message(f"Sent: {command_str}")
+                # Avoid logging high-frequency jog commands to keep UI responsive
+                if not (
+                    command_str.startswith("SET_JOG_VELOCITY")
+                    or command_str.startswith("SET_GRIPPER_JOG_VELOCITY")
+                    or command_str.startswith("SET_JOG_DEADMAN")
+                    or command_str.startswith("SET_JOG_DEBUG")
+                    or command_str.startswith("JOG_START")
+                    or command_str.startswith("JOG_STOP")
+                ):
+                    self.real_control.log_message(f"Sent: {command_str}")
         except Exception as e:
             self._set_status_throttled(f"Error sending: {e}")
 
@@ -231,7 +240,13 @@ class MainWindow(QMainWindow):
                     current_page = current_widget
                 try:
                     if current_page == self.real_control:
-                        self.real_control.log_message(response)
+                        # Gate noisy responses when logs are hidden and diagnostics off
+                        try:
+                            if (self.real_control.show_logs_checkbox.isChecked() or
+                                self.real_control.diagnostics_checkbox.isChecked()):
+                                self.real_control.log_message(response)
+                        except Exception:
+                            pass
                     elif current_page == self.control:
                         self.control.log_message(response)
                 except Exception:

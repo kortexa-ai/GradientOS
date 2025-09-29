@@ -7,6 +7,7 @@ from datetime import datetime
 import shutil
 import argparse
 import pandas as pd
+from gradient_os.telemetry.verify_lerobot import verify as verify_lerobot_dataset
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +41,13 @@ def _read_rgb(path: Optional[Path], target_size: Optional[int]) -> np.ndarray:
     return rgb
 
 
-def _write_video_opencv(output_path: Path, frame_paths: List[Path], fps: int, progress_prefix: Optional[str] = None) -> None:
+def _write_video_opencv(
+    output_path: Path,
+    frame_paths: List[Path],
+    fps: int,
+    progress_prefix: Optional[str] = None,
+    target_size: Optional[int] = None,
+) -> tuple:
     valid_frames: List[np.ndarray] = []
     for p in frame_paths:
         if not p or not p.exists():
@@ -52,6 +59,8 @@ def _write_video_opencv(output_path: Path, frame_paths: List[Path], fps: int, pr
     if not valid_frames:
         valid_frames = [np.zeros((1, 1, 3), dtype=np.uint8)]
     height, width = valid_frames[0].shape[:2]
+    if target_size and target_size > 0:
+        height = width = int(target_size)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(output_path), fourcc, float(fps), (width, height))
@@ -67,6 +76,7 @@ def _write_video_opencv(output_path: Path, frame_paths: List[Path], fps: int, pr
         if progress_prefix is not None and (i % step == 0 or i == total):
             _print_progress(i, total, prefix=progress_prefix)
     writer.release()
+    return (height, width)
 
 
 def _pad_or_trim(arr: np.ndarray, size: int) -> np.ndarray:
@@ -233,6 +243,7 @@ def _build_v21_locally(
                     base_frame_paths,
                     fps,
                     progress_prefix=f"Video main (ep {episode_index})",
+                    target_size=target_size,
                 )
             if wrist_frame_paths:
                 print(f"Writing wrist video for episode {episode_index} ({len(wrist_frame_paths)} frames)...")
@@ -241,6 +252,7 @@ def _build_v21_locally(
                     wrist_frame_paths,
                     fps,
                     progress_prefix=f"Video wrist (ep {episode_index})",
+                    target_size=target_size,
                 )
 
         task_text = meta.get("prompt", "")
@@ -253,20 +265,30 @@ def _build_v21_locally(
             "tasks": [tasks_to_index[task_text]],
         })
 
-        # Simple stats per episode
+        # Simple stats per episode in LeRobot-compatible nested schema
         state_mat = np.vstack(df["observation.state"].to_numpy())
         action_mat = np.vstack(df["action"].to_numpy())
         episodes_stats_lines.append({
             "episode_index": episode_index,
             "length": int(len(rows)),
-            "state_mean": np.mean(state_mat, axis=0).tolist(),
-            "state_std": (np.std(state_mat, axis=0) + 1e-8).tolist(),
-            "state_min": np.min(state_mat, axis=0).tolist(),
-            "state_max": np.max(state_mat, axis=0).tolist(),
-            "action_mean": np.mean(action_mat, axis=0).tolist(),
-            "action_std": (np.std(action_mat, axis=0) + 1e-8).tolist(),
-            "action_min": np.min(action_mat, axis=0).tolist(),
-            "action_max": np.max(action_mat, axis=0).tolist(),
+            "stats": {
+                "observation.state": {
+                    # LeRobot expects 'count' to have shape (1)
+                    "count": [int(len(rows))],
+                    "mean": np.mean(state_mat, axis=0).tolist(),
+                    "std": (np.std(state_mat, axis=0) + 1e-8).tolist(),
+                    "min": np.min(state_mat, axis=0).tolist(),
+                    "max": np.max(state_mat, axis=0).tolist(),
+                },
+                "action": {
+                    # LeRobot expects 'count' to have shape (1)
+                    "count": [int(len(rows))],
+                    "mean": np.mean(action_mat, axis=0).tolist(),
+                    "std": (np.std(action_mat, axis=0) + 1e-8).tolist(),
+                    "min": np.min(action_mat, axis=0).tolist(),
+                    "max": np.max(action_mat, axis=0).tolist(),
+                },
+            },
         })
 
         episode_index += 1
@@ -285,14 +307,78 @@ def _build_v21_locally(
     meta_dir.joinpath("episodes_stats.jsonl").write_text(
         "\n".join(json.dumps(x) for x in episodes_stats_lines) + ("\n" if episodes_stats_lines else ""), encoding="utf-8"
     )
+    # Build features with required shapes for OpenPI/LeRobot loaders
+    features: Dict[str, Any] = {
+        "observation.state": {"dtype": "float32", "shape": [8]},
+        "action": {"dtype": "float32", "shape": [7]},
+    }
+    # Derive image shapes: if target_size set, use square; else infer from first written video or frames
+    main_shape = None
+    wrist_shape = None
+    # If videos were written, we can infer shape from one mp4 (fallback to reading a first frame)
+    try:
+        main_mp4 = next(iter(sorted((video_main_dir.glob("episode_*.mp4")))))
+    except StopIteration:
+        main_mp4 = None
+    try:
+        wrist_mp4 = next(iter(sorted((video_wrist_dir.glob("episode_*.mp4")))))
+    except StopIteration:
+        wrist_mp4 = None
+    def _probe_video_shape(path: Optional[Path]) -> Optional[List[int]]:
+        if not path or not path.exists():
+            return None
+        cap = cv2.VideoCapture(str(path))
+        ok, frame = cap.read(); cap.release()
+        if ok and frame is not None:
+            h, w = frame.shape[:2]
+            return [int(h), int(w), 3]
+        return None
+    if target_size and target_size > 0:
+        main_shape = [int(target_size), int(target_size), 3]
+        wrist_shape = [int(target_size), int(target_size), 3]
+    else:
+        main_shape = _probe_video_shape(main_mp4)
+        wrist_shape = _probe_video_shape(wrist_mp4)
+        # As a last resort, try probing a first image from episodes
+        if main_shape is None:
+            for p in sorted(episodes_root.iterdir()):
+                if (p / "base").exists():
+                    imgs = sorted((p / "base").glob("*.jpg"))
+                    if imgs:
+                        img = cv2.imread(str(imgs[0]), cv2.IMREAD_COLOR)
+                        if img is not None:
+                            h, w = img.shape[:2]; main_shape = [int(h), int(w), 3]
+                            break
+        if wrist_shape is None:
+            for p in sorted(episodes_root.iterdir()):
+                if (p / "wrist").exists():
+                    imgs = sorted((p / "wrist").glob("*.jpg"))
+                    if imgs:
+                        img = cv2.imread(str(imgs[0]), cv2.IMREAD_COLOR)
+                        if img is not None:
+                            h, w = img.shape[:2]; wrist_shape = [int(h), int(w), 3]
+                            break
+    # If still unknown, default to [1,1,3]
+    if main_shape is None:
+        main_shape = [1, 1, 3]
+    if wrist_shape is None:
+        wrist_shape = [1, 1, 3]
+    features["observation.images.main"] = {"dtype": "video", "shape": main_shape}
+    features["observation.images.secondary_0"] = {"dtype": "video", "shape": wrist_shape}
+
+    total_episodes = len(episodes_meta)
+    total_frames = int(sum(ep.get("length", 0) for ep in episodes_meta))
     info: Dict[str, Any] = {
         "codebase_version": "v2.1",
         "fps": int(fps),
-        "features": {
-            "observation.state": {"dtype": "float32", "shape": [8]},
-            "action": {"dtype": "float32", "shape": [7]},
-            "observation.images.main": {"dtype": "video"},
-            "observation.images.secondary_0": {"dtype": "video"},
+        "features": features,
+        "total_episodes": int(total_episodes),
+        "total_frames": int(total_frames),
+        # Provide simple path templates used by some loaders
+        "data_path": "data/chunk-000/episode_{episode_index:06d}.parquet",
+        "video_paths": {
+            "observation.images.main": "videos/chunk-000/observation.images.main/episode_{episode_index:06d}.mp4",
+            "observation.images.secondary_0": "videos/chunk-000/observation.images.secondary_0/episode_{episode_index:06d}.mp4",
         },
     }
     meta_dir.joinpath("info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
@@ -315,6 +401,17 @@ def main() -> None:
         target_size=args.image_size if (args.image_size and args.image_size > 0) else None,
         no_videos=bool(args.no_videos),
     )
+    # Run verification on the produced dataset directory
+    try:
+        # Recompute path in the same way _build_v21_locally does
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # We cannot recompute reliably after time advances; instead, locate the latest subdir
+        root_out = (export_root if export_root.is_absolute() else Path.cwd() / export_root)
+        latest = sorted((p for p in root_out.glob("*/")), key=lambda p: p.name)[-1]
+        dataset_dir = latest / dataset_name
+        verify_lerobot_dataset(dataset_dir)
+    except Exception as e:
+        print(f"Warning: verification step failed: {e}")
 
 
 if __name__ == "__main__":
