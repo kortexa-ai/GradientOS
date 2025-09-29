@@ -28,7 +28,7 @@ class RealControlPage(QWidget):
         left_controls_layout = QVBoxLayout()
         
         # Position Jogging
-        pos_group_box = QGroupBox("Position Jog")
+        self.pos_group_box = QGroupBox("Position Jog")
         pos_layout = QGridLayout()
         
         pos_increment_label = QLabel("Increment (mm):")
@@ -47,11 +47,11 @@ class RealControlPage(QWidget):
         pos_layout.addWidget(self._create_jog_button("-Y", "y", -1), 2, 1)
         pos_layout.addWidget(self._create_jog_button("-Z", "z", -1), 2, 2)
         
-        pos_group_box.setLayout(pos_layout)
-        left_controls_layout.addWidget(pos_group_box)
+        self.pos_group_box.setLayout(pos_layout)
+        left_controls_layout.addWidget(self.pos_group_box)
 
         # Orientation Jogging
-        ori_group_box = QGroupBox("Orientation Jog")
+        self.ori_group_box = QGroupBox("Orientation Jog")
         ori_layout = QGridLayout()
 
         ori_increment_label = QLabel("Increment (deg):")
@@ -70,8 +70,8 @@ class RealControlPage(QWidget):
         ori_layout.addWidget(self._create_jog_button("-Pitch", 1, -1, is_rotation=True), 2, 1)
         ori_layout.addWidget(self._create_jog_button("-Yaw", 2, -1, is_rotation=True), 2, 2)
 
-        ori_group_box.setLayout(ori_layout)
-        left_controls_layout.addWidget(ori_group_box)
+        self.ori_group_box.setLayout(ori_layout)
+        left_controls_layout.addWidget(self.ori_group_box)
         
         # Gripper Control
         self.gripper_group_box = QGroupBox("Gripper")
@@ -97,7 +97,7 @@ class RealControlPage(QWidget):
         left_controls_layout.addWidget(self.gripper_group_box)
 
         # Trajectory Planning
-        traj_group_box = QGroupBox("Trajectory Planning")
+        self.traj_group_box = QGroupBox("Trajectory Planning")
         traj_layout = QVBoxLayout()
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Trajectory Name:"))
@@ -133,11 +133,11 @@ class RealControlPage(QWidget):
         self.loop_traj_btn.setToolTip("If selected, the trajectory will run continuously until STOP is pressed.")
         run_layout.addWidget(self.loop_traj_btn)
         traj_layout.addLayout(run_layout)
-        traj_group_box.setLayout(traj_layout)
-        left_controls_layout.addWidget(traj_group_box)
+        self.traj_group_box.setLayout(traj_layout)
+        left_controls_layout.addWidget(self.traj_group_box)
 
         # Quick Actions
-        quick_box = QGroupBox("Quick Actions")
+        self.quick_box = QGroupBox("Quick Actions")
         quick_layout = QHBoxLayout()
         zero_btn = QPushButton("Zero Joints")
         zero_btn.clicked.connect(self.go_zero)
@@ -145,8 +145,8 @@ class RealControlPage(QWidget):
         rest_btn.clicked.connect(self.go_rest)
         quick_layout.addWidget(zero_btn)
         quick_layout.addWidget(rest_btn)
-        quick_box.setLayout(quick_layout)
-        left_controls_layout.addWidget(quick_box)
+        self.quick_box.setLayout(quick_layout)
+        left_controls_layout.addWidget(self.quick_box)
 
         left_controls_layout.addStretch()
         main_layout.addLayout(left_controls_layout)
@@ -156,7 +156,7 @@ class RealControlPage(QWidget):
         self.current_pos = [0.0, 0.0, 0.0]
         self.current_ori = [0.0, 0.0, 0.0]
         self.current_gripper_deg = 0.0
-        state_group_box = QGroupBox("Robot State")
+        self.state_group_box = QGroupBox("Robot State")
         state_layout = QGridLayout()
         state_layout.addWidget(QLabel("X:"), 0, 0)
         self.x_val_label = QLabel("0.0")
@@ -179,15 +179,33 @@ class RealControlPage(QWidget):
         state_layout.addWidget(QLabel("Gripper:"), 3, 0)
         self.gripper_val_label = QLabel("0.0°")
         state_layout.addWidget(self.gripper_val_label, 3, 1)
-        state_group_box.setLayout(state_layout)
-        right_side_layout.addWidget(state_group_box)
+        self.state_group_box.setLayout(state_layout)
+        right_side_layout.addWidget(self.state_group_box)
 
         self.log = []
+        self._max_log_lines = 100  # reduce log history by ~80% for responsiveness
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
+        try:
+            # Enforce cap at the widget level for efficient trimming
+            self.log_text.document().setMaximumBlockCount(self._max_log_lines)
+        except Exception:
+            pass
+        # Toggle to show/hide live logs (hidden by default to reduce UI churn)
+        self.show_logs_checkbox = QCheckBox("Show Logs")
+        self.show_logs_checkbox.setChecked(False)
+        self.show_logs_checkbox.toggled.connect(self._on_show_logs_toggled)
+        right_side_layout.addWidget(self.show_logs_checkbox)
         right_side_layout.addWidget(self.log_text, 2)
+        self.log_text.setVisible(False)
+        # Coalesced log flushing
+        self._log_buffer = []
+        self._log_flush_timer = QTimer(self)
+        self._log_flush_timer.setSingleShot(True)
+        self._log_flush_timer.timeout.connect(self._flush_log_buffer)
+        self._log_flush_interval_ms = 150
 
-        direct_cmd_box = QGroupBox("Direct Commands")
+        self.direct_cmd_box = QGroupBox("Direct Commands")
         direct_cmd_layout = QGridLayout()
         self.move_line_input = QLineEdit()
         self.move_line_input.setPlaceholderText("e.g., 0.1,0.2,0.3")
@@ -201,8 +219,8 @@ class RealControlPage(QWidget):
         self.set_ori_input.setPlaceholderText("e.g., 90,0,0")
         direct_cmd_layout.addWidget(QLabel("SET_ORIENTATION:"), 2, 0)
         direct_cmd_layout.addWidget(self.set_ori_input, 2, 1)
-        direct_cmd_box.setLayout(direct_cmd_layout)
-        right_side_layout.addWidget(direct_cmd_box)
+        self.direct_cmd_box.setLayout(direct_cmd_layout)
+        right_side_layout.addWidget(self.direct_cmd_box)
         self.send_btn = QPushButton("Send Direct Command")
         self.send_btn.clicked.connect(self.send_command_from_inputs)
         right_side_layout.addWidget(self.send_btn)
@@ -210,7 +228,7 @@ class RealControlPage(QWidget):
         self.closed_loop_checkbox.setChecked(True)
         right_side_layout.addWidget(self.closed_loop_checkbox)
 
-        speed_group = QGroupBox("Speed Multiplier & Diagnostics")
+        self.speed_group = QGroupBox("Speed Multiplier & Diagnostics")
         speed_layout = QHBoxLayout()
         self.speed_dial = QDial()
         self.speed_dial.setNotchesVisible(True)
@@ -227,11 +245,17 @@ class RealControlPage(QWidget):
         self.diagnostics_checkbox.setChecked(False)
         self.diagnostics_checkbox.toggled.connect(self._on_diagnostics_toggled)
         speed_layout.addWidget(self.diagnostics_checkbox)
-        speed_group.setLayout(speed_layout)
-        right_side_layout.addWidget(speed_group)
+        self.speed_group.setLayout(speed_layout)
+        right_side_layout.addWidget(self.speed_group)
+
+        # Focus mode to hide non-essential panels for performance
+        self.focus_mode_checkbox = QCheckBox("Focus Mode (hide extra panels)")
+        self.focus_mode_checkbox.setChecked(True)
+        self.focus_mode_checkbox.toggled.connect(self._on_focus_mode_toggled)
+        right_side_layout.addWidget(self.focus_mode_checkbox)
 
         # Realtime Jog (Buttons)
-        jog_group = QGroupBox("Realtime Jog (Buttons)")
+        self.jog_group = QGroupBox("Realtime Jog (Buttons)")
         jog_layout = QGridLayout()
 
         # Universal speed entry (mm/s for XYZ, deg/s for RPY) with default 50
@@ -290,13 +314,17 @@ class RealControlPage(QWidget):
         # Current commanded jog vector (vx,vy,vz, r,p,y)
         self._jog_cmd = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-        jog_group.setLayout(jog_layout)
+        self.jog_group.setLayout(jog_layout)
         # Place realtime jog at the top of the left column, above Position Jog
-        left_controls_layout.insertWidget(0, jog_group)
+        left_controls_layout.insertWidget(0, self.jog_group)
 
         # Timer to stream jog velocities at 25 Hz
         self.jog_timer = QTimer(self)
-        self.jog_timer.setInterval(40)
+        try:
+            self.jog_timer.setTimerType(Qt.PreciseTimer)
+        except Exception:
+            pass
+        self.jog_timer.setInterval(20)  # 50 Hz for better responsiveness
         self.jog_timer.timeout.connect(self._send_jog_velocity_tick)
 
         # Removed periodic state polling; we'll refresh on motion completion instead
@@ -305,10 +333,10 @@ class RealControlPage(QWidget):
         self._last_jog_sent = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._last_grip_sent = 0.0
         self._last_jog_send_time_ms = 0
-        self._jog_keepalive_interval_ms = 200
+        self._jog_keepalive_interval_ms = 200  # balance responsiveness and load
 
         # Telemetry Recorder Controls
-        recorder_group = QGroupBox("Telemetry Recorder")
+        self.recorder_group = QGroupBox("Telemetry Recorder")
         rec_layout = QGridLayout()
         rec_layout.addWidget(QLabel("Episodes Dir:"), 0, 0)
         self.rec_dir_input = QLineEdit("recorded_episodes")
@@ -344,11 +372,13 @@ class RealControlPage(QWidget):
         stop_rec_btn.clicked.connect(self.stop_recorder)
         rec_layout.addWidget(start_rec_btn, 7, 0, 1, 2)
         rec_layout.addWidget(stop_rec_btn, 7, 2, 1, 2)
-        recorder_group.setLayout(rec_layout)
-        right_side_layout.addWidget(recorder_group)
+        self.recorder_group.setLayout(rec_layout)
+        right_side_layout.addWidget(self.recorder_group)
         
         main_layout.addLayout(right_side_layout)
         self.setLayout(main_layout)
+        # Apply initial focus mode state
+        self._on_focus_mode_toggled(self.focus_mode_checkbox.isChecked())
 
     def check_gripper_presence(self):
         self.parent.send_command("GET_STATUS")
@@ -471,14 +501,63 @@ class RealControlPage(QWidget):
         self._resume_jog_if_needed()
 
     def log_message(self, msg):
+        # Skip logging when logs are hidden and diagnostics are off
+        if not self.show_logs_checkbox.isChecked() and not self.diagnostics_checkbox.isChecked():
+            return
+        # Store in ring buffer and coalesce UI updates
         self.log.append(msg)
-        max_lines = 500
-        if len(self.log) > max_lines:
-            self.log = self.log[-max_lines:]
-            self.log_text.setPlainText("\n".join(self.log))
-        else:
-            self.log_text.appendPlainText(msg)
+        if len(self.log) > self._max_log_lines:
+            self.log = self.log[-self._max_log_lines:]
+            if self.log_text.isVisible():
+                self.log_text.setPlainText("\n".join(self.log))
+                self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+            self._log_buffer.clear()
+            return
+        self._log_buffer.append(msg)
+        if self.log_text.isVisible() and not self._log_flush_timer.isActive():
+            self._log_flush_timer.start(self._log_flush_interval_ms)
+
+    def _flush_log_buffer(self):
+        if not self._log_buffer or not self.log_text.isVisible():
+            self._log_buffer.clear()
+            return
+        text = "\n".join(self._log_buffer)
+        self._log_buffer.clear()
+        self.log_text.appendPlainText(text)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+
+    def _on_show_logs_toggled(self, checked: bool):
+        self.log_text.setVisible(checked)
+        if checked:
+            # Rebuild current view from the stored ring buffer
+            try:
+                self.log_text.setPlainText("\n".join(self.log[-self._max_log_lines:]))
+            except Exception:
+                pass
+            self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+            if self._log_buffer and not self._log_flush_timer.isActive():
+                self._log_flush_timer.start(1)
+        else:
+            # When hiding logs, clear pending flush to reduce churn
+            try:
+                self._log_flush_timer.stop()
+            except Exception:
+                pass
+
+    def _on_focus_mode_toggled(self, checked: bool):
+        # Keep only essential panels visible when checked
+        self.pos_group_box.setVisible(not checked)
+        self.ori_group_box.setVisible(not checked)
+        # Keep gripper controls visible even in focus mode
+        self.gripper_group_box.setVisible(True if checked else True)
+        # Keep trajectory planning visible even in focus mode
+        self.traj_group_box.setVisible(True if checked else True)
+        # Keep Zero/Rest quick actions visible even in focus mode
+        self.quick_box.setVisible(True if checked else True)
+        self.direct_cmd_box.setVisible(not checked)
+        # Keep episode recorder visible even in focus mode
+        self.recorder_group.setVisible(True if checked else True)
+        # Keep robot state and speed diagnostics visible in both modes
 
     def go_home(self):
         self._pause_jog_if_active()
@@ -663,6 +742,13 @@ class RealControlPage(QWidget):
 
     def _send_jog_velocity_tick(self):
         # Compose command vector from pressed buttons and speed input
+        now_ms = int(time.time() * 1000)
+        # Early exit when idle and keepalive not due
+        if (self._jog_linear_counts["x"] == 0 and self._jog_linear_counts["y"] == 0 and self._jog_linear_counts["z"] == 0 and
+            self._jog_angular_counts["roll"] == 0 and self._jog_angular_counts["pitch"] == 0 and self._jog_angular_counts["yaw"] == 0):
+            if self._last_jog_sent == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) and (now_ms - self._last_jog_send_time_ms) < self._jog_keepalive_interval_ms:
+                return
+
         try:
             base_speed_mm_s = float(self.jog_speed_input.text().strip())
         except Exception:
@@ -687,7 +773,6 @@ class RealControlPage(QWidget):
             vx = vy = vz = v_roll = v_pitch = v_yaw = 0.0
 
         # Coalesce sends: only send when changed or on keepalive interval
-        now_ms = int(time.time() * 1000)
         jog_tuple = (round(vx, 6), round(vy, 6), round(vz, 6), round(v_roll, 3), round(v_pitch, 3), round(v_yaw, 3))
         should_send = (jog_tuple != self._last_jog_sent) or (now_ms - self._last_jog_send_time_ms >= self._jog_keepalive_interval_ms)
         if should_send:
@@ -744,6 +829,11 @@ class RealControlPage(QWidget):
             self._jog_linear_counts[axis] = self._jog_linear_counts.get(axis, 0) + delta
         # Mark last sent as stale so timer will send immediately next tick without spamming
         self._last_jog_send_time_ms = 0
+        # Send immediately on press/release to avoid lingering motion while waiting for timer tick
+        try:
+            self._send_jog_velocity_tick()
+        except Exception:
+            pass
 
     def _refresh_on_motion_complete(self):
         # Ask the controller to block until current motion completes, then query state
