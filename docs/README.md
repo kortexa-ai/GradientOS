@@ -47,23 +47,23 @@ Notes:
 
 - Start the proxy manually once the environment is prepared:
   ```bash
-  gradient-api --host 0.0.0.0 --port 8000
+  gradient-api --host 0.0.0.0 --port 4000
   ```
   With no `GRADIENT_API_CORS` set, the API allows requests from any origin. Override `GRADIENT_CONTROLLER_HOST`/`PORT` if the UDP controller runs elsewhere.
 - A React-based telemetry dashboard lives under `web-ui/`. During development:
   ```bash
   cd web-ui
   npm install
-  npm run dev -- --host 0.0.0.0 --port 4000
+  npm run dev -- --host 0.0.0.0 --port 8000
   ```
-  Visiting `http://<pi-ip>:4000` auto-fills the API endpoint to `http://<pi-ip>:8000`; click **Connect** to subscribe to the `/monitor` SSE stream.
+  Visiting `http://<pi-ip>:8000` auto-fills the API endpoint to `http://<pi-ip>:4000`; click **Connect** to subscribe to the `/monitor` SSE stream.
 - For unattended setups, install the API as a systemd service using the helper scripts in `web-ui/systemd/` (mirrors the arm-controller tooling):
   ```bash
   cd web-ui/systemd
   ./install.sh
   # ./status.sh / ./restart.sh / ./stop.sh / ./uninstall.sh as needed
   ```
-  The unit runs `gradient-api` from the repo virtualenv and binds to `0.0.0.0:8000` by default.
+  The unit runs `gradient-api` from the repo virtualenv and binds to `0.0.0.0:4000` by default.
 
 
 ## Running as a systemd Service

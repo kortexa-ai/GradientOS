@@ -26,7 +26,7 @@ installing, removing, and managing the units.
   ./stop.sh
   ./uninstall.sh
   ```
-  The service binds to `0.0.0.0:8000` by default and uses the project virtualenv.
+  The service binds to `0.0.0.0:4000` by default and uses the project virtualenv.
   Override environment variables inside the unit if you host the controller on a
   different machine.
 

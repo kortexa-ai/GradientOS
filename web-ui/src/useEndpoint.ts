@@ -1,6 +1,6 @@
 export function resolveDefaultApiHost(): string {
   const { protocol, hostname } = window.location;
-  const apiPort = 8000;
+  const apiPort = 4000;
   return `${protocol}//${hostname}:${apiPort}`;
 }
 
