@@ -1,12 +1,21 @@
 import time
+from pathlib import Path
+import sys
 import numpy as np
 import csv
-import pi_controller as c
-import ik_solver
+
+# Ensure repo modules (e.g. pi_controller, ik_solver) can be imported when run anywhere.
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+import pi_controller as c  # noqa: E402
+import ik_solver  # noqa: E402
 
 # --- Test Configuration ---
 NUM_TEST_CYCLES = 10000  # How many loops to run for the test
-LOG_FILE = "performance_log.csv"
+LOG_FILE = SCRIPT_DIR / "performance_log.csv"
 
 def run_performance_test():
     """
@@ -83,7 +92,7 @@ def run_performance_test():
         print("[Tester] No data to write.")
         return
         
-    with open(LOG_FILE, 'w', newline='') as f:
+    with LOG_FILE.open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=timings[0].keys())
         writer.writeheader()
         writer.writerows(timings)
