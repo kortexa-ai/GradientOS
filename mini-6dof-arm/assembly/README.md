@@ -8,6 +8,8 @@ https://docs.google.com/document/d/1Wie1Qy5fnm7ER6EPi7TEyTMOaUlAVmLpw7wHglr-cPQ/
 
 The software instructions are outdated, use USB cable from the Pi to the servo controller and start from the QUICK_START.md document.
 
+CAUTION: If you keep the arm constantly powered, the elbow servos might burn out from the constant load
+
 ## Servo motors
 
 Feetech STS3215-12v 30kg servos
@@ -22,6 +24,17 @@ https://github.com/iotdesignshop/Feetech-tuna/tree/main
 
 Alternative JS software:
 https://bambot.org/feetech.js
+
+Joint - servo id mapping:
+J1 (base rotate) - servo id 10
+J2 (shoulder bend) - servo id 20, 21
+J3 (elbow bend) - servo id 30, 31
+J4 (forearm rotate) - servo id 40
+J5 (wrist bend) - servo id 50
+J6 (wrist rotate) - servo id 60
+J7 (gripper) - servo id 100
+
+Note: J1 has 2:1 reduction, so 45 degrees control is 90 degrees of rotation.
 
 ## Premade disk image
 
