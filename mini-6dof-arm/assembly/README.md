@@ -34,7 +34,7 @@ J5 (wrist bend) - servo id 50
 J6 (wrist rotate) - servo id 60
 J7 (gripper) - servo id 100
 
-Note: J1 has 2:1 reduction, so 45 degrees control is 90 degrees of rotation.
+Note: J1 has 1:2 reduction, so 45 degrees control is 90 degrees of rotation.
 
 ## Premade disk image
 
