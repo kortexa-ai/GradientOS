@@ -12,6 +12,7 @@ CAUTION: If you keep the arm constantly powered, the elbow servos might burn out
 
 ## Servo motors
 
+Feetech URT-1 servo controller
 Feetech STS3215-12v 30kg servos
 Amazon link - https://www.amazon.com/dp/B0F38DS2QT
 Servo software (Windows)
