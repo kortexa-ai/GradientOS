@@ -1,10 +1,20 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import os
+from pathlib import Path
 
-# --- Configuration ---
-LOG_FILE = "performance_log.csv"
-CHART_OUTPUT_FILE = "performance_charts.png"
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Resolve important paths relative to this script so it works no matter the CWD.
+SCRIPT_DIR = Path(__file__).resolve().parent
+LOG_FILE = SCRIPT_DIR / "performance_log.csv"
+CHART_OUTPUT_FILE = SCRIPT_DIR / "performance_charts.png"
+
+def _format_path(path: Path) -> str:
+    """Return a path string relative to repo root if possible for nicer logs."""
+    try:
+        repo_root = SCRIPT_DIR.parent
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
 
 def generate_charts():
     """
@@ -12,12 +22,12 @@ def generate_charts():
     to visualize the performance data.
     """
     # 1. Check if the log file exists
-    if not os.path.exists(LOG_FILE):
-        print(f"ERROR: Log file not found at '{LOG_FILE}'.")
-        print("Please run the 'performance_tester.py' script first to generate the log.")
+    if not LOG_FILE.exists():
+        print(f"ERROR: Log file not found at '{_format_path(LOG_FILE)}'.")
+        print("Please run 'python scripts/performance_tester.py' first to generate the log.")
         return
 
-    print(f"Reading performance data from '{LOG_FILE}'...")
+    print(f"Reading performance data from '{_format_path(LOG_FILE)}'...")
     df = pd.read_csv(LOG_FILE)
 
     # --- 2. Calculate and Print Statistics ---
@@ -54,7 +64,7 @@ def generate_charts():
     
     
     # --- 4. Generate and Save Plots ---
-    print(f"\nGenerating charts and saving to '{CHART_OUTPUT_FILE}'...")
+    print(f"\nGenerating charts and saving to '{_format_path(CHART_OUTPUT_FILE)}'...")
     
     # Create a figure with subplots
     # 2 rows for histograms, 1 row for time series
@@ -98,4 +108,4 @@ def generate_charts():
     print("Charts generated successfully.")
 
 if __name__ == '__main__':
-    generate_charts() 
+    generate_charts()

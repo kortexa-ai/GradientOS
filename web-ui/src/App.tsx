@@ -355,7 +355,7 @@ function SettingsDialog({
               type="text"
               value={apiHost}
               onChange={(event) => onHostChange(event.target.value)}
-              placeholder="http://localhost:8000"
+              placeholder="http://localhost:4000"
               autoComplete="off"
             />
           </label>

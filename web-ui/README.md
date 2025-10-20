@@ -27,8 +27,8 @@ npm install
 
 1. Ensure `gradient-api` is running (e.g. `gradient-api --dev`).
 2. Start the dev server: `npm run dev`.
-3. Open the printed URL (default `http://localhost:4000`). The UI auto-fills the
-   API host to the same origin on port 8000 (e.g. `http://192.168.2.140:8000`
+3. Open the printed URL (default `http://localhost:8000`). The UI auto-fills the
+   API host to the same origin on port 4000 (e.g. `http://192.168.2.140:4000`
    when you browse from another machine). Click **Connect** to subscribe to
    telemetry or change the host if you need a different endpoint.
 

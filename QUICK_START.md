@@ -39,6 +39,15 @@ uv run gradient-ui
 
 The web UI should be available at http://localhost:8000
 
+### Performance profiling
+
+The loop benchmarking utilities now live under `scripts/`:
+
+```bash
+python scripts/performance_tester.py     # creates scripts/performance_log.csv
+python scripts/chart_generator.py        # reads the CSV and saves scripts/performance_charts.png
+```
+
 ### Distributed setup
 
 Clone the repo on the different machines and run the setup script.
