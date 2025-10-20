@@ -3,6 +3,7 @@ import {
   Camera,
   CameraOff,
   Home,
+  Moon,
   Octagon,
   Play,
   Plug,
@@ -30,6 +31,45 @@ type TelemetryEvent = {
   joints?: number[];
   gripper?: number;
 };
+
+type PersistedSettings = {
+  showBoundingBox: boolean;
+};
+
+const SETTINGS_STORAGE_KEY = "gradient-ui:settings";
+
+function loadPersistedSettings(): PersistedSettings {
+  if (typeof window === "undefined") {
+    return { showBoundingBox: true };
+  }
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (!stored) {
+      return { showBoundingBox: true };
+    }
+    const parsed = JSON.parse(stored);
+    if (typeof parsed?.showBoundingBox === "boolean") {
+      return { showBoundingBox: parsed.showBoundingBox };
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return { showBoundingBox: true };
+}
+
+function persistSettings(settings: PersistedSettings) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify(settings),
+    );
+  } catch {
+    // best-effort persistence; ignore quota errors
+  }
+}
 
 function normaliseApiHost(input: string): string {
   const trimmed = input.trim();
@@ -396,6 +436,7 @@ function SettingsDialog({
 export default function App() {
   const [apiHost, setApiHost] = useState(() => resolveDefaultApiHost());
   const [visionHost, setVisionHost] = useState(() => resolveDefaultVisionHost());
+  const [settings, setSettings] = useState<PersistedSettings>(() => loadPersistedSettings());
   const [isConnected, setIsConnected] = useState(false);
   const [latest, setLatest] = useState<TelemetryEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -403,7 +444,6 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [hasAttemptedAutoConnect, setHasAttemptedAutoConnect] = useState(false);
   const [isVisionActive, setIsVisionActive] = useState(false);
-  const [showBoundingBox, setShowBoundingBox] = useState(true);
   const [isStopping, setIsStopping] = useState(false);
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan | null>(null);
   const [plannerPoints, setPlannerPoints] = useState<Point3[]>([]);
@@ -415,11 +455,22 @@ export default function App() {
   const [selectedTrajectory, setSelectedTrajectory] = useState("");
   const [isLoadingSavedTrajectory, setIsLoadingSavedTrajectory] = useState(false);
   const [isHoming, setIsHoming] = useState(false);
+  const [isResting, setIsResting] = useState(false);
+  const showBoundingBox = settings.showBoundingBox;
   const visualizerRef = useRef<ArmVisualizerHandle | null>(null);
   const normalizedApiHost = useMemo(() => normaliseApiHost(apiHost), [apiHost]);
   const normalisedVisionHost = useMemo(
     () => normaliseVisionHost(visionHost),
     [visionHost],
+  );
+
+  const updateSettings = useCallback(
+    (partial: Partial<PersistedSettings>) => {
+      setSettings((prev) => {
+        return { ...prev, ...partial };
+      });
+    },
+    [],
   );
   const visionStreamUrl = useMemo(
     () => `${normalisedVisionHost}/stream.mjpg`,
@@ -779,6 +830,27 @@ export default function App() {
     }
   }, [isHoming, normalizedApiHost]);
 
+  const handleRest = useCallback(async () => {
+    if (isResting) {
+      return;
+    }
+    setError(null);
+    setIsResting(true);
+    try {
+      const response = await fetch(`${normalizedApiHost}/control/rest`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Rest request failed (${response.status})`);
+      }
+    } catch (err) {
+      setError(`Failed to move to rest: ${(err as Error).message ?? "Unknown error"}`);
+    } finally {
+      setIsResting(false);
+    }
+  }, [isResting, normalizedApiHost]);
+
   useEffect(() => {
     if (!hasAttemptedAutoConnect) {
       setHasAttemptedAutoConnect(true);
@@ -810,6 +882,10 @@ export default function App() {
   useEffect(() => {
     setVisionError(null);
   }, [normalisedVisionHost]);
+
+  useEffect(() => {
+    persistSettings(settings);
+  }, [settings]);
 
   const streamingLabel = useMemo(
     () => (isConnected ? "Streaming" : "Disconnected"),
@@ -865,6 +941,17 @@ export default function App() {
               aria-label="Move arm to home position"
             >
               <Home size={18} strokeWidth={2} />
+            </button>
+            <button
+              type="button"
+              onClick={handleRest}
+              disabled={!isConnected || isResting}
+              className={`rounded-full border border-slate-600/60 bg-slate-900/60 p-2 text-slate-300 transition hover:border-slate-400 hover:text-slate-100 ${
+                (!isConnected || isResting) ? "opacity-60 cursor-not-allowed" : ""
+              }`}
+              aria-label="Move arm to rest pose"
+            >
+              <Moon size={18} strokeWidth={2} />
             </button>
             <button
               type="button"
@@ -975,7 +1062,7 @@ export default function App() {
         showBoundingBox={showBoundingBox}
         onHostChange={setApiHost}
         onVisionHostChange={setVisionHost}
-        onShowBoundingBoxChange={setShowBoundingBox}
+        onShowBoundingBoxChange={(value) => updateSettings({ showBoundingBox: value })}
         onClose={() => setIsSettingsOpen(false)}
       />
     </div>

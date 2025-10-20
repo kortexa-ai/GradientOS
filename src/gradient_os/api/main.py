@@ -23,6 +23,9 @@ except ImportError:
     controller_utils = None
     controller_command_api = None
 
+_REST_POSE_RAD = [0.0, -1.4, 1.5, 0.0, 0.0, 0.0]
+_REST_POSE_COMMAND = ",".join(str(value) for value in _REST_POSE_RAD)
+
 
 def _default_controller_port() -> int:
     if controller_utils is not None:
@@ -253,6 +256,13 @@ def create_app() -> FastAPI:
     async def control_home():
         await run_in_threadpool(
             _controller_call_or_503, "0,0,0,0,0,0", timeout=2.0, expect_response=False
+        )
+        return {"status": "ok"}
+
+    @api.post("/control/rest", summary="Move all joints to rest pose")
+    async def control_rest():
+        await run_in_threadpool(
+            _controller_call_or_503, _REST_POSE_COMMAND, timeout=2.0, expect_response=False
         )
         return {"status": "ok"}
 
