@@ -10,6 +10,11 @@ The software instructions are outdated, use USB cable from the Pi to the servo c
 
 CAUTION: If you keep the arm constantly powered, the elbow servos might burn out from the constant load
 
+## Printable parts
+
+Step files can be found in:
+https://drive.google.com/drive/folders/1Zv-EZmE0popnsXJyIiYnnzl3_a3QGW4C
+
 ## Servo motors
 
 Feetech URT-1 servo controller
