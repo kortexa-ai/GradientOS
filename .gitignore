@@ -31,6 +31,7 @@ dist/
 *.log
 performance_log.csv
 performance_charts.png
+servo_telemetry.csv
 trajectory_cache/
 closed_loop/
 open_loop/
