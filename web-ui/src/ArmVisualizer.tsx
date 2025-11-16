@@ -59,9 +59,8 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
   const boundingWallsRef = useRef<THREE.Mesh[]>([]);
   const boundingEdgesRef = useRef<THREE.LineSegments | null>(null);
   const boundingMarkersRef = useRef<THREE.Object3D[]>([]);
-  const setBoundsVisibilityRef = useRef<((visible: boolean) => void) | null>(
-    null,
-  );
+  const setBoundsVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
+  const showBoundingBoxRef = useRef(showBoundingBox);
   const selectionModeRef = useRef(selectionMode);
   const onPointSelectedRef = useRef(onPointSelected);
   const previewGroupRef = useRef<THREE.Group | null>(null);
@@ -397,7 +396,7 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
       updateBoundingMarkers(groundedBBox);
       ensureBoundingWalls(groundedBBox);
       ensureBoundingEdges(groundedBBox);
-      updateBoundsVisibility(showBoundingBox);
+      updateBoundsVisibility(showBoundingBoxRef.current);
 
       if (options?.applySnapshot) {
         const values = targetAnglesRef.current;
@@ -497,7 +496,7 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
         };
 
         initialiseScene();
-        updateBoundsVisibility(showBoundingBox);
+        updateBoundsVisibility(showBoundingBoxRef.current);
         renderer.render(scene, camera);
       },
       undefined,
@@ -714,6 +713,7 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
   }, [joints]);
 
   useEffect(() => {
+    showBoundingBoxRef.current = showBoundingBox;
     const setter = setBoundsVisibilityRef.current;
     if (setter) {
       setter(showBoundingBox);

@@ -25,6 +25,9 @@ except ImportError:
     controller_utils = None
     controller_command_api = None
 
+_REST_POSE_RAD = [0.0, -1.4, 1.5, 0.0, 0.0, 0.0]
+_REST_POSE_COMMAND = ",".join(str(value) for value in _REST_POSE_RAD)
+
 
 def _default_controller_port() -> int:
     if controller_utils is not None:
