@@ -144,7 +144,45 @@ export function ControlPanel({ apiHost, onError }: Props) {
 		await post("/control/jog/debug", { enabled });
 	}, [post]);
 
+	// ------------------------
+	// Incremental jog helpers
+	// ------------------------
+	const performIncrementalLinearJog = useCallback(
+		async (axis: "x" | "y" | "z", direction: 1 | -1) => {
+			// Use the user-configured linear base value from the UI as the incremental step size.
+			// The field is labeled in mm/s for realtime jog, but here we treat the numeric value
+			// as a distance in millimeters for a single incremental move.
+			const stepMeters = (linBaseMmS / 1000.0) * direction;
+			const dx = axis === "x" ? stepMeters : 0;
+			const dy = axis === "y" ? stepMeters : 0;
+			const dz = axis === "z" ? stepMeters : 0;
+			await post("/control/move-line-relative", {
+				dx,
+				dy,
+				dz,
+				speed_multiplier: speedMult,
+				closed: true,
+			});
+		},
+		[post, speedMult, linBaseMmS],
+	);
+
+	const performIncrementalAngularJog = useCallback(
+		async (axis: "roll" | "pitch" | "yaw", direction: 1 | -1) => {
+			// Use the user-configured angular base value from the UI as the incremental step size.
+			const angleDeg = angBaseDegS * direction;
+			await post("/control/rotate", {
+				axis,
+				angle_deg: angleDeg,
+			});
+		},
+		[post, angBaseDegS],
+	);
+
 	const changeLinearCount = useCallback(async (axis: "x" | "y" | "z", delta: number) => {
+		// Realtime jog: adjust the active axis counts and send an immediate tick.
+		// Jog must already be started via the Start button; we do not auto-start here,
+		// so that a simple button tap can remain purely incremental when realtime is off.
 		await ensureJogStarted();
 		linCountsRef.current = { ...linCountsRef.current, [axis]: linCountsRef.current[axis] + delta };
 		// immediate tick to avoid delay
@@ -152,6 +190,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 	}, [ensureJogStarted, sendJogTick]);
 
 	const changeAngularCount = useCallback(async (axis: "x" | "y" | "z", delta: number) => {
+		// Realtime jog: adjust the active axis counts and send an immediate tick.
 		await ensureJogStarted();
 		angCountsRef.current = { ...angCountsRef.current, [axis]: angCountsRef.current[axis] + delta };
 		await sendJogTick();
@@ -251,89 +290,269 @@ export function ControlPanel({ apiHost, onError }: Props) {
 					</label>
 				</div>
 				<div className="grid grid-cols-3 gap-1">
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("x", +1))}
-						onPointerUp={onRelease(() => changeLinearCount("x", -1))}
-						onPointerCancel={() => changeLinearCount("x", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("x", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("x", -1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("x", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("x", -1).catch(() => {});
+							}
+						}}
 					>
 						+X
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("y", +1))}
-						onPointerUp={onRelease(() => changeLinearCount("y", -1))}
-						onPointerCancel={() => changeLinearCount("y", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("y", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("y", -1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("y", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("y", -1).catch(() => {});
+							}
+						}}
 					>
 						+Y
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("z", +1))}
-						onPointerUp={onRelease(() => changeLinearCount("z", -1))}
-						onPointerCancel={() => changeLinearCount("z", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("z", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("z", -1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("z", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("z", -1).catch(() => {});
+							}
+						}}
 					>
 						+Z
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("x", -1))}
-						onPointerUp={onRelease(() => changeLinearCount("x", +1))}
-						onPointerCancel={() => changeLinearCount("x", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("x", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("x", +1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("x", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("x", +1).catch(() => {});
+							}
+						}}
 					>
 						-X
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("y", -1))}
-						onPointerUp={onRelease(() => changeLinearCount("y", +1))}
-						onPointerCancel={() => changeLinearCount("y", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("y", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("y", +1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("y", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("y", +1).catch(() => {});
+							}
+						}}
 					>
 						-Y
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeLinearCount("z", -1))}
-						onPointerUp={onRelease(() => changeLinearCount("z", +1))}
-						onPointerCancel={() => changeLinearCount("z", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeLinearCount("z", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeLinearCount("z", +1).catch(() => {});
+							} else {
+								performIncrementalLinearJog("z", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeLinearCount("z", +1).catch(() => {});
+							}
+						}}
 					>
 						-Z
 					</button>
 				</div>
 				<div className="mt-2 grid grid-cols-3 gap-1">
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("x", +1))}
-						onPointerUp={onRelease(() => changeAngularCount("x", -1))}
-						onPointerCancel={() => changeAngularCount("x", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("x", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("x", -1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("roll", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("x", -1).catch(() => {});
+							}
+						}}
 					>
 						+Roll
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("y", +1))}
-						onPointerUp={onRelease(() => changeAngularCount("y", -1))}
-						onPointerCancel={() => changeAngularCount("y", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("y", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("y", -1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("pitch", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("y", -1).catch(() => {});
+							}
+						}}
 					>
 						+Pitch
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("z", +1))}
-						onPointerUp={onRelease(() => changeAngularCount("z", -1))}
-						onPointerCancel={() => changeAngularCount("z", -1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("z", +1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("z", -1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("yaw", +1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("z", -1).catch(() => {});
+							}
+						}}
 					>
 						+Yaw
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("x", -1))}
-						onPointerUp={onRelease(() => changeAngularCount("x", +1))}
-						onPointerCancel={() => changeAngularCount("x", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("x", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("x", +1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("roll", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("x", +1).catch(() => {});
+							}
+						}}
 					>
 						-Roll
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("y", -1))}
-						onPointerUp={onRelease(() => changeAngularCount("y", +1))}
-						onPointerCancel={() => changeAngularCount("y", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("y", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("y", +1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("pitch", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("y", +1).catch(() => {});
+							}
+						}}
 					>
 						-Pitch
 					</button>
-					<button className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
-						onPointerDown={onPress(() => changeAngularCount("z", -1))}
-						onPointerUp={onRelease(() => changeAngularCount("z", +1))}
-						onPointerCancel={() => changeAngularCount("z", +1)}
+					<button
+						className="rounded bg-slate-800 px-2 py-1 hover:bg-slate-700"
+						onPointerDown={onPress(() => {
+							if (jogEnabled) {
+								changeAngularCount("z", -1).catch(() => {});
+							}
+						})}
+						onPointerUp={onRelease(() => {
+							if (jogEnabled) {
+								changeAngularCount("z", +1).catch(() => {});
+							} else {
+								performIncrementalAngularJog("yaw", -1).catch(() => {});
+							}
+						})}
+						onPointerCancel={() => {
+							if (jogEnabled) {
+								changeAngularCount("z", +1).catch(() => {});
+							}
+						}}
 					>
 						-Yaw
 					</button>
