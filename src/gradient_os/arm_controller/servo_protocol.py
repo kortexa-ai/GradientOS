@@ -1,6 +1,7 @@
 # Contains low-level functions for communicating with Feetech servos,
 # such as packet creation and checksum calculation. 
 from . import utils
+from ..telemetry import alerts
 import time
 import threading
 
@@ -449,7 +450,16 @@ def read_servo_position(servo_id: int) -> int | None:
 
         error_byte = response[4]
         if error_byte != 0:
-            print(f"[Pi ReadPos] Servo {servo_id}: Servo reported error: {error_byte}")
+            names = alerts.names_for_status_bits(int(error_byte))
+            print(f"[Pi ReadPos] Servo {servo_id}: Error {int(error_byte)} ({', '.join(names)})")
+            alerts.push_alert(
+                level="error",
+                kind="SERVO_STATUS",
+                message=f"Servo {int(servo_id)} reported: {', '.join(names) or 'Unknown error'}",
+                servo_ids=[int(servo_id)],
+                details={"status_byte": int(error_byte)},
+                key=f"SERVO_STATUS:{int(servo_id)}:{int(error_byte)}",
+            )
             return None # Or handle specific errors
 
         # Per the datasheet, Current Position can be a signed value in multi-turn mode.
@@ -517,7 +527,16 @@ def read_servo_register_signed_word(servo_id: int, register_address: int) -> int
         
         # Error byte validation
         if response[4] != 0:
-            print(f"[Pi ReadWord] Servo {servo_id}: Servo reported error: {response[4]}")
+            names = alerts.names_for_status_bits(int(response[4]))
+            print(f"[Pi ReadWord] Servo {servo_id}: Error {int(response[4])} ({', '.join(names)})")
+            alerts.push_alert(
+                level="error",
+                kind="SERVO_STATUS",
+                message=f"Servo {int(servo_id)} reported: {', '.join(names) or 'Unknown error'}",
+                servo_ids=[int(servo_id)],
+                details={"status_byte": int(response[4]), "register": int(register_address)},
+                key=f"SERVO_STATUS:{int(servo_id)}:{int(response[4])}",
+            )
             return None
 
         # Convert the 2 data bytes into a signed 16-bit integer (little-endian)
@@ -896,7 +915,16 @@ def sync_read_positions(
 
                 # Error byte validation
                 if packet_candidate[4] != 0:
-                    print(f"[Pi SyncRead] Servo {response_id} reported error: {packet_candidate[4]}")
+                    names = alerts.names_for_status_bits(int(packet_candidate[4]))
+                    print(f"[Pi SyncRead] Servo {response_id} reported error: {int(packet_candidate[4])} ({', '.join(names)})")
+                    alerts.push_alert(
+                        level="error",
+                        kind="SERVO_STATUS",
+                        message=f"Servo {int(response_id)} reported: {', '.join(names) or 'Unknown error'}",
+                        servo_ids=[int(response_id)],
+                        details={"status_byte": int(packet_candidate[4])},
+                        key=f"SERVO_STATUS:{int(response_id)}:{int(packet_candidate[4])}",
+                    )
                     continue # Skip this packet
 
                 # Checksum validation
@@ -914,7 +942,16 @@ def sync_read_positions(
 
         # After parsing all we could, report which servos didn't respond
         if len(expected_ids) > 0:
-            print(f"[Pi SyncRead] Did not receive valid responses for IDs: {list(expected_ids)}")
+            missing = list(expected_ids)
+            print(f"[Pi SyncRead] Did not receive valid responses for IDs: {missing}")
+            alerts.push_alert(
+                level="warning",
+                kind="SYNCREAD_TIMEOUT",
+                message=f"No feedback from servos {', '.join(str(x) for x in missing)} (SyncRead). Check power/wiring/baud.",
+                servo_ids=[int(x) for x in missing if isinstance(x, int)],
+                details={"operation": "sync_read_positions"},
+                key=f"SYNCREAD_TIMEOUT:{','.join(str(x) for x in missing)}",
+            )
 
         parse_dur = time.perf_counter() - parse_start
 
@@ -1034,7 +1071,16 @@ def fast_sync_read_positions(
 
                 # Error byte validation
                 if packet_candidate[4] != 0:
-                    print(f"[Pi SyncRead] Servo {response_id} reported error: {packet_candidate[4]}")
+                    names = alerts.names_for_status_bits(int(packet_candidate[4]))
+                    print(f"[Pi SyncRead] Servo {response_id} reported error: {int(packet_candidate[4])} ({', '.join(names)})")
+                    alerts.push_alert(
+                        level="error",
+                        kind="SERVO_STATUS",
+                        message=f"Servo {int(response_id)} reported: {', '.join(names) or 'Unknown error'}",
+                        servo_ids=[int(response_id)],
+                        details={"status_byte": int(packet_candidate[4])},
+                        key=f"SERVO_STATUS:{int(response_id)}:{int(packet_candidate[4])}",
+                    )
                     continue # Skip this packet
 
                 # Checksum validation
@@ -1052,7 +1098,16 @@ def fast_sync_read_positions(
 
         # After parsing all we could, report which servos didn't respond
         if len(expected_ids) > 0:
-            print(f"[Pi SyncRead] Did not receive valid responses for IDs: {list(expected_ids)}")
+            missing = list(expected_ids)
+            print(f"[Pi SyncRead] Did not receive valid responses for IDs: {missing}")
+            alerts.push_alert(
+                level="warning",
+                kind="SYNCREAD_TIMEOUT",
+                message=f"No feedback from servos {', '.join(str(x) for x in missing)} (SyncRead). Check power/wiring/baud.",
+                servo_ids=[int(x) for x in missing if isinstance(x, int)],
+                details={"operation": "fast_sync_read_positions"},
+                key=f"SYNCREAD_TIMEOUT:{','.join(str(x) for x in missing)}",
+            )
 
         parse_dur = time.perf_counter() - parse_start
 
@@ -1067,5 +1122,116 @@ def fast_sync_read_positions(
         return {}
     finally:
         # Restore the previous serial timeout if we modified it
+        if timeout_s is not None and original_timeout is not None:
+            utils.ser.timeout = original_timeout
+
+
+def sync_read_block(
+    servo_ids: list[int],
+    start_address: int,
+    data_len: int,
+    timeout_s: float | None = None,
+    poll_delay_s: float = 0.0,
+    diagnostics: bool = False,
+) -> dict[int, bytes]:
+    """
+    Perform a generic SYNC READ for a contiguous block of registers starting at `start_address`
+    with length `data_len` for each servo in `servo_ids`.
+
+    Returns a mapping of servo_id -> raw bytes (length == data_len) for all servos that
+    responded with a valid status packet. Missing IDs indicate no valid response was parsed.
+    """
+    if utils.ser is None or not utils.ser.is_open:
+        print("[Pi SyncReadBlk] Serial port not initialized.")
+        return {}
+
+    num_servos = len(servo_ids)
+    if num_servos == 0 or data_len <= 0:
+        return {}
+
+    packet_len_field_value = num_servos + 4
+    packet = bytearray(7 + num_servos + 1)
+    packet[0] = SERVO_HEADER
+    packet[1] = SERVO_HEADER
+    packet[2] = SERVO_BROADCAST_ID
+    packet[3] = packet_len_field_value
+    packet[4] = SERVO_INSTRUCTION_SYNC_READ
+    packet[5] = start_address
+    packet[6] = data_len
+    for i, servo_id in enumerate(servo_ids):
+        packet[7 + i] = servo_id
+    packet[-1] = calculate_checksum(packet[2:-1])
+
+    try:
+        original_timeout = None
+        if timeout_s is not None:
+            original_timeout = utils.ser.timeout
+            utils.ser.timeout = timeout_s
+
+        write_start = time.perf_counter()
+        with _SERIAL_LOCK:
+            utils.ser.reset_input_buffer()
+            utils.ser.write(packet)
+        write_dur = time.perf_counter() - write_start
+
+        if poll_delay_s > 0.0:
+            time.sleep(poll_delay_s)
+
+        # Each status packet size = 2 (hdr) + 1 (id) + 1 (len) + 1 (err) + data_len + 1 (ck)
+        per_packet = 6 + data_len
+        bytes_to_read = num_servos * per_packet
+        read_start = time.perf_counter()
+        with _SERIAL_LOCK:
+            response_data = utils.ser.read(bytes_to_read)
+        read_dur = time.perf_counter() - read_start
+
+        if len(response_data) < per_packet:
+            # Not enough to parse even one packet
+            return {}
+
+        results: dict[int, bytes] = {}
+        expected_ids = set(servo_ids)
+
+        parse_start = time.perf_counter()
+        # Sliding window parse for variable-length status packets
+        i = 0
+        end = len(response_data) - per_packet + 1
+        while i < end:
+            if response_data[i] == SERVO_HEADER and response_data[i + 1] == SERVO_HEADER:
+                pkt = response_data[i : i + per_packet]
+                sid = pkt[2]
+                if sid in expected_ids:
+                    # Validate error == 0 and checksum
+                    if pkt[4] == 0:
+                        if calculate_checksum(pkt[2: (2 + 1 + 1 + 1 + data_len)]) == pkt[-1]:
+                            results[sid] = bytes(pkt[5 : 5 + data_len])
+                            expected_ids.discard(sid)
+                            i += per_packet
+                            continue
+                    else:
+                        names = alerts.names_for_status_bits(int(pkt[4]))
+                        print(f"[Pi SyncReadBlk] Servo {sid} reported error: {int(pkt[4])} ({', '.join(names)})")
+                        alerts.push_alert(
+                            level="error",
+                            kind="SERVO_STATUS",
+                            message=f"Servo {int(sid)} reported: {', '.join(names) or 'Unknown error'}",
+                            servo_ids=[int(sid)],
+                            details={"status_byte": int(pkt[4]), "start_address": int(start_address), "len": int(data_len)},
+                            key=f"SERVO_STATUS:{int(sid)}:{int(pkt[4])}",
+                        )
+                # If not valid, advance by 1 to resync
+                i += 1
+            else:
+                i += 1
+        parse_dur = time.perf_counter() - parse_start
+
+        if diagnostics:
+            _sync_profiles.append((write_dur, read_dur, parse_dur))
+
+        return results
+    except Exception as e:
+        print(f"[Pi SyncReadBlk] Error: {e}")
+        return {}
+    finally:
         if timeout_s is not None and original_timeout is not None:
             utils.ser.timeout = original_timeout

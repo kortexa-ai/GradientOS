@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QGridLayout, QPushButton, QGroupBox, QHBoxLayout, QLineEdit, QMessageBox
 
-from src.gradient_os.ui.widgets import set_label_text
+from gradient_os.ui.widgets import set_label_text
 
 
 class HomePage(QWidget):

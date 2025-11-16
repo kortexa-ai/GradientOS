@@ -15,7 +15,9 @@ fi
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
 UV_AVAILABLE=false
-if command -v uv >/dev/null 2>&1; then
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  VISION_BASE_CMD=(python -m gradient_os.vision.cli)
+elif command -v uv >/dev/null 2>&1; then
   UV_AVAILABLE=true
   VISION_BASE_CMD=(uv run gradient-vision)
 else

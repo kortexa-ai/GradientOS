@@ -8,8 +8,8 @@ from PySide6.QtWidgets import (
     QGroupBox, QSlider, QLineEdit, QButtonGroup, QPlainTextEdit, QMessageBox
 )
 
-from src.gradient_os.ui.constants import POS_HOME, POS_REST, JOINT_NAMES, JOINT_JOG_STEPS_DEG
-from src.gradient_os.ui.widgets import set_label_text
+from gradient_os.ui.constants import POS_HOME, POS_REST, JOINT_NAMES, JOINT_JOG_STEPS_DEG
+from gradient_os.ui.widgets import set_label_text
 
 
 class ControlPage(QWidget):

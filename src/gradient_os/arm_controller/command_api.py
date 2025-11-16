@@ -1108,6 +1108,12 @@ def _jog_controller_thread():
         
         current_position = current_pose_matrix[:3, 3]
         current_orientation = current_pose_matrix[:3, :3]
+        if utils.trajectory_state.get("jog_debug", False):
+            try:
+                curr_eul_deg = R.from_matrix(current_orientation).as_euler('xyz', degrees=True)
+                print(f"[Jog] CURR pos(m)={np.round(current_position,4)} eulXYZ(deg)={np.round(curr_eul_deg,2)}")
+            except Exception:
+                pass
         
         # 2. Get target velocities from global state (respect deadman gate)
         velocities = utils.trajectory_state["jog_velocities"]
@@ -1133,6 +1139,12 @@ def _jog_controller_thread():
         delta_rotation = R.from_rotvec(rotation_vector).as_matrix()
         # Apply the small rotation to the current orientation
         target_orientation = delta_rotation @ current_orientation
+        if utils.trajectory_state.get("jog_debug", False):
+            try:
+                targ_eul_deg = R.from_matrix(target_orientation).as_euler('xyz', degrees=True)
+                print(f"[Jog] TARG pos(m)={np.round(target_position,4)} eulXYZ(deg)={np.round(targ_eul_deg,2)} vel_lin={np.round(linear_vel,4)} vel_ang(deg/s)={np.round(angular_deg_s,1)} dt={dt:.4f}")
+            except Exception:
+                pass
 
         # 4. Solve IK for the new target pose
         q_target = ik_solver.solve_ik(
@@ -1152,6 +1164,9 @@ def _jog_controller_thread():
                 if not np.allclose(q_arr, q_clamped, atol=1e-6):
                     clamped_idx = np.where(np.abs(q_arr - q_clamped) > 1e-6)[0].tolist()
                     print(f"[Jog] NOTE: IK target clamped at joints: {clamped_idx}")
+                if utils.trajectory_state.get("jog_debug", False):
+                    dq = q_clamped - q_current
+                    print(f"[Jog] q_delta(rad)={np.round(dq, 5)} | lin={np.round(linear_vel,4)} m/s, ang={np.round(angular_deg_s,1)} deg/s, dt={dt:.4f}s")
                 # 6. Command servos to the clamped angles. High speed, zero accel for responsiveness.
                 servo_driver.set_servo_positions(q_clamped, 800, 0)
                 q_current = q_clamped # Update our state for the next iteration's IK

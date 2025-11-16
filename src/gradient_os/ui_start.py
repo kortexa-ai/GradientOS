@@ -10,8 +10,10 @@
 # switch_to_calibration, switch_to_control, and switch_to_real_control functions.
 
 import argparse
+import os
 import socket
 import sys
+import signal
 from contextlib import closing
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QStackedWidget, QWidget, QVBoxLayout, QHBoxLayout,
@@ -20,7 +22,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QScrollArea, QButtonGroup, QCheckBox, QDial, QPlainTextEdit
 )
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtGui import QColor, QFont, QIcon, QGuiApplication
 from pathlib import Path
 
 # For numerical operations
@@ -28,21 +30,71 @@ import numpy as np
 
 import time
 from functools import partial
-from src.gradient_os.ui.widgets import set_label_text
-from src.gradient_os.ui.network import UdpClient
-from src.gradient_os.ui.pages.home_page import HomePage
-from src.gradient_os.ui.pages.control_page import ControlPage
-from src.gradient_os.ui.pages.real_control_page import RealControlPage
-from src.gradient_os.ui.pages.tutorials_page import TutorialsPage
-from src.gradient_os.ui.pages.calibration_page import CalibrationPage
+from gradient_os.ui.widgets import set_label_text
+from gradient_os.ui.network import UdpClient
+from gradient_os.ui.pages.home_page import HomePage
+from gradient_os.ui.pages.control_page import ControlPage
+from gradient_os.ui.pages.real_control_page import RealControlPage
+from gradient_os.ui.pages.tutorials_page import TutorialsPage
+from gradient_os.ui.pages.calibration_page import CalibrationPage
 
-from src.gradient_os.ui.constants import POS_ZERO, POS_HOME, POS_REST
+from gradient_os.ui.constants import POS_ZERO, POS_HOME, POS_REST
 
 # Moved to src/gradient_os/ui/pages/home_page.py
 # Moved to src/gradient_os/ui/pages/control_page.py
 # Moved to src/gradient_os/ui/pages/tutorials_page.py
 # Moved to src/gradient_os/ui/pages/calibration_page.py
 # Moved to src/gradient_os/ui/pages/real_control_page.py
+
+def _debug_env_report():
+    try:
+        print("===== Gradient UI Startup Diagnostics =====")
+        print(f"Python: {sys.version.split()[0]}")
+        # Qt versions
+        try:
+            from PySide6 import __version__ as pyside_version
+        except Exception:
+            pyside_version = "unknown"
+        try:
+            from PySide6.QtCore import qVersion
+            qt_version = qVersion()
+        except Exception:
+            qt_version = "unknown"
+        print(f"PySide6: {pyside_version} | Qt: {qt_version}")
+        # Key environment variables that affect GUI startup
+        for k in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_SESSION_TYPE",
+            "SSH_CONNECTION",
+            "QT_QPA_PLATFORM",
+            "QT_QPA_PLATFORM_PLUGIN_PATH",
+            "QT_PLUGIN_PATH",
+        ]:
+            print(f"{k}={os.environ.get(k, '')}")
+        # Helpful hint for deeper Qt plugin diagnostics
+        if os.environ.get("QT_DEBUG_PLUGINS") not in ("1", "true", "TRUE", "on", "ON"):
+            print("Tip: set QT_DEBUG_PLUGINS=1 for detailed Qt plugin loading logs.")
+        print("==========================================")
+    except Exception as e:
+        print(f"[UI DEBUG] Failed to print diagnostics: {e}")
+
+def _install_signal_handlers(app: QApplication):
+    """Allow Ctrl+C (SIGINT) and SIGTERM to gracefully quit the UI."""
+    def _handle(sig, _frame):
+        try:
+            print(f"[UI] Received signal {sig}; quitting application.")
+        except Exception:
+            pass
+        try:
+            QTimer.singleShot(0, app.quit)
+        except Exception:
+            pass
+    for s in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(s, _handle)
+        except Exception:
+            pass
 
 class MainWindow(QMainWindow):
     def __init__(self, pi_ip="mini-arm.local"):
@@ -124,6 +176,15 @@ class MainWindow(QMainWindow):
         print('Stacked widget setup done')
         print('Status bar setup done')
         print('MainWindow init complete')
+        try:
+            scr = QGuiApplication.primaryScreen()
+            if scr:
+                geo = scr.availableGeometry()
+                print(f"Primary screen: {scr.name()} {geo.width()}x{geo.height()} (available)")
+            else:
+                print("Warning: No primary screen detected by Qt.")
+        except Exception:
+            pass
 
     def send_command(self, command_str):
         try:
@@ -356,6 +417,10 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+        try:
+            print("MainWindow closed; event loop will exit if no other windows remain.")
+        except Exception:
+            pass
 
     def repolish(self, widget):
         try:
@@ -406,25 +471,75 @@ def main():
     parser = argparse.ArgumentParser(description='Robot Arm UI')
     parser.add_argument('--pi-ip', type=str, default='mini-arm.local',
                         help='The IP address of the Raspberry Pi.')
+    parser.add_argument('--debug-ui', action='store_true',
+                        help='Enable verbose UI startup diagnostics.')
     args = parser.parse_args()
 
-    app = QApplication(sys.argv)
+    # Basic unhandled exception hook to ensure visibility in terminal
+    def _excepthook(exc_type, exc, tb):
+        print(f"[FATAL] Uncaught exception: {exc_type.__name__}: {exc}")
+        import traceback as _traceback
+        _traceback.print_tb(tb)
+    sys.excepthook = _excepthook
+
+    debug_env = (
+        args.debug_ui
+        or os.environ.get("GRADIENT_UI_DEBUG") in ("1", "true", "TRUE", "on", "ON")
+    )
+
+    if debug_env:
+        _debug_env_report()
+    else:
+        # Print a one-liner with the critical variables when not in full debug
+        print(f"DISPLAY={os.environ.get('DISPLAY','')} XDG_SESSION_TYPE={os.environ.get('XDG_SESSION_TYPE','')} QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM','')}")
+
+    # Create the Qt application with guards around common platform plugin failures
+    try:
+        print("Creating QApplication ...")
+        app = QApplication(sys.argv)
+        print(f"QPA platform: {QGuiApplication.platformName()}")
+        screens = app.screens()
+        print(f"Screens detected: {len(screens)}")
+        if not screens:
+            print("Warning: No screens found. If running over SSH, ensure X forwarding (ssh -X/-Y) or run from local desktop session.")
+    except Exception as e:
+        print(f"[FATAL] Failed to initialize Qt application: {e}")
+        print("If this is a Qt platform plugin error, try: export QT_DEBUG_PLUGINS=1 and re-run.")
+        raise
+
     app.setFont(QFont('Courier New', 12))
     # Load global stylesheet from QSS file in the ui folder (relative path)
     try:
         qss_path = Path(__file__).resolve().parent / "ui" / "app.qss"
         with open(qss_path, 'r') as f:
             app.setStyleSheet(f.read())
+        print('Stylesheet loaded')
     except Exception as e:
         print(f"Warning: failed to load stylesheet: {e}")
     window = MainWindow(pi_ip=args.pi_ip)
     window.show()
-    print('App created')
-    print('Stylesheet set')
-    print('Window shown')
+    print('Window shown (requested)')
+
+    # Ensure terminal Ctrl+C or service stop signals quit cleanly
+    _install_signal_handlers(app)
+
+    # Confirm the event loop is alive shortly after it starts
+    def _after_loop_started():
+        try:
+            print("Event loop heartbeat: UI is responsive.")
+            try:
+                vis = window.isVisible()
+            except Exception:
+                vis = False
+            print(f"MainWindow visible: {vis}")
+        except Exception:
+            pass
+    QTimer.singleShot(250, _after_loop_started)
+
     print('Entering app.exec()')
-    sys.exit(app.exec())
-    print('App exited') # This won't print if hanging in exec
+    exit_code = app.exec()
+    print(f'App exited with code {exit_code}')
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

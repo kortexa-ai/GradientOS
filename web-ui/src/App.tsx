@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { resolveDefaultApiHost, resolveDefaultVisionHost } from "./useEndpoint";
 import { ArmVisualizer, type ArmVisualizerHandle } from "./ArmVisualizer";
+import { TelemetryCharts } from "./TelemetryCharts";
+import ControlPanel from "./ControlPanel";
 import {
   encodePointsForApi,
   previewFromPlannerPayload,
@@ -24,11 +26,33 @@ import {
   type PreviewPlan,
 } from "./previewUtils";
 
+type Alert = {
+  level: "error" | "warning" | "info";
+  kind: string;
+  message: string;
+  servo_ids?: number[];
+  ts?: number;
+  details?: Record<string, unknown>;
+};
+
+type ServoSample = {
+  voltage_v?: number;
+  temp_c?: number;
+  current_a?: number;
+  drive_duty_per_mille?: number;
+  unloading_condition?: number;
+  led_alarm_condition?: number;
+  unloading_bits?: string;
+  led_alarm_bits?: string;
+};
+
 type TelemetryEvent = {
   timestamp: number;
   raw: string;
   joints?: number[];
   gripper?: number;
+  servos?: Record<string, ServoSample>;
+  alerts?: Alert[];
 };
 
 function normaliseApiHost(input: string): string {
@@ -393,6 +417,52 @@ function SettingsDialog({
   );
 }
 
+function AlertsPanel({
+  alerts,
+  onDismiss,
+}: {
+  alerts: Alert[];
+  onDismiss: (index: number) => void;
+}) {
+  if (!alerts || alerts.length === 0) {
+    return null;
+  }
+  const colorFor = (lvl: Alert["level"]) =>
+    lvl === "error"
+      ? "border-rose-500/50 bg-rose-500/10 text-rose-100"
+      : lvl === "warning"
+      ? "border-amber-500/50 bg-amber-500/10 text-amber-100"
+      : "border-cyan-500/40 bg-cyan-500/10 text-cyan-100";
+  const iconFor = (lvl: Alert["level"]) =>
+    lvl === "error" ? <Octagon size={16} /> : lvl === "warning" ? <Octagon size={16} /> : <Octagon size={16} />;
+  return (
+    <div className="pointer-events-auto flex max-w-sm flex-col gap-2">
+      {alerts.slice(-4).map((a, idx) => (
+        <div
+          key={`${a.kind}:${a.ts ?? idx}:${idx}`}
+          className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-sm shadow-md ${colorFor(a.level)}`}
+        >
+          <div className="mt-0.5 shrink-0">{iconFor(a.level)}</div>
+          <div className="flex-1">
+            <div className="font-medium">{a.message}</div>
+            {a.servo_ids && a.servo_ids.length > 0 && (
+              <div className="text-xs opacity-75">Servos: {a.servo_ids.join(", ")}</div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="ml-2 rounded p-1 text-current/70 hover:text-current"
+            aria-label="Dismiss alert"
+            onClick={() => onDismiss(idx)}
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [apiHost, setApiHost] = useState(() => resolveDefaultApiHost());
   const [visionHost, setVisionHost] = useState(() => resolveDefaultVisionHost());
@@ -415,6 +485,7 @@ export default function App() {
   const [selectedTrajectory, setSelectedTrajectory] = useState("");
   const [isLoadingSavedTrajectory, setIsLoadingSavedTrajectory] = useState(false);
   const [isHoming, setIsHoming] = useState(false);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
   const visualizerRef = useRef<ArmVisualizerHandle | null>(null);
   const normalizedApiHost = useMemo(() => normaliseApiHost(apiHost), [apiHost]);
   const normalisedVisionHost = useMemo(
@@ -472,6 +543,8 @@ export default function App() {
   const handleMessage = useCallback((payload: string) => {
     let joints: number[] | undefined;
     let gripper: number | undefined;
+    let servos: Record<string, ServoSample> | undefined;
+    let parsedAlerts: Alert[] | undefined;
 
     try {
       const parsed = JSON.parse(payload);
@@ -480,10 +553,36 @@ export default function App() {
           .map((value: unknown) =>
             typeof value === "number" ? value : Number(value),
           )
-          .filter((value) => Number.isFinite(value));
+          .filter((value: number) => Number.isFinite(value));
       }
       if (typeof parsed?.gripper === "number") {
         gripper = parsed.gripper;
+      }
+      if (parsed && typeof parsed === "object" && parsed.servos && typeof parsed.servos === "object") {
+        const out: Record<string, ServoSample> = {};
+        for (const [k, v] of Object.entries(parsed.servos as Record<string, unknown>)) {
+          if (v && typeof v === "object") {
+            const s = v as Record<string, unknown>;
+            const sample: ServoSample = {};
+            if (typeof s.voltage_v === "number") sample.voltage_v = s.voltage_v;
+            if (typeof s.temp_c === "number") sample.temp_c = s.temp_c;
+            if (typeof s.current_a === "number") sample.current_a = s.current_a;
+            if (typeof s.drive_duty_per_mille === "number") sample.drive_duty_per_mille = s.drive_duty_per_mille;
+            if (typeof s.unloading_condition === "number") sample.unloading_condition = s.unloading_condition;
+            if (typeof s.led_alarm_condition === "number") sample.led_alarm_condition = s.led_alarm_condition;
+            if (typeof s.unloading_bits === "string") sample.unloading_bits = s.unloading_bits;
+            if (typeof s.led_alarm_bits === "string") sample.led_alarm_bits = s.led_alarm_bits;
+            out[k] = sample;
+          }
+        }
+        servos = out;
+      }
+      // Alerts (optional)
+      if (parsed && typeof parsed === "object") {
+        const maybeObj = parsed as Record<string, unknown>;
+        if (Array.isArray(maybeObj.alerts)) {
+          parsedAlerts = maybeObj.alerts as Alert[];
+        }
       }
     } catch {
       // fall back to raw payload only
@@ -494,8 +593,17 @@ export default function App() {
       raw: payload,
       joints,
       gripper,
+      servos,
+      alerts: parsedAlerts,
     };
     setLatest(next);
+    // Merge alerts into state (keep last 20)
+    if (Array.isArray(next.alerts) && next.alerts.length > 0) {
+      setAlerts((prev) => {
+        const merged = [...prev, ...next.alerts!];
+        return merged.slice(-20);
+      });
+    }
   }, []);
 
   const connect = useCallback(() => {
@@ -811,6 +919,31 @@ export default function App() {
     setVisionError(null);
   }, [normalisedVisionHost]);
 
+  // Lightweight API health probe to surface clearer 5xx reasons
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(`${normalizedApiHost}/health`, { method: "GET" });
+        if (!r.ok) {
+          const txt = await r.text();
+          if (!cancelled) {
+            setError(`API /health ${r.status}: ${txt || r.statusText}`);
+          }
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError("API unreachable. Check that gradient-api is running.");
+        }
+      }
+    };
+    const id = window.setInterval(tick, 5000);
+    tick(); // immediate first probe
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [normalizedApiHost]);
   const streamingLabel = useMemo(
     () => (isConnected ? "Streaming" : "Disconnected"),
     [isConnected],
@@ -928,8 +1061,8 @@ export default function App() {
           pathPoints={visualPathPoints}
           waypoints={visualWaypoints}
         />
-        {isVisionActive && !visionError && (
-          <div className="pointer-events-auto absolute left-6 top-6 z-10 flex max-w-sm flex-col gap-2">
+        <div className="pointer-events-auto absolute left-6 top-6 z-10 flex max-w-sm flex-col gap-2">
+          {isVisionActive && !visionError && (
             <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-lg shadow-slate-950/40 backdrop-blur">
               <img
                 src={visionStreamUrl}
@@ -944,10 +1077,22 @@ export default function App() {
                 }}
               />
             </div>
-          </div>
-        )}
+          )}
+          <TelemetryCharts latest={latest} />
+        </div>
+        <div className="pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 transform">
+          <AlertsPanel
+            alerts={alerts}
+            onDismiss={(idx) =>
+              setAlerts((prev) => {
+                const copy = [...prev];
+                copy.splice(idx, 1);
+                return copy;
+              })
+            }
+          />
+        </div>
         <div className="pointer-events-none absolute right-6 top-6 z-10 flex flex-col gap-3">
-          <TelemetryPanel latest={latest} />
           <TrajectoryPanel
             isPlanning={isPlanning}
             isPlanLoading={isPlanLoading}
@@ -966,6 +1111,11 @@ export default function App() {
             onLoadTrajectory={handleLoadTrajectory}
             onUndoPoint={handleUndoPoint}
           />
+        </div>
+        <div className="pointer-events-none absolute right-6 bottom-6 z-20">
+          <div className="pointer-events-auto">
+            <ControlPanel apiHost={normalizedApiHost} onError={(m) => setError(m)} />
+          </div>
         </div>
       </main>
       <SettingsDialog

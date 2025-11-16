@@ -15,6 +15,45 @@ The telemetry module records synchronized robot state/actions and camera frames 
 - **Dataset converter**: `convert_to_lerobot.py`
   - Packs recorded episodes into a LeRobot-compatible dataset (optionally pushes to Hugging Face Hub)
 
+#### Servo telemetry streamer: `servo_telemetry_stream.py`
+
+Continuously reads servo telemetry via SYNC READ and writes a CSV, optionally publishing a JSON frame via UDP.
+
+Usage:
+
+```bash
+python -m gradient_os.telemetry.servo_telemetry_stream --fps 10 --out servo_telemetry.csv --stdout
+```
+
+Options:
+- `--ids 10,20,21,...`: Comma-separated servo IDs. Default: all configured and present (gripper excluded).
+- `--include-gripper`: Include gripper (ID 100).
+- `--fps N`: Sampling rate in Hz (default 10).
+- `--out PATH`: Output CSV file (default `servo_telemetry.csv`).
+- `--duration S`: Run for S seconds then exit (default: run until Ctrl-C).
+- `--udp HOST:PORT`: Also publish per-frame JSON over UDP.
+- `--stdout`: Print a compact summary to the console each frame.
+
+CSV columns:
+- `t`: timestamp (seconds, float)
+- `id`: servo ID
+- `pos_raw`: Current position (signed, steps)
+- `speed_raw`: Current speed (signed, steps/s)
+- `drive_duty_per_mille`: Current drive duty (0–1000)
+- `voltage_v`: Input voltage (volts)
+- `temp_c`: Internal temperature (°C)
+- `status`: Hardware status flags (bitfield)
+- `moving`: Moving status (0/1)
+- `current_a`: Current (amps)
+- `unloading_condition`: EEPROM bitfield at 0x13 (overload/overheat unload conditions)
+- `led_alarm_condition`: EEPROM bitfield at 0x14 (LED-alarm trigger conditions)
+- `unloading_hex`: Hex string form of 0x13
+- `unloading_bits`: Comma list of set bits (e.g., `b0,b3`)
+- `led_alarm_hex`: Hex string form of 0x14
+- `led_alarm_bits`: Comma list of set bits (e.g., `b2,b5`)
+
+Note: Bit names vary by firmware/datasheet revision. We expose which bits are set so you can post-map to specific meanings (e.g., overload, overheat, under/over-voltage). If you want named flags, we can add a mapping layer once you confirm the exact bit semantics for your STS firmware.
+
 ### How recording works (end-to-end)
 
 1. The Controller starts the camera server via the Vision package:

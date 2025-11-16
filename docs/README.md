@@ -16,7 +16,7 @@ cd GradientOS
 #   source ./start.sh   # activates venv, adjusts PYTHONPATH, adds aliases only if needed
 ```
 
-The package provides command-line tools (available after activation and install):
+The package provides command-line tools (available after install):
 ```bash
 gradient-controller   # Main controller for UDP commands
 gradient-ui           # Graphical user interface
@@ -64,6 +64,15 @@ Notes:
   # ./status.sh / ./restart.sh / ./stop.sh / ./uninstall.sh as needed
   ```
   The unit runs `gradient-api` from the repo virtualenv and binds to `0.0.0.0:4000` by default.
+
+### Web jog controls (Control Panel)
+
+- The floating control card rendered by `web-ui/src/ControlPanel.tsx` mirrors the desktop `src/gradient_os/ui/pages/real_control_page.py` incremental jog workflow. Every Cartesian jog button issues a REST call to `/control/move-line-relative`, which is translated by the API to the `MOVE_LINE_RELATIVE` UDP command. The request body contains the axis deltas in meters, the current speed multiplier from the UI slider, and the closed-loop flag, so the controller handles all interpolation and straight-line enforcement. There is no client-side velocity integration anymore for incremental moves, which eliminates the curved ±Y drift that occurred when the browser streamed `/control/jog/velocity` packets.
+- The jog card exposes explicit increment selectors for both translation (millimeters) and orientation (degrees). Updating these dropdowns changes the displacement that each button press will request without any hidden scaling.
+- The "Closed-loop" checkbox on the card writes the boolean directly into the `/control/move-line-relative` payload, so operators can match the desktop app’s accuracy vs speed tradeoffs.
+- Orientation jog buttons call `/control/rotate` with the selected increment and axis name (`roll`, `pitch`, or `yaw`). The API fetches the current pose, composes a `SET_ORIENTATION` command, and therefore follows the same solver path as the PySide UI.
+- A `Start Realtime` button enables the same jog streaming mode as `real_control_page.py`. When active, the buttons switch to press-and-hold behavior and the UI streams velocity vectors through `/control/jog/velocity`. On the backend, `_jog_controller_thread` now calls the same path-level IK helper (`solve_ik_path_batch`) used by the profiled planner, but in a lightweight 2-point form on each tick. This keeps realtime jog on the same IK branch as the incremental planner while still responding immediately to button presses.
+- Jog start/stop avoids re-issuing servo commands when the jog vector is zero: the controller caches the last posture, skips IK work whenever both linear and angular rates are zero, and only sends new setpoints when an axis is actually pressed. This prevents the robot from creeping when operators simply toggle realtime on/off.
 
 
 ## Running as a systemd Service

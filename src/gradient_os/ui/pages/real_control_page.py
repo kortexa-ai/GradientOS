@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QMessageBox
 )
 
-from src.gradient_os.ui.constants import (
+from gradient_os.ui.constants import (
     POS_ZERO,
     POS_HOME,
     POS_REST,
