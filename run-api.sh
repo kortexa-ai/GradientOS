@@ -16,8 +16,10 @@ if [[ -d "${VENV_BIN}" ]]; then
 fi
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
-# Prefer uv to honor the lockfile; fall back to python module execution.
-if command -v uv >/dev/null 2>&1; then
+# Prefer the active virtualenv's Python to avoid uv re-sync; fall back to uv, then python
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  API_CMD=(python -m gradient_os.api.main)
+elif command -v uv >/dev/null 2>&1; then
   API_CMD=(uv run gradient-api)
 else
   API_CMD=(python -m gradient_os.api.main)

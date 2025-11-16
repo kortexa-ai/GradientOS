@@ -9,6 +9,14 @@ Run the setup script and select what modules you want to install.
 ```
 
 This will install the required system packages and create a virtual environment.
+It targets Python 3.14 (preferred). If 3.14 is unavailable on your system, the setup
+will fall back to 3.11 automatically. You can force-create the venv with 3.14:
+
+```bash
+uv venv .venv --python python3.14
+source ./.venv/bin/activate
+uv pip install -e .[core]
+```
 
 ### Run the components
 
@@ -38,6 +46,12 @@ uv run gradient-ui
 ```
 
 The web UI should be available at http://localhost:8000
+
+#### Controller alerts in the Web UI
+
+- When the controller detects servo communication issues or status errors (for example: no SyncRead reply from certain servo IDs, or a servo status byte like 32), these are now forwarded to the API telemetry stream and shown in the web UI as alerts on the right side.
+- Typical messages include a human-readable cause, e.g. “Servo 30 reported: Position Fault” or “No feedback from servos 30, 31 (SyncRead). Check power/wiring/baud.”
+- If you do not see alerts but the terminal shows errors, ensure the API is running and the UI is connected to `/monitor`.
 
 ### Performance profiling
 

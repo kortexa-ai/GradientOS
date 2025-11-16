@@ -9,6 +9,8 @@ from contextlib import closing, asynccontextmanager
 from typing import Any, Dict, Tuple
 
 import argparse
+import subprocess
+import sys
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -106,9 +108,20 @@ class TelemetryHub:
         self._counter = 0
         self._lock = asyncio.Lock()
         self._transport: asyncio.DatagramTransport | None = None
+        self._aux_transport: asyncio.DatagramTransport | None = None
+        self._servo_proc: subprocess.Popen | None = None
         self._advertise_host = os.environ.get("GRADIENT_MONITOR_HOST")
         self._bind_host = os.environ.get("GRADIENT_MONITOR_BIND", "127.0.0.1")
         self._listen_port: int | None = None
+        # Optional fixed UDP port to ingest auxiliary telemetry (e.g., servo_telemetry_stream.py)
+        # Set GRADIENT_AUX_TELEMETRY_PORT=0 to disable. Default 5556.
+        try:
+            self._aux_listen_port: int | None = int(os.environ.get("GRADIENT_AUX_TELEMETRY_PORT", "5556"))
+        except ValueError:
+            self._aux_listen_port = 5556
+        # Autostart the servo telemetry streamer (default DISABLED; set to 1/true to enable)
+        _auto_env = os.environ.get("GRADIENT_AUTOSTART_SERVO_TELEMETRY", "0").strip().lower()
+        self._autostart_servo_telemetry: bool = _auto_env in {"1", "true", "yes", "on"}
 
     async def register(self) -> Tuple[int, asyncio.Queue[str]]:
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=50)
@@ -143,6 +156,34 @@ class TelemetryHub:
         if not ok:
             await self._cleanup_transport()
             raise HTTPException(status_code=503, detail=detail)
+        # Optionally also open a fixed auxiliary UDP port to ingest extra telemetry sources.
+        if self._aux_listen_port and self._aux_listen_port > 0:
+            try:
+                aux_transport, _aux_proto = await loop.create_datagram_endpoint(
+                    lambda: _TelemetryProtocol(self),
+                    local_addr=(self._bind_host, self._aux_listen_port),
+                )
+                self._aux_transport = aux_transport
+            except Exception:
+                # If aux port binding fails, continue without it.
+                self._aux_transport = None
+        # Autostart the servo telemetry streamer so charts work by default
+        if self._autostart_servo_telemetry and self._aux_listen_port and self._aux_listen_port > 0:
+            try:
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "gradient_os.telemetry.servo_telemetry_stream",
+                    "--fps",
+                    "10",
+                    "--udp",
+                    f"127.0.0.1:{self._aux_listen_port}",
+                ]
+                self._servo_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True
+                )
+            except Exception:
+                self._servo_proc = None
 
     async def _stop(self) -> None:
         if self._listen_port is None:
@@ -155,6 +196,19 @@ class TelemetryHub:
         if self._transport is not None:
             self._transport.close()
         self._transport = None
+        if self._aux_transport is not None:
+            try:
+                self._aux_transport.close()
+            except Exception:
+                pass
+        self._aux_transport = None
+        # Stop autostarted servo telemetry if running
+        if self._servo_proc is not None:
+            try:
+                self._servo_proc.terminate()
+            except Exception:
+                pass
+            self._servo_proc = None
         self._listen_port = None
 
     def handle_datagram(self, data: bytes, addr) -> None:
@@ -192,6 +246,17 @@ _latest_plan: dict[str, Any] | None = None
 
 
 def create_app() -> FastAPI:
+    def _resolve_rest_pose() -> list[float]:
+        raw = os.environ.get("GRADIENT_REST_POSE", "").strip()
+        if raw:
+            try:
+                vals = [float(tok) for tok in raw.split(",") if tok.strip() != ""]
+                # Expect 6 values; if not, still return what we have rather than crash
+                return vals
+            except Exception:
+                pass
+        # Fallback to the desktop UI default (radians)
+        return [0.0, -1.4, 1.5, 0.0, 0.0, 0.0]
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         ok, detail = await run_in_threadpool(_probe_controller)
@@ -259,11 +324,135 @@ def create_app() -> FastAPI:
         )
         return {"status": "ok"}
 
-    @api.post("/control/rest", summary="Move all joints to rest pose")
+    @api.post("/control/rest", summary="Move all joints to predefined REST pose")
     async def control_rest():
+        pose_cmd = ",".join(map(str, _resolve_rest_pose()))
         await run_in_threadpool(
-            _controller_call_or_503, _REST_POSE_COMMAND, timeout=2.0, expect_response=False
+            _controller_call_or_503, pose_cmd, timeout=2.0, expect_response=False
         )
+        return {"status": "ok"}
+
+    @api.post("/control/move-line-relative", summary="Move tool by dx,dy,dz with optional speed multiplier")
+    async def control_move_line_relative(payload: dict[str, Any]):
+        try:
+            dx = float(payload.get("dx", 0.0))
+            dy = float(payload.get("dy", 0.0))
+            dz = float(payload.get("dz", 0.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail="dx, dy, dz must be numbers")
+        speed_multiplier = payload.get("speed_multiplier", None)
+        try:
+            sm = float(speed_multiplier) if speed_multiplier is not None else None
+        except Exception:
+            raise HTTPException(status_code=400, detail="speed_multiplier must be a number")
+        closed = bool(payload.get("closed", True))
+        # Command format: MOVE_LINE_RELATIVE,dx,dy,dz[,speed_multiplier][,closed]
+        parts: list[str] = [
+            "MOVE_LINE_RELATIVE",
+            str(dx),
+            str(dy),
+            str(dz),
+        ]
+        if sm is not None:
+            parts.append(str(sm))
+        parts.append("true" if closed else "false")
+        cmd = ",".join(parts)
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=2.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/rotate", summary="Rotate tool by axis and angle in degrees (relative)")
+    async def control_rotate(payload: dict[str, Any]):
+        axis_in = str(payload.get("axis", "")).strip().lower()
+        # Accept multiple synonyms and normalize to scipy-euler tokens: x/y/z
+        axis_map = {
+            "roll": "x", "r": "x", "x": "x",
+            "pitch": "y", "p": "y", "y": "y",
+            "yaw": "z", "w": "z", "z": "z",
+        }
+        axis = axis_map.get(axis_in)
+        if axis is None:
+            raise HTTPException(status_code=400, detail="axis must be one of roll,pitch,yaw (or x/y/z)")
+        try:
+            angle_deg = float(payload.get("angle_deg", 0.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail="angle_deg must be a number")
+        # Emulate desktop UI: fetch current absolute RPY, then call SET_ORIENTATION with updated axis
+        detail = await run_in_threadpool(_controller_call_or_503, "GET_POSITION", timeout=1.0)
+        parts = detail.split(",")
+        if len(parts) < 1 or parts[0] != "CURRENT_POSE" or len(parts) < 1 + 3 + 3:
+            raise HTTPException(status_code=502, detail=f"Malformed pose reply: {detail}")
+        try:
+            orient = list(map(float, parts[4:7]))  # roll, pitch, yaw in degrees
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail=f"Invalid orientation data: {exc}") from exc
+        # Update selected axis
+        if axis == "x":
+            orient[0] += angle_deg
+        elif axis == "y":
+            orient[1] += angle_deg
+        else:
+            orient[2] += angle_deg
+        set_cmd = f"SET_ORIENTATION,{orient[0]},{orient[1]},{orient[2]}"
+        await run_in_threadpool(_controller_call_or_503, set_cmd, timeout=2.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/set-orientation", summary="Set absolute end-effector orientation (roll,pitch,yaw deg)")
+    async def control_set_orientation(payload: dict[str, Any]):
+        try:
+            roll = float(payload.get("roll", 0.0))
+            pitch = float(payload.get("pitch", 0.0))
+            yaw = float(payload.get("yaw", 0.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail="roll,pitch,yaw must be numbers")
+        cmd = f"SET_ORIENTATION,{roll},{pitch},{yaw}"
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=2.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/set-gripper", summary="Set gripper angle in degrees")
+    async def control_set_gripper(payload: dict[str, Any]):
+        try:
+            angle = float(payload.get("angle_deg", 0.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail="angle_deg must be a number")
+        cmd = f"SET_GRIPPER,{angle}"
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=1.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/jog/start", summary="Begin realtime jog mode")
+    async def control_jog_start():
+        await run_in_threadpool(_controller_call_or_503, "JOG_START", timeout=1.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/jog/stop", summary="Stop realtime jog mode")
+    async def control_jog_stop():
+        await run_in_threadpool(_controller_call_or_503, "JOG_STOP", timeout=1.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/jog/velocity", summary="Set realtime jog velocity vector")
+    async def control_jog_velocity(payload: dict[str, Any]):
+        def _num(name: str) -> float:
+            try:
+                return float(payload.get(name, 0.0))
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"{name} must be a number")
+        vx = _num("vx"); vy = _num("vy"); vz = _num("vz")
+        v_roll = _num("v_roll"); v_pitch = _num("v_pitch"); v_yaw = _num("v_yaw")
+        cmd = f"SET_JOG_VELOCITY,{vx},{vy},{vz},{v_roll},{v_pitch},{v_yaw}"
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=1.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/jog/deadman", summary="Enable/disable jog deadman")
+    async def control_jog_deadman(payload: dict[str, Any]):
+        enabled = bool(payload.get("enabled", True))
+        cmd = f"SET_JOG_DEADMAN,{'true' if enabled else 'false'}"
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=1.0, expect_response=False)
+        return {"status": "ok"}
+
+    @api.post("/control/jog/debug", summary="Enable/disable jog debug logging")
+    async def control_jog_debug(payload: dict[str, Any]):
+        enabled = bool(payload.get("enabled", False))
+        cmd = f"SET_JOG_DEBUG,{'true' if enabled else 'false'}"
+        await run_in_threadpool(_controller_call_or_503, cmd, timeout=1.0, expect_response=False)
         return {"status": "ok"}
 
     @api.get("/info/status", summary="Controller status snapshot")

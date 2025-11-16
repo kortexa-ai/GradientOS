@@ -15,9 +15,10 @@ headline(){ printf "\n%s%s%s\n\n" "$BOLD" "$1" "$RESET"; }
 
 usage() {
   cat <<'USAGE'
-Usage: ./setup.sh [--quiet|-q]
+Usage: ./setup.sh [--quiet|-q] [--clean]
 
   --quiet, -q   Install only the core controller/API dependencies without prompts.
+  --clean       Remove existing .venv and clear caches before installing. This is the recommended primary install path.
 USAGE
 }
 
@@ -39,9 +40,11 @@ ask_yes_no() {
 
 # --- Argument parsing --------------------------------------------------------
 QUIET=false
+CLEAN=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     -q|--quiet) QUIET=true; shift ;;
+    --clean) CLEAN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown argument: $1" ;;
   esac
@@ -247,10 +250,25 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 command -v uv >/dev/null 2>&1 || fail "uv still not on PATH after installation attempt."
 
+# Optional clean: remove existing venv and clear uv cache to avoid stale build deps
+if $CLEAN; then
+  headline "Cleaning previous environment and caches"
+  rm -rf .venv || true
+  uv cache clean || true
+fi
+
 # --- Virtual environment ----------------------------------------------------
 if [[ ! -d .venv ]]; then
-  headline "Creating virtual environment"
-  uv venv .venv --prompt "Gradient OS"
+  headline "Creating virtual environment (prefer Python 3.14)"
+  # Prefer system CPython 3.14 if available; otherwise fall back to 3.11; otherwise let uv manage
+  if command -v python3.14 >/dev/null 2>&1; then
+    uv venv .venv --python python3.14 --prompt "Gradient OS"
+  elif command -v python3.11 >/dev/null 2>&1; then
+    uv venv .venv --python python3.11 --prompt "Gradient OS"
+  else
+    # uv will acquire a compatible interpreter (project supports 3.11–3.14)
+    uv venv .venv --prompt "Gradient OS"
+  fi
 else
   say "Virtual environment .venv already exists; reusing."
 fi
@@ -262,8 +280,21 @@ fi
 
 # --- Python dependencies ----------------------------------------------------
 headline "Installing Python packages"
-say "uv pip install -e .[$EXTRA_SPEC]"
+
+# Try isolated build first; if packaging/metadata error occurs, fall back
+set +e
 uv pip install -e ".[${EXTRA_SPEC}]"
+STATUS=$?
+set -e
+if [[ $STATUS -ne 0 ]]; then
+  warn "Editable install failed; applying Jetson build backend workaround and retrying without isolation."
+  # Prefer newer backend if available to align with latest packaging APIs
+  if ! uv pip install -U "scikit-build-core==0.12.1" "packaging==25.0" "setuptools>=69" "wheel>=0.42"; then
+    warn "uv failed to fetch scikit-build-core 0.12.1; retrying with pip"
+    python -m pip install -U "scikit-build-core==0.12.1" "packaging==25.0" "setuptools>=69" "wheel>=0.42"
+  fi
+  uv pip install --no-build-isolation -e ".[${EXTRA_SPEC}]"
+fi
 
 if $want_web_ui; then
   headline "Installing web UI dependencies"
@@ -276,5 +307,3 @@ if $want_web_ui; then
     warn "npm not found on PATH; install Node.js/npm and run 'npm install' inside web-ui/ manually."
   fi
 fi
-
-say "Setup complete. Activate with: source .venv/bin/activate"

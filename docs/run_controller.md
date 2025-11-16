@@ -21,3 +21,63 @@ The logic within the `main()` function is designed to be a simple, robust dispat
 4.  **Command Parsing:** When a message is received, it's parsed into a command and its arguments.
 5.  **Dispatching:** A series of `if/elif` statements checks the command and calls the appropriate handler function from the `command_api.py` module. This keeps the main loop clean and delegates all complex logic to the API module.
 6.  **Graceful Shutdown:** The entire process is wrapped in `try...finally` blocks to ensure that if the script is stopped for any reason (e.g., Ctrl+C), the UDP socket is closed and the serial port is properly released. 
+
+### Selecting the Serial Port
+
+The controller defers to the driver’s auto-detection, but you can override it:
+
+- Environment variable before launch:
+
+  ```bash
+  SERIAL_PORT=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABC123-if00-port0 gradient-controller
+  ```
+
+- Command-line flag:
+
+  ```bash
+  gradient-controller --serial-port /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_ABC123-if00-port0
+  ```
+
+### Debugging serial auto-detection
+
+Enable verbose scan logging to see which candidates are discovered:
+
+```bash
+SERIAL_SCAN_DEBUG=1 gradient-controller
+```
+
+You can also force-enable udev-based USB enumeration when `pyudev` is installed:
+
+```bash
+SERIAL_SCAN_USE_UDEV=1 SERIAL_SCAN_DEBUG=1 gradient-controller
+```
+
+On NVIDIA Jetson:
+
+- If using on-board UART (e.g., `/dev/ttyTHS1`), disable services that hold the port:
+
+  ```bash
+  sudo systemctl disable --now nvgetty.service
+  sudo systemctl disable --now serial-getty@ttyS0.service
+  ```
+
+- Add your user to the `dialout` group for serial access:
+
+  ```bash
+  sudo usermod -aG dialout $USER && newgrp dialout
+  ```
+
+### USB scanning (default) and including UARTs (opt-in)
+
+By default the controller scans only USB serial devices (`/dev/serial/by-id`, `/dev/ttyUSB*`, `/dev/ttyACM*`). To also include on-board UARTs (e.g., Jetson `/dev/ttyTHS*`, `/dev/ttyS*`), set this environment variable before launch:
+
+```bash
+SERIAL_SCAN_INCLUDE_UART=1 gradient-controller
+```
+
+You can always explicitly pass the stable USB path (recommended):
+
+```bash
+ls -l /dev/serial/by-id/
+gradient-controller --serial-port /dev/serial/by-id/<your-usb-ttl-device>
+```

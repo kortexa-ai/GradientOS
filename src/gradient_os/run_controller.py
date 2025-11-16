@@ -18,6 +18,7 @@ try:
         servo_protocol,
         utils
     )
+    from .telemetry import alerts as _alerts
 except ImportError as e:
     print(f"Error importing arm_controller package: {e}")
     print("Please ensure the script is run from the project root directory and 'src' is in the Python path.")
@@ -111,13 +112,120 @@ def main():
         def _telemetry_loop():
             period = 1.0 / max(1, int(telemetry_hz))
             udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            last_extra_ts = 0.0  # throttle extended servo telemetry to ~2 Hz
             while not telemetry_stop_event.is_set():
                 try:
                     q = servo_driver.get_current_arm_state_rad(verbose=False)
                     g = utils.current_gripper_angle_rad if utils.gripper_present else None
-                    msg = {"t": time.time(), "joints": [float(x) for x in q]}
+                    msg: dict[str, object] = {"t": time.time(), "joints": [float(x) for x in q]}
                     if g is not None:
                         msg["gripper"] = float(g)
+                    # --- Servo telemetry (voltage/temp/current/torque + alarms) ---
+                    now = time.time()
+                    if now - last_extra_ts >= 0.5:
+                        last_extra_ts = now
+                        try:
+                            present_ids = list(servo_protocol.get_present_servo_ids())
+                            if present_ids:
+                                blk1 = servo_protocol.sync_read_block(present_ids, start_address=0x38, data_len=8, timeout_s=0.05, diagnostics=False)  # pos,speed,duty,voltage,temp
+                                blk2 = servo_protocol.sync_read_block(present_ids, start_address=0x41, data_len=5, timeout_s=0.05, diagnostics=False)  # status,moving,*,*,current
+                                blk3 = servo_protocol.sync_read_block(present_ids, start_address=0x13, data_len=2, timeout_s=0.05, diagnostics=False)  # unloading,led_alarm
+                                servos: dict[str, dict[str, object]] = {}
+                                for sid in present_ids:
+                                    d1 = blk1.get(sid)
+                                    d2 = blk2.get(sid)
+                                    d3 = blk3.get(sid)
+                                    if not d1 and not d2 and not d3:
+                                        continue
+                                    voltage_v = None
+                                    temp_c = None
+                                    current_a = None
+                                    drive_pm = None
+                                    if d1 and len(d1) == 8:
+                                        # d1 layout (@0x38, len 8): pos(2), speed(2), load/drive duty (2), voltage(1), temp(1)
+                                        load_raw = int.from_bytes(d1[4:6], "little", signed=False)
+                                        # Feetech STS "Present Load" encodes direction in bit 10 (0x400),
+                                        # magnitude in bits 0..9 (per‑mille, 0..1023). Keep full magnitude (allows >100%).
+                                        load_mag_pm = (load_raw & 0x3FF)
+                                        # Direction bit is not needed for the UI; use absolute magnitude only
+                                        drive_pm = load_mag_pm
+                                        voltage_v = float(d1[6]) / 10.0
+                                        temp_c = int(d1[7])
+                                    if d2 and len(d2) == 5:
+                                        # d2: [status(1), moving(1), rsvd(1), rsvd(1), current(2)]
+                                        status_byte = int(d2[0])
+                                        current_raw = int.from_bytes(d2[4:6], "little", signed=True)
+                                        current_a = current_raw * 0.0065
+                                    sample: dict[str, object] = {}
+                                    if voltage_v is not None:
+                                        sample["voltage_v"] = voltage_v
+                                    if temp_c is not None:
+                                        sample["temp_c"] = temp_c
+                                    if current_a is not None:
+                                        sample["current_a"] = current_a
+                                    if drive_pm is not None:
+                                        sample["drive_duty_per_mille"] = drive_pm
+                                    if d3 and len(d3) == 2:
+                                        unload = int(d3[0]); led = int(d3[1])
+                                        sample["unloading_condition"] = unload
+                                        sample["led_alarm_condition"] = led
+                                        def _names_for(val: int) -> list[str]:
+                                            labels = {
+                                                0: "Overload",
+                                                1: "Overheat",
+                                                2: "Overvoltage",
+                                                3: "Undervoltage",
+                                                4: "Stall",
+                                                5: "Position Fault",
+                                                6: "Comm/Error",
+                                                7: "Unknown",
+                                            }
+                                            return [labels.get(i, f"b{i}") for i in range(8) if ((val >> i) & 1) == 1]
+                                        def _bits(b: int) -> str:
+                                            bits = [f"b{i}" for i in range(8) if ((b >> i) & 1) == 1]
+                                            return ",".join(bits)
+                                        sample["unloading_bits"] = _bits(unload)
+                                        sample["led_alarm_bits"] = _bits(led)
+                                        sample["unloading_names"] = _names_for(unload)
+                                        sample["led_alarm_names"] = _names_for(led)
+                                    # Active status (live)
+                                    try:
+                                        sbits = _bits(status_byte)
+                                        sample["status_bits"] = sbits
+                                        # Map status bits to readable names (best-effort)
+                                        def _status_names(val: int) -> list[str]:
+                                            labels = {
+                                                0: "Overload",
+                                                1: "Overheat",
+                                                2: "Overvoltage",
+                                                3: "Undervoltage",
+                                                4: "Stall",
+                                                5: "Position Fault",
+                                                6: "Comm/Error",
+                                                7: "Unknown",
+                                            }
+                                            return [labels.get(i, f"b{i}") for i in range(8) if ((val >> i) & 1) == 1]
+                                        sample["status_names"] = _status_names(status_byte)
+                                    except Exception:
+                                        pass
+                                    if sample:
+                                        servos[str(sid)] = sample
+                                if servos:
+                                    msg["servos"] = servos
+                        except Exception:
+                            # Do not let telemetry extras break the main joints stream
+                            pass
+                    # Drain any alerts collected by lower layers and attach them
+                    try:
+                        drained = _alerts.drain_alerts(max_items=25)
+                        if drained:
+                            # Keep payload small: convert ts to ms for UI display
+                            for a in drained:
+                                # nothing to mutate; just ensure JSON-serializable
+                                a["ts"] = float(a.get("ts", time.time()))
+                            msg["alerts"] = drained
+                    except Exception:
+                            pass
                     if telemetry_target is not None:
                         udp.sendto(json.dumps(msg).encode("utf-8"), telemetry_target)
                 except Exception:

@@ -17,6 +17,55 @@ It uses the `servo_protocol.py` module to handle the actual sending of command p
 *   **`initialize_servos()`**: This function is called once at startup. It opens the serial port connection to the servos and then calls `set_servo_pid_gains` to ensure all servos are configured with the default PID values defined in `utils.py`.
 *   **`set_servo_angle_limits_from_urdf()`**: Also called at startup, this function reads the URDF-defined joint limits and writes them permanently to each servo's EEPROM. This is a crucial safety feature that prevents the robot from physically damaging itself, even if incorrect commands are sent.
 
+#### Serial Port Auto-Detection (Pi / Jetson / Generic Linux)
+
+The driver selects a serial device as follows:
+
+1. If the `SERIAL_PORT` environment variable is set and exists, it is used.
+2. Otherwise, if `utils.SERIAL_PORT` exists, it is used.
+3. Otherwise, the driver scans candidate device patterns and probes each by sending a short ping to known servo IDs. If exactly one device responds, it is selected.
+
+Default USB-only candidates (tight):
+
+- `/dev/serial/by-id/usb-*` (preferred)
+- `/dev/serial/by-path/*-usb-*/**`
+- `/dev/ttyACM*` (CDC ACM)
+- `/dev/ttyUSB*` (FTDI/PL2303/CH34x/CP210x)
+
+Opt-in UART scanning adds:
+
+- `/dev/ttyAMA*` (Raspberry Pi)
+- `/dev/ttyTHS*` (NVIDIA Jetson hardware UART)
+- `/dev/ttyS*` (Generic on-board UARTs)
+
+If multiple devices respond, the driver falls back to `utils.SERIAL_PORT` and will ask you to set `SERIAL_PORT` explicitly.
+
+Overrides:
+
+- Environment: `SERIAL_PORT=/dev/serial/by-id/…`
+- CLI flag (see `run_controller.md`): `--serial-port /dev/serial/by-id/...`
+
+Jetson-specific notes:
+
+- If using the on-board UART (e.g., `/dev/ttyTHS1`), disable serial getty services that may hold the port:
+
+  ```bash
+  sudo systemctl disable --now nvgetty.service
+  sudo systemctl disable --now serial-getty@ttyS0.service
+  ```
+
+- Ensure your user has permission to access serial devices:
+
+  ```bash
+  sudo usermod -aG dialout $USER && newgrp dialout
+  ```
+
+- Prefer stable device symlinks under `/dev/serial/by-id` for USB-TTL adapters.
+
+Advanced: udev-based USB detection
+
+- The driver uses `pyudev` when available to enumerate only USB-backed TTYs and to prefer stable `/dev/serial/by-id` symlinks automatically. You can force-enable or disable this behavior with the environment variable `SERIAL_SCAN_USE_UDEV` (truthy/falsey).
+
 #### Core Control
 
 *   **`set_servo_positions(...)`**: This is a key function in the control stack. It takes a list of six *logical* joint angles in radians and performs the necessary translations to command the nine *physical* servos. This includes:

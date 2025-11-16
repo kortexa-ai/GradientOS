@@ -15,7 +15,9 @@ if [[ -d "${VENV_BIN}" ]]; then
 fi
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
-if command -v uv >/dev/null 2>&1; then
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  CONTROLLER_CMD=(python -m gradient_os.run_controller)
+elif command -v uv >/dev/null 2>&1; then
   CONTROLLER_CMD=(uv run gradient-controller)
 else
   CONTROLLER_CMD=(python -m gradient_os.run_controller)

@@ -1,7 +1,530 @@
-# use this file to pass text between my computer and the raspberry pi
+(Gradient OS) gradient@GradientRobotics:~/Desktop/GradientOS$ gradient-ui --debug-ui
+===== Gradient UI Startup Diagnostics =====
+Python: 3.14.0
+PySide6: 6.8.0.2 | Qt: 6.8.0
+DISPLAY=:0
+WAYLAND_DISPLAY=
+XDG_SESSION_TYPE=x11
+SSH_CONNECTION=
+QT_QPA_PLATFORM=
+QT_QPA_PLATFORM_PLUGIN_PATH=
+QT_PLUGIN_PATH=
+==========================================
+Creating QApplication ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms" ...
+qt.core.plugin.factoryloader: looking at "libqeglfs.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqeglfs.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "eglfs"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QEglFSIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
 
-cd /home/gradientrobotics/Desktop/GradientOS
-./activate_with_system_libs.sh
-python scripts/stream_camera.py --camera 0 --port 8080
 
-rpicam-vid -t 0 --inline --listen --camera 0 -o tcp://0.0.0.0:8554
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("eglfs")
+qt.core.plugin.factoryloader: looking at "libqwayland-egl.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqwayland-egl.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "wayland-egl"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QWaylandEglPlatformIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("wayland-egl")
+qt.core.plugin.factoryloader: looking at "libqvkkhrdisplay.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqvkkhrdisplay.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "vkkhrdisplay"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QVkKhrDisplayIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("vkkhrdisplay")
+qt.core.plugin.factoryloader: looking at "libqxcb.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqxcb.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "xcb"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QXcbIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("xcb")
+qt.core.plugin.factoryloader: looking at "libqoffscreen.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqoffscreen.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "offscreen"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QOffscreenIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("offscreen")
+qt.core.plugin.factoryloader: looking at "libqminimalegl.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqminimalegl.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "minimalegl"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QMinimalEglIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("minimalegl")
+qt.core.plugin.factoryloader: looking at "libqlinuxfb.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqlinuxfb.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "linuxfb"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QLinuxFbIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("linuxfb")
+qt.core.plugin.factoryloader: looking at "libqwayland-generic.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqwayland-generic.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "wayland"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QWaylandIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("wayland")
+qt.core.plugin.factoryloader: looking at "libqminimal.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqminimal.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "minimal"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QMinimalIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("minimal")
+qt.core.plugin.factoryloader: looking at "libqvnc.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqvnc.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformIntegrationFactoryInterface.5.3",
+    "MetaData": {
+        "Keys": [
+            "vnc"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QVncIntegrationPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("vnc")
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/platforms" ...
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqxcb.so" cannot load: Cannot load library /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqxcb.so: libxcb-cursor.so.0: cannot open shared object file: No such file or directory
+qt.core.plugin.loader: QLibraryPrivate::loadPlugin failed on "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqxcb.so" : "Cannot load library /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqxcb.so: libxcb-cursor.so.0: cannot open shared object file: No such file or directory"
+qt.qpa.plugin: From 6.5.0, xcb-cursor0 or libxcb-cursor0 is needed to load the Qt xcb platform plugin.
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforms/libqoffscreen.so" loaded library
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platformthemes" ...
+qt.core.plugin.factoryloader: looking at "libqgtk3.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platformthemes/libqgtk3.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformThemeFactoryInterface.5.1",
+    "MetaData": {
+        "Keys": [
+            "gtk3"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QGtk3ThemePlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("gtk3")
+qt.core.plugin.factoryloader: looking at "libqxdgdesktopportal.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platformthemes/libqxdgdesktopportal.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPA.QPlatformThemeFactoryInterface.5.1",
+    "MetaData": {
+        "Keys": [
+            "xdgdesktopportal",
+            "flatpak",
+            "snap"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QXdgDesktopPortalThemePlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("xdgdesktopportal", "flatpak", "snap")
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/platformthemes" ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforminputcontexts" ...
+qt.core.plugin.factoryloader: looking at "libqtvirtualkeyboardplugin.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPlatformInputContextFactoryInterface.5.1",
+    "MetaData": {
+        "Keys": [
+            "qtvirtualkeyboard"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QVirtualKeyboardPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("qtvirtualkeyboard")
+qt.core.plugin.factoryloader: looking at "libcomposeplatforminputcontextplugin.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforminputcontexts/libcomposeplatforminputcontextplugin.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPlatformInputContextFactoryInterface.5.1",
+    "MetaData": {
+        "Keys": [
+            "compose",
+            "xim"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QComposePlatformInputContextPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("compose", "xim")
+qt.core.plugin.factoryloader: looking at "libibusplatforminputcontextplugin.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforminputcontexts/libibusplatforminputcontextplugin.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QPlatformInputContextFactoryInterface.5.1",
+    "MetaData": {
+        "Keys": [
+            "ibus"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QIbusPlatformInputContextPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("ibus")
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/platforminputcontexts" ...
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/platforminputcontexts/libibusplatforminputcontextplugin.so" loaded library
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/styles" ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/styles" ...
+QPA platform: offscreen
+Screens detected: 1
+Stylesheet loaded
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/accessible" ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/accessible" ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/accessiblebridge" ...
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/accessiblebridge" ...
+[UI] Autodetected controller at 127.0.0.1; overriding default target.
+PI_IP is set to: 127.0.0.1
+Starting MainWindow init
+UDP config done
+Pages instantiated
+Stacked widget setup done
+Status bar setup done
+MainWindow init complete
+Primary screen:  800x800 (available)
+This plugin does not support propagateSizeHints()
+Window shown (requested)
+Entering app.exec()
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats" ...
+qt.core.plugin.factoryloader: looking at "libqicns.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqicns.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "icns"
+        ],
+        "MimeTypes": [
+            "image/x-icns"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QICNSPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("icns")
+qt.core.plugin.factoryloader: looking at "libqwebp.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwebp.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "webp"
+        ],
+        "MimeTypes": [
+            "image/webp"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QWebpPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("webp")
+qt.core.plugin.factoryloader: looking at "libqtiff.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqtiff.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "tiff",
+            "tif"
+        ],
+        "MimeTypes": [
+            "image/tiff",
+            "image/tiff"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QTiffPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("tiff", "tif")
+qt.core.plugin.factoryloader: looking at "libqsvg.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqsvg.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "svg",
+            "svgz"
+        ],
+        "MimeTypes": [
+            "image/svg+xml",
+            "image/svg+xml-compressed"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QSvgPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("svg", "svgz")
+qt.core.plugin.factoryloader: looking at "libqwbmp.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwbmp.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "wbmp"
+        ],
+        "MimeTypes": [
+            "image/vnd.wap.wbmp"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QWbmpPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("wbmp")
+qt.core.plugin.factoryloader: looking at "libqtga.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqtga.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "tga"
+        ],
+        "MimeTypes": [
+            "image/x-tga"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QTgaPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("tga")
+qt.core.plugin.factoryloader: looking at "libqgif.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqgif.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "gif"
+        ],
+        "MimeTypes": [
+            "image/gif"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QGifPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("gif")
+qt.core.plugin.factoryloader: looking at "libqjpeg.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqjpeg.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "jpg",
+            "jpeg",
+            "jfif"
+        ],
+        "MimeTypes": [
+            "image/jpeg",
+            "image/jpeg",
+            "image/jpeg"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QJpegPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("jpg", "jpeg", "jfif")
+qt.core.plugin.factoryloader: looking at "libqico.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqico.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "ico",
+            "cur"
+        ],
+        "MimeTypes": [
+            "image/vnd.microsoft.icon",
+            "image/vnd.microsoft.icon"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QICOPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("ico", "cur")
+qt.core.plugin.factoryloader: looking at "libqpdf.so"
+qt.core.plugin.loader: Found metadata in lib /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqpdf.so, metadata=
+{
+    "IID": "org.qt-project.Qt.QImageIOHandlerFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "pdf"
+        ],
+        "MimeTypes": [
+            "application/pdf"
+        ]
+    },
+    "archlevel": 0,
+    "className": "QPdfPlugin",
+    "debug": false,
+    "version": 395264
+}
+
+
+qt.core.plugin.factoryloader: Got keys from plugin meta data QList("pdf")
+qt.core.plugin.factoryloader: checking directory path "/home/gradient/.local/share/uv/python/cpython-3.14.0-linux-aarch64-gnu/bin/imageformats" ...
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqicns.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwebp.so" cannot load: Cannot load library /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwebp.so: libwebp.so.6: cannot open shared object file: No such file or directory
+qt.core.plugin.loader: QLibraryPrivate::loadPlugin failed on "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwebp.so" : "Cannot load library /home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwebp.so: libwebp.so.6: cannot open shared object file: No such file or directory"
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqtiff.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqsvg.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqwbmp.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqtga.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqgif.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqjpeg.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqico.so" loaded library
+qt.core.library: "/home/gradient/Desktop/GradientOS/.venv/lib/python3.14/site-packages/PySide6/Qt/plugins/imageformats/libqpdf.so" loaded library
+Event loop heartbeat: UI is responsive.
+MainWindow visible: True
+

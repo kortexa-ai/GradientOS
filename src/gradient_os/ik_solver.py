@@ -116,6 +116,20 @@ def _init_ikfast_backend():
 
         pose_rot_flat = target_rotation.flatten()
         sol = solver.solve_ik(wrist_position, pose_rot_flat, initial_joint_angles)
+
+        # If multiple IK solutions are available, pick the one closest to the
+        # current joint configuration to preserve continuity (critical for jog).
+        if sol is None:
+            return None
+        if initial_joint_angles is not None:
+            try:
+                cur = np.asarray(initial_joint_angles, dtype=float)
+                sol_arr = np.asarray(sol)
+                best = _find_closest_solution(sol_arr, cur)
+                return best
+            except Exception:
+                # Fallback to raw solver output if anything goes wrong
+                return sol
         return sol
 
     def _ikfast_fk_matrix(joint_angles):
@@ -172,6 +186,17 @@ def _init_numeric_backend():
         # QuIK solver already accepts tool-frame pose directly – **do not** subtract offset.
         quat = R.from_matrix(target_rotation).as_quat()
         sol, _, _, _ = numeric_ik(quat, np.asarray(target_position, dtype=float), initial_joint_angles)
+
+        if sol is None:
+            return None
+        if initial_joint_angles is not None:
+            try:
+                cur = np.asarray(initial_joint_angles, dtype=float)
+                sol_arr = np.asarray(sol)
+                best = _find_closest_solution(sol_arr, cur)
+                return best
+            except Exception:
+                return sol
         return sol
 
     def _numeric_fk_matrix(joint_angles):

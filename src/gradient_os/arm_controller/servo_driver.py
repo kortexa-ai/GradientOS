@@ -11,13 +11,42 @@ from typing import Iterable, Optional
 from . import utils
 from . import servo_protocol
 
-_CANDIDATE_PATTERNS: tuple[str, ...] = (
+def _env_truthy(var_name: str, default: bool = False) -> bool:
+    """Return True if the given env var is set to a truthy value."""
+    val = os.environ.get(var_name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+_ALL_CANDIDATE_PATTERNS: tuple[str, ...] = (
     "/dev/serial/by-id/*",
     "/dev/serial/by-path/*",
     "/dev/ttyUSB*",
     "/dev/ttyACM*",
-    "/dev/ttyAMA*",
+    "/dev/ttyAMA*",   # Raspberry Pi PL011 / mini-UART (legacy)
+    "/dev/ttyTHS*",   # NVIDIA Jetson hardware UART
+    "/dev/ttyS*",     # Generic on-board UARTs (includes ttyS0 on many SBCs)
 )
+
+_USB_ONLY_PATTERNS: tuple[str, ...] = (
+    # Prefer stable, USB-backed symlinks
+    "/dev/serial/by-id/usb-*",
+    # Only entries behind a USB hop on the host bus
+    "/dev/serial/by-path/*-usb-*/**",
+    # Classic USB serial drivers
+    "/dev/ttyACM*",
+    "/dev/ttyUSB*",
+)
+
+def _get_candidate_patterns() -> tuple[str, ...]:
+    """
+    Default to scanning only USB serial devices. To also scan on-board UARTs,
+    set the environment variable SERIAL_SCAN_INCLUDE_UART to a truthy value.
+    """
+    include_uart = _env_truthy("SERIAL_SCAN_INCLUDE_UART", default=False)
+    if include_uart:
+        return _ALL_CANDIDATE_PATTERNS
+    return _USB_ONLY_PATTERNS
 
 
 def _is_serial_response_valid(response: object, servo_id: int) -> bool:
@@ -57,9 +86,73 @@ def _candidate_serial_devices() -> list[str]:
     """
     candidates: list[str] = []
     seen_realpaths: set[str] = set()
+    debug = _env_truthy("SERIAL_SCAN_DEBUG", default=False)
+    if debug:
+        print("[Pi] SERIAL_SCAN_DEBUG=1: starting candidate enumeration...")
 
-    for pattern in _CANDIDATE_PATTERNS:
-        for path in sorted(glob.glob(pattern)):
+    # 1) Prefer pyudev to enumerate only USB-backed TTYs and select stable symlinks
+    try:
+        use_udev_default = True
+        env_use_udev = os.environ.get("SERIAL_SCAN_USE_UDEV", "")
+        if env_use_udev.strip():
+            truthy = {"1", "true", "yes", "on"}
+            use_udev_default = env_use_udev.strip().lower() in truthy
+        if use_udev_default:
+            import importlib
+            pyudev_spec = importlib.util.find_spec("pyudev")
+            if debug:
+                print(f"[Pi] pyudev present: {pyudev_spec is not None}")
+            if pyudev_spec is not None:
+                pyudev = importlib.import_module("pyudev")
+                ctx = pyudev.Context()
+                for dev in ctx.list_devices(subsystem="tty"):
+                    try:
+                        # Filter strictly to USB-backed TTYs
+                        is_usb = dev.properties.get("ID_BUS") == "usb" or any(p.subsystem == "usb" for p in dev.ancestors)
+                        if not is_usb:
+                            continue
+                        node = dev.device_node
+                        if not node:
+                            continue
+                        # Prefer stable symlinks under by-id/by-path if present
+                        devlinks = dev.properties.get("DEVLINKS", "")
+                        symlinks = devlinks.split() if devlinks else []
+                        preferred = None
+                        for s in symlinks:
+                            if s.startswith("/dev/serial/by-id/"):
+                                preferred = s
+                                break
+                        if preferred is None:
+                            for s in symlinks:
+                                if s.startswith("/dev/serial/by-path/"):
+                                    preferred = s
+                                    break
+                        candidate_path = preferred if preferred else node
+                        try:
+                            realpath = os.path.realpath(candidate_path)
+                        except OSError:
+                            continue
+                        if realpath in seen_realpaths:
+                            continue
+                        if not os.path.exists(realpath):
+                            continue
+                        seen_realpaths.add(realpath)
+                        candidates.append(candidate_path)
+                        if debug:
+                            print(f"[Pi] udev candidate: {candidate_path} -> {realpath}")
+                    except Exception:
+                        continue
+    except Exception:
+        # If any issue occurs with udev scanning, silently fall back to glob patterns
+        if debug:
+            print("[Pi] udev enumeration failed; falling back to glob patterns")
+
+    # 2) Fallback to glob patterns
+    patterns = _get_candidate_patterns()
+    if debug:
+        print(f"[Pi] glob patterns in use: {patterns}")
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern, recursive=True)):
             try:
                 realpath = os.path.realpath(path)
             except OSError:
@@ -70,8 +163,10 @@ def _candidate_serial_devices() -> list[str]:
                 continue
             seen_realpaths.add(realpath)
             candidates.append(path)
+            if debug:
+                print(f"[Pi] glob candidate: {path} -> {realpath}")
 
-    # If list_ports reports additional USB serial devices we missed, append them
+    # 3) If list_ports reports additional USB serial devices we missed, append them
     try:
         from serial.tools import list_ports as _list_ports
         for port in _list_ports.comports():
@@ -87,9 +182,12 @@ def _candidate_serial_devices() -> list[str]:
                 continue
             seen_realpaths.add(realpath)
             candidates.append(port.device)
+            if debug:
+                print(f"[Pi] list_ports candidate: {port.device} -> {realpath}")
     except Exception:
         # pyserial list_ports can fail on some minimal installations; ignore
-        pass
+        if debug:
+            print("[Pi] list_ports enumeration failed or unavailable")
 
     return candidates
 
@@ -162,6 +260,45 @@ def _resolve_serial_port() -> Optional[str]:
 
     print("[Pi] Serial auto-detect did not find a responsive device. Falling back to configured path.")
     return utils.SERIAL_PORT
+
+def _is_jetson_platform() -> bool:
+    """Best-effort detection of NVIDIA Jetson platforms via device-tree model."""
+    model_paths = (
+        "/proc/device-tree/model",
+        "/sys/firmware/devicetree/base/model",
+    )
+    for path in model_paths:
+        try:
+            with open(path, "r") as fp:
+                model = fp.read().strip().lower()
+            if "jetson" in model or "nvidia" in model:
+                return True
+        except Exception:
+            pass
+    return False
+
+def _print_serial_port_help() -> None:
+    """
+    Print platform-aware instructions to resolve serial access issues.
+    Avoids Raspberry Pi–specific guidance on non-Pi systems (e.g., Jetson).
+    """
+    if _is_jetson_platform():
+        print("Jetson hints:")
+        print("  - Ensure your user is in the 'dialout' (and possibly 'tty') group:")
+        print("    sudo usermod -aG dialout $USER && newgrp dialout")
+        print("  - If using the on-board UART (e.g., /dev/ttyTHS1), free it from getty:")
+        print("    sudo systemctl disable --now nvgetty.service || true")
+        print("    sudo systemctl disable --now serial-getty@ttyS0.service || true")
+        print("  - Prefer stable paths under /dev/serial/by-id for USB-TTL adapters.")
+        print("  - Verify device presence and permissions: ls -l /dev/ttyUSB* /dev/ttyACM* /dev/ttyTHS* 2>/dev/null")
+        print("  - You can override detection with the SERIAL_PORT env var or --serial-port flag.")
+    else:
+        print("Linux hints:")
+        print("  - Ensure your user is in the 'dialout' (and possibly 'tty') group:")
+        print("    sudo usermod -aG dialout $USER && newgrp dialout")
+        print("  - Prefer stable paths under /dev/serial/by-id for USB-TTL adapters.")
+        print("  - Verify device presence and permissions: ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null")
+        print("  - You can override detection with the SERIAL_PORT env var or --serial-port flag.")
 
 def initialize_servos():
     """
@@ -238,12 +375,7 @@ def initialize_servos():
     except serial.SerialException as e:
         print(f"[Pi] Error opening serial port {utils.SERIAL_PORT}: {e}")
         print("Please ensure the serial port is correct, available, and you have permissions.")
-        print("You might need to run 'sudo raspi-config' and:")
-        print("  1. Go to 'Interface Options'")
-        print("  2. Go to 'Serial Port'")
-        print("  3. Answer 'No' to 'Would you like a login shell to be accessible over serial?'")
-        print("  4. Answer 'Yes' to 'Would you like the serial port hardware to be enabled?'")
-        print("  5. Reboot your Pi.")
+        _print_serial_port_help()
         exit() # Exit if we can't open the serial port
     print("[Pi] Servos initialized.")
 
@@ -352,11 +484,7 @@ def set_servo_positions(logical_joint_angles_rad: list[float], speed_value: int,
             # No extra sign inversion here—orientation differences are fully
             # captured by the direct/inverted mapping in utils._is_servo_direct_mapping.
             final_target_physical_angle_rad = target_physical_angle_rad
-            if logical_joint_index == 0:
-                # Joint 1 uses a 2:1 gear ratio (output rotates twice for every input rotation).
-                # This multiplication ensures the commanded angle matches the physical output.
-                final_target_physical_angle_rad *= 2.0
-
+            
             # --- Convert Target Angle (Radians) to Raw Servo Value (0-4095) ---
             
             # The servo's individual hardware offset is no longer needed.

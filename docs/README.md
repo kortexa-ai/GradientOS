@@ -16,7 +16,7 @@ cd GradientOS
 #   source ./start.sh   # activates venv, adjusts PYTHONPATH, adds aliases only if needed
 ```
 
-The package provides command-line tools (available after activation and install):
+The package provides command-line tools (available after install):
 ```bash
 gradient-controller   # Main controller for UDP commands
 gradient-ui           # Graphical user interface
@@ -64,6 +64,15 @@ Notes:
   # ./status.sh / ./restart.sh / ./stop.sh / ./uninstall.sh as needed
   ```
   The unit runs `gradient-api` from the repo virtualenv and binds to `0.0.0.0:4000` by default.
+
+### Web jog controls (Control Panel)
+
+- The floating control card rendered by `web-ui/src/ControlPanel.tsx` uses the same Cartesian jog buttons for both **incremental** and **realtime** jog, depending on whether realtime is started.
+- With **realtime jog off** (default), each Cartesian button press issues a single incremental move whose step size is fully controlled by the numeric fields in the jog card:
+  - Translation buttons call `/control/move-line-relative` with a step of `Linear` millimeters (from the `Linear (mm/s)` input) along the selected axis, converted to meters in the payload. The request includes the current speed multiplier from the UI slider as `speed_multiplier`, and sets `closed: true` so the controller handles the interpolation.
+  - Orientation buttons call `/control/rotate` with a step of `Angular` degrees (from the `Angular (deg/s)` input) about the requested axis (`roll`, `pitch`, or `yaw`). The API fetches the current pose, composes a `SET_ORIENTATION` command, and therefore follows the same solver path as the desktop PySide UI.
+- With **realtime jog on** (press the **Start** button in the Realtime Jog block), the same buttons switch to press‑and‑hold behavior and the UI streams velocity vectors through `/control/jog/velocity`. The `Deadman` checkbox still gates whether any motion is commanded in this mode, and the `Linear` / `Angular` fields are interpreted as base linear and angular rates for the realtime vector.
+- Jog start/stop avoids re‑issuing servo commands when the jog vector is zero: the controller caches the last posture, skips IK work whenever both linear and angular rates are zero, and only sends new setpoints when an axis is actually pressed. This prevents the robot from creeping when operators simply toggle realtime on/off.
 
 
 ## Running as a systemd Service
