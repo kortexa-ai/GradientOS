@@ -33,9 +33,7 @@ from . import registry
 
 # Import backend classes
 from .feetech import FeetechBackend
-
-# Import SimulationBackend from actuator_interface (to be moved later)
-from ..actuator_interface import SimulationBackend
+from .simulation import SimulationBackend
 
 # =============================================================================
 # Backend Factory Functions

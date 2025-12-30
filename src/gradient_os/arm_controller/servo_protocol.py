@@ -1,19 +1,54 @@
-# Contains low-level functions for communicating with servos,
-# such as packet creation and checksum calculation. 
+# =============================================================================
+# servo_protocol.py - DEPRECATED
+# =============================================================================
 #
-# NOTE: This module uses the backend registry for servo-specific constants.
-# The backend MUST be configured before using this module.
-# This is done in run_controller.py via backend_registry.set_active_backend().
+# WARNING: This module is deprecated and will be removed in a future release.
+# For new code, use the ActuatorBackend interface directly:
 #
-# For new code, consider using the ActuatorBackend interface directly.
+#     from gradient_os.arm_controller.backends import registry
+#     backend = registry.get_active_backend()
+#     backend.sync_read_positions(servo_ids)
+#     backend.sync_write(commands)
+#
+# This module now acts as a thin dispatcher that routes calls to the active
+# backend when available, falling back to direct serial communication for
+# legacy compatibility.
+#
+# =============================================================================
 
 from . import utils
 from ..telemetry import alerts
 import time
 import threading
+import warnings
+from typing import Optional
 
-# Import backend registry for servo-specific constants
+# Import backend registry for servo-specific constants and backend access
 from .backends import registry as backend_registry
+
+
+def _get_backend():
+    """Get the active backend instance, or None if not set."""
+    try:
+        return backend_registry.get_active_backend()
+    except backend_registry.BackendInstanceNotSetError:
+        return None
+
+
+def _use_backend() -> bool:
+    """Returns True if an ActuatorBackend is active and initialized."""
+    backend = _get_backend()
+    return backend is not None and backend.is_initialized
+
+
+def _warn_deprecated(func_name: str):
+    """Emit a deprecation warning for servo_protocol usage."""
+    warnings.warn(
+        f"servo_protocol.{func_name}() is deprecated. "
+        f"Use backends.registry.get_active_backend() methods instead.",
+        DeprecationWarning,
+        stacklevel=3
+    )
 
 
 def _get_backend_config():
@@ -114,7 +149,19 @@ def ping(servo_id: int) -> bool:
 
     Returns:
         bool: True if a valid status packet is received, False otherwise.
+        
+    .. deprecated::
+        Use ``backend.ping_actuator(servo_id)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'ping_actuator'):
+        result = backend.ping_actuator(servo_id)
+        if result:
+            _present_servo_ids.add(servo_id)
+        return result
+    
+    # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
         return False
 
@@ -413,7 +460,16 @@ def read_servo_position(servo_id: int) -> int | None:
 
     Returns:
         int | None: The servo's current raw position (0-4095), or None on failure.
+        
+    .. deprecated::
+        Use ``backend.read_single_actuator_position(servo_id)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'read_single_actuator_position'):
+        return backend.read_single_actuator_position(servo_id)
+    
+    # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
         print(f"[Pi ReadPos] Servo {servo_id}: Serial port not open.")
         return None
@@ -662,7 +718,17 @@ def sync_write_goal_pos_speed_accel(servo_data_list: list[tuple[int, int, int, i
     Args:
         servo_data_list: A list of tuples, where each tuple contains:
                          (servo_id, position_value, speed_value, acceleration_register_value)
+                         
+    .. deprecated::
+        Use ``backend.sync_write(commands)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'sync_write'):
+        backend.sync_write(servo_data_list)
+        return
+    
+    # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
         print("[Pi SyncWrite] Serial port not initialized.")
         return
@@ -772,7 +838,16 @@ def factory_reset_servo(servo_id: int) -> bool:
     
     Returns:
         bool: True on success, False on failure.
+        
+    .. deprecated::
+        Use ``backend.factory_reset_actuator(servo_id)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'factory_reset_actuator'):
+        return backend.factory_reset_actuator(servo_id)
+    
+    # Fallback to direct serial communication
     if utils.ser is None:
         print(f"[Pi] Serial port not initialized for factory reset command.")
         return False
@@ -808,7 +883,16 @@ def restart_servo(servo_id: int) -> bool:
 
     Returns:
         bool: True on success, False on failure.
+        
+    .. deprecated::
+        Use ``backend.restart_actuator(servo_id)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'restart_actuator'):
+        return backend.restart_actuator(servo_id)
+    
+    # Fallback to direct serial communication
     if utils.ser is None:
         print(f"[Pi] Serial port not initialized for restart command.")
         return False
@@ -857,7 +941,16 @@ def sync_read_positions(
     Returns:
         dict[int, int]: A dictionary mapping servo_id to its raw position. This may be a partial
                         result if some servos did not respond.
+                        
+    .. deprecated::
+        Use ``backend.sync_read_positions(servo_ids)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'sync_read_positions'):
+        return backend.sync_read_positions(servo_ids, timeout_s=timeout_s)
+    
+    # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
         print("[Pi SyncRead] Serial port not initialized.")
         return {}
@@ -1161,7 +1254,16 @@ def sync_read_block(
 
     Returns a mapping of servo_id -> raw bytes (length == data_len) for all servos that
     responded with a valid status packet. Missing IDs indicate no valid response was parsed.
+    
+    .. deprecated::
+        Use ``backend.sync_read_block(servo_ids, start_address, data_len)`` instead.
     """
+    # Dispatch to backend if available
+    backend = _get_backend()
+    if backend and hasattr(backend, 'sync_read_block'):
+        return backend.sync_read_block(servo_ids, start_address=start_address, data_len=data_len)
+    
+    # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
         print("[Pi SyncReadBlk] Serial port not initialized.")
         return {}

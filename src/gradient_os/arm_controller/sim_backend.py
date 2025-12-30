@@ -1,11 +1,19 @@
 """
-Lightweight in-process simulator for the Gradient controller.
+DEPRECATED: Lightweight in-process simulator for the Gradient controller.
 
-When activated, this module monkey patches the low-level `servo_driver` and
-`servo_protocol` helpers with in-memory implementations so the existing
-controller loop can run without physical hardware.  The goal is to provide the
-minimal surface area needed for development and testing, while keeping the
-overrides modular so a richer simulator can replace them later.
+This module is DEPRECATED. Use the new backend-based simulation instead:
+
+    from gradient_os.arm_controller.backends import registry
+    
+    # Create simulation backend
+    backend = registry.create_backend("simulation", robot_config_dict)
+    registry.set_active_backend_instance(backend)
+    backend.initialize()
+
+The new approach provides a cleaner architecture that integrates with the
+ActuatorBackend interface rather than monkey-patching servo_driver/servo_protocol.
+
+This module is kept for backward compatibility but will be removed in a future release.
 """
 from __future__ import annotations
 
