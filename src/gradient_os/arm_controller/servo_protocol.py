@@ -1,48 +1,68 @@
-# Contains low-level functions for communicating with Feetech servos,
+# Contains low-level functions for communicating with servos,
 # such as packet creation and checksum calculation. 
+#
+# NOTE: This module uses the backend registry for servo-specific constants.
+# The backend MUST be configured before using this module.
+# This is done in run_controller.py via backend_registry.set_active_backend().
+#
+# For new code, consider using the ActuatorBackend interface directly.
+
 from . import utils
 from ..telemetry import alerts
 import time
 import threading
 
-
-# Servo Protocol Constants
-SERVO_HEADER = 0xFF
-SERVO_INSTRUCTION_WRITE = 0x03
-SERVO_ADDR_TARGET_POSITION = 0x2A 
-SERVO_INSTRUCTION_READ = 0x02
-SERVO_ADDR_PRESENT_POSITION = 0x38 
-SERIAL_READ_TIMEOUT = 0.05 
-SERVO_ADDR_TARGET_ACCELERATION = 0x29 
-DEFAULT_SERVO_ACCELERATION_DEG_S2 = 500 
-ACCELERATION_SCALE_FACTOR = 100 
-SERVO_ADDR_POS_KP = 0x15
-SERVO_ADDR_POS_KI = 0x17 
-SERVO_ADDR_POS_KD = 0x16
-DEFAULT_KP = 32  
-DEFAULT_KI = 0   
-DEFAULT_KD = 0  
-SERVO_INSTRUCTION_CALIBRATE_MIDDLE = 0x0B
-SERVO_INSTRUCTION_RESET = 0x06
-SERVO_INSTRUCTION_RESTART = 0x08
-SERVO_INSTRUCTION_PING = 0x01
-SERVO_ADDR_WRITE_LOCK = 0x37
-SERVO_ADDR_MIN_ANGLE_LIMIT = 0x09
-SERVO_ADDR_MAX_ANGLE_LIMIT = 0x0B
+# Import backend registry for servo-specific constants
+from .backends import registry as backend_registry
 
 
-# Servo Sync Write Constants
-SERVO_INSTRUCTION_SYNC_WRITE = 0x83
-SERVO_BROADCAST_ID = 0xFE # Typically 0xFE for Feetech Sync Write
-# Start address for Sync Write block (Accel, Pos, Time, Speed)
-SYNC_WRITE_START_ADDRESS = SERVO_ADDR_TARGET_ACCELERATION # 0x29
-# Length of data block per servo in Sync Write: Accel (1) + Pos (2) + Time (2) + Speed (2) = 7 bytes
-SYNC_WRITE_DATA_LEN_PER_SERVO = 7
-# Servo Sync Read Constants
-SERVO_INSTRUCTION_SYNC_READ = 0x82
+def _get_backend_config():
+    """Get the active backend config. Raises if not configured."""
+    return backend_registry.get_config()
 
 
-# A simple in-memory cache for which servos were detected at startup
+# These are accessed as module-level constants but delegate to the backend.
+# They're populated when first accessed after backend is configured.
+def __getattr__(name):
+    """Lazy attribute access for backend constants."""
+    cfg = _get_backend_config()
+    
+    _BACKEND_ATTRS = {
+        'SERVO_HEADER': 'SERVO_HEADER',
+        'SERVO_INSTRUCTION_WRITE': 'SERVO_INSTRUCTION_WRITE',
+        'SERVO_ADDR_TARGET_POSITION': 'SERVO_ADDR_TARGET_POSITION',
+        'SERVO_INSTRUCTION_READ': 'SERVO_INSTRUCTION_READ',
+        'SERVO_ADDR_PRESENT_POSITION': 'SERVO_ADDR_PRESENT_POSITION',
+        'SERIAL_READ_TIMEOUT': 'SERIAL_READ_TIMEOUT',
+        'SERVO_ADDR_TARGET_ACCELERATION': 'SERVO_ADDR_TARGET_ACCELERATION',
+        'DEFAULT_SERVO_ACCELERATION_DEG_S2': 'DEFAULT_SERVO_ACCELERATION_DEG_S2',
+        'ACCELERATION_SCALE_FACTOR': 'ACCELERATION_SCALE_FACTOR',
+        'SERVO_ADDR_POS_KP': 'SERVO_ADDR_POS_KP',
+        'SERVO_ADDR_POS_KI': 'SERVO_ADDR_POS_KI',
+        'SERVO_ADDR_POS_KD': 'SERVO_ADDR_POS_KD',
+        'DEFAULT_KP': 'DEFAULT_KP',
+        'DEFAULT_KI': 'DEFAULT_KI',
+        'DEFAULT_KD': 'DEFAULT_KD',
+        'SERVO_INSTRUCTION_CALIBRATE_MIDDLE': 'SERVO_INSTRUCTION_CALIBRATE_MIDDLE',
+        'SERVO_INSTRUCTION_RESET': 'SERVO_INSTRUCTION_RESET',
+        'SERVO_INSTRUCTION_RESTART': 'SERVO_INSTRUCTION_RESTART',
+        'SERVO_INSTRUCTION_PING': 'SERVO_INSTRUCTION_PING',
+        'SERVO_ADDR_WRITE_LOCK': 'SERVO_ADDR_WRITE_LOCK',
+        'SERVO_ADDR_MIN_ANGLE_LIMIT': 'SERVO_ADDR_MIN_ANGLE_LIMIT',
+        'SERVO_ADDR_MAX_ANGLE_LIMIT': 'SERVO_ADDR_MAX_ANGLE_LIMIT',
+        'SERVO_INSTRUCTION_SYNC_WRITE': 'SERVO_INSTRUCTION_SYNC_WRITE',
+        'SERVO_BROADCAST_ID': 'SERVO_BROADCAST_ID',
+        'SYNC_WRITE_START_ADDRESS': 'SYNC_WRITE_START_ADDRESS',
+        'SYNC_WRITE_DATA_LEN_PER_SERVO': 'SYNC_WRITE_DATA_LEN_PER_SERVO',
+        'SERVO_INSTRUCTION_SYNC_READ': 'SERVO_INSTRUCTION_SYNC_READ',
+    }
+    
+    if name in _BACKEND_ATTRS:
+        return getattr(cfg, _BACKEND_ATTRS[name])
+    
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
 # A simple in-memory cache for which servos were detected at startup
 _present_servo_ids: set[int] = set()
 
@@ -199,9 +219,10 @@ def send_servo_command(servo_id: int, position_value: int, speed_value: int = No
         print("[Pi] Serial port not initialized.")
         return
 
-    # Clamp position and speed to their valid ranges
-    pos_val_clamped = int(max(0, min(4095, position_value)))
-    spd_val_clamped = int(max(0, min(4095, speed_value)))
+    # Clamp position and speed to their valid ranges (encoder resolution from backend)
+    encoder_max = utils.ENCODER_RESOLUTION
+    pos_val_clamped = int(max(0, min(encoder_max, position_value)))
+    spd_val_clamped = int(max(0, min(encoder_max, speed_value)))
 
     # Goal Position (Address 0x2A), 2 bytes for position, 2 bytes for "time" (set to 0), 2 bytes for speed
     # This means we are writing 6 bytes starting at address 0x2A.

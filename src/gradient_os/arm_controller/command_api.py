@@ -20,7 +20,6 @@ except ImportError:
 
 from . import utils
 from . import servo_driver
-from . import servo_protocol
 from . import trajectory_execution
 from . import pid_tuner
 
@@ -1030,8 +1029,8 @@ def handle_get_gripper_state(sock: 'socket.socket', addr: tuple):
 
     print(f"[Controller] Received GET_GRIPPER_STATE from {addr}.")
     
-    # Read the raw position from the servo
-    raw_pos = servo_protocol.read_servo_position(utils.SERVO_ID_GRIPPER)
+    # Read the raw position from the servo (uses backend if available)
+    raw_pos = servo_driver.read_single_servo_position(utils.SERVO_ID_GRIPPER)
     
     if raw_pos is not None:
         # Convert raw position to angle in degrees

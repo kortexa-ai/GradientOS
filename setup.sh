@@ -191,8 +191,11 @@ add_pkg() {
 }
 
 if [[ $OS_NAME == "Linux" ]]; then
+  # Core build dependencies required for native Python extensions (pybind11, etc.)
+  for pkg in build-essential python3-dev curl; do
+    APT_PACKAGES=$(add_pkg "$pkg" "$APT_PACKAGES")
+  done
   if $IS_RASPI; then
-    APT_PACKAGES=$(add_pkg curl "$APT_PACKAGES")
     if $want_vision; then
       for pkg in libgl1-mesa-glx libgl1-mesa-dri mesa-utils libcap-dev python3-libcamera python3-kms++; do
         APT_PACKAGES=$(add_pkg "$pkg" "$APT_PACKAGES")
@@ -208,12 +211,21 @@ if [[ $OS_NAME == "Linux" ]]; then
       done
     fi
   fi
+  # Node.js for web UI
+  if $want_web_ui; then
+    for pkg in nodejs npm; do
+      APT_PACKAGES=$(add_pkg "$pkg" "$APT_PACKAGES")
+    done
+  fi
 elif [[ $OS_NAME == "Darwin" ]]; then
   if $want_vision; then
     BREW_PACKAGES=$(add_pkg libomp "$BREW_PACKAGES")
   fi
   if $want_ui; then
     BREW_PACKAGES=$(add_pkg qt "$BREW_PACKAGES")
+  fi
+  if $want_web_ui; then
+    BREW_PACKAGES=$(add_pkg node "$BREW_PACKAGES")
   fi
 else
   warn "No automated system dependency installation for $OS_NAME."
@@ -280,6 +292,12 @@ fi
 
 # --- Python dependencies ----------------------------------------------------
 headline "Installing Python packages"
+
+# Increase timeout for slow network connections (e.g. Raspberry Pi)
+export UV_HTTP_TIMEOUT=300
+
+# Install pip in venv so fallback mechanism works
+uv pip install pip
 
 # Try isolated build first; if packaging/metadata error occurs, fall back
 set +e

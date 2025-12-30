@@ -15,6 +15,7 @@ from typing import Dict, Iterable, Tuple
 import numpy as np
 
 from . import servo_driver, servo_protocol, utils
+from .backends import registry as backend_registry
 
 
 class _DummySerial:
@@ -65,18 +66,21 @@ class _SimState:
 
     def set_raw(self, servo_id: int, raw_value: int) -> None:
         with self._lock:
-            clamped = max(0, min(4095, int(raw_value)))
+            encoder_max = backend_registry.get_encoder_resolution()
+            clamped = max(0, min(encoder_max, int(raw_value)))
             self.raw_positions[servo_id] = clamped
             self._refresh_globals()
 
     def get_raw(self, servo_id: int) -> int:
         with self._lock:
-            return self.raw_positions.get(servo_id, 2048)
+            encoder_center = backend_registry.get_encoder_center()
+            return self.raw_positions.get(servo_id, encoder_center)
 
     def set_angle_limits(self, servo_id: int, min_raw: int, max_raw: int) -> None:
         with self._lock:
-            lo = max(0, min(4095, int(min_raw)))
-            hi = max(0, min(4095, int(max_raw)))
+            encoder_max = backend_registry.get_encoder_resolution()
+            lo = max(0, min(encoder_max, int(min_raw)))
+            hi = max(0, min(encoder_max, int(max_raw)))
             self.angle_limits_raw[servo_id] = (min(lo, hi), max(lo, hi))
 
     def set_register_word(self, servo_id: int, register: int, value: int) -> None:
@@ -114,7 +118,7 @@ class _SimState:
                     servo_idx = utils.SERVO_IDS.index(servo_id)
                 except ValueError:
                     continue
-                raw = self.raw_positions.get(servo_id, 2048)
+                raw = self.raw_positions.get(servo_id, backend_registry.get_encoder_center())
                 angles.append(servo_driver.raw_to_angle_rad(raw, servo_idx))
             if angles:
                 mean_angle = float(np.mean(angles))

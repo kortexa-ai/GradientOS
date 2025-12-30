@@ -1,15 +1,69 @@
 # Contains high-level functions for controlling the servos, acting as a
-# hardware abstraction layer. Imports from servo_protocol.py. 
+# hardware abstraction layer. Imports from servo_protocol.py.
+#
+# This module provides backward-compatible functions that work with the existing
+# codebase while also supporting the new ActuatorBackend abstraction layer.
+#
+# Migration Status (Phase 2):
+# ---------------------------
+# Functions in this module are being migrated to use the ActuatorBackend interface.
+# Each function checks if a backend is available and uses it when possible,
+# falling back to legacy servo_protocol calls otherwise.
+#
+# For new code, prefer using the backend directly:
+#   from gradient_os.arm_controller.backends import registry
+#   backend = registry.get_active_backend()
+#   backend.set_joint_positions(angles, speed, accel)
+
 import time
 import serial
 import numpy as np
 import os
 import json
 import glob
-from typing import Iterable, Optional
+from typing import Iterable, Optional, TYPE_CHECKING
 
 from . import utils
 from . import servo_protocol
+from . import robot_config
+
+if TYPE_CHECKING:
+    from .actuator_interface import ActuatorBackend
+
+
+# =============================================================================
+# Backend Accessor
+# =============================================================================
+
+def _get_backend() -> Optional['ActuatorBackend']:
+    """
+    Get the active ActuatorBackend instance from the registry.
+    
+    Returns None if no backend is configured (allows fallback to legacy code).
+    This enables gradual migration - functions can check for a backend and
+    use it if available, otherwise fall back to servo_protocol.
+    
+    Returns:
+        Optional[ActuatorBackend]: The active backend, or None.
+    """
+    try:
+        from .backends import registry
+        if registry.is_instance_set():
+            return registry.get_active_backend()
+    except Exception:
+        pass
+    return None
+
+
+def _use_backend() -> bool:
+    """
+    Check if we should use the new backend system.
+    
+    Returns True if a backend instance is available and initialized.
+    Functions can use this for quick checks before deciding which path to take.
+    """
+    backend = _get_backend()
+    return backend is not None and backend.is_initialized
 
 def _env_truthy(var_name: str, default: bool = False) -> bool:
     """Return True if the given env var is set to a truthy value."""
@@ -304,8 +358,48 @@ def initialize_servos():
     """
     Initializes the serial connection to the servos, checks for their presence,
     and sets their default PID gains. This function must be called once at application startup.
+    
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available and initialized, this function will use it
+    to populate the present servo IDs and gripper status. The backend handles
+    serial port management, pinging, and PID configuration internally.
+    
+    For legacy operation (no backend), this function opens the serial port directly
+    and performs all initialization via servo_protocol.
     """
     print("[Pi] Initializing servos...")
+    
+    # Check if we have a backend available
+    backend = _get_backend()
+    if backend is not None and backend.is_initialized:
+        # --- Backend-based initialization ---
+        print("[Pi] Using ActuatorBackend for initialization...")
+        
+        # Get present servo IDs from the backend
+        present_servo_ids = list(backend.get_present_actuator_ids())
+        
+        # Update the servo_protocol cache for compatibility with legacy code
+        for s_id in present_servo_ids:
+            servo_protocol._present_servo_ids.add(s_id)
+        
+        # Check for gripper
+        gripper_id = backend.gripper_actuator_id
+        if gripper_id and gripper_id in present_servo_ids:
+            utils.gripper_present = True
+            print(f"[Pi] Gripper (ID {gripper_id}) is present.")
+        else:
+            utils.gripper_present = False
+            print(f"[Pi] Gripper is ABSENT.")
+        
+        # The backend's serial port should be accessible for legacy code
+        if hasattr(backend, 'serial_port') and backend.serial_port:
+            utils.ser = backend.serial_port
+        
+        print("[Pi] Servos initialized via backend.")
+        return
+    
+    # --- Legacy initialization (no backend) ---
     resolved_port = _resolve_serial_port()
     if resolved_port:
         utils.SERIAL_PORT = resolved_port
@@ -384,7 +478,38 @@ def set_single_servo_position_rads(servo_id: int, position_rad: float, speed: in
     """
     Commands a single servo to a specified position in radians using the
     efficient SYNC_WRITE protocol, consistent with how the main arm is controlled.
+    
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.sync_write() which handles
+    the conversion internally. Otherwise falls back to legacy servo_protocol.
     """
+    backend = _get_backend()
+    if backend and _use_backend():
+        # Use backend - it expects raw values, so we need to convert
+        try:
+            config_index = utils.SERVO_IDS.index(servo_id)
+        except ValueError:
+            print(f"[Pi] ERROR: Servo ID {servo_id} not found in configuration.")
+            return
+        
+        raw_pos_value = angle_to_raw(position_rad, config_index)
+        clamped_speed = int(max(0, min(utils.ENCODER_RESOLUTION, speed)))
+        
+        # Convert acceleration to register value
+        accel_reg_val = 0
+        if accel > 0:
+            accel_reg_val = int(round(accel / utils.ACCELERATION_SCALE_FACTOR))
+            accel_reg_val = max(1, min(254, accel_reg_val))
+        
+        # sync_write expects a list of tuples: [(servo_id, pos, speed, accel), ...]
+        backend.sync_write([(servo_id, raw_pos_value, clamped_speed, accel_reg_val)])
+        
+        print(f"[Pi] Commanded single servo {servo_id} to {position_rad:.2f} rad ({raw_pos_value}) "
+              f"with Speed={clamped_speed}, AccelReg={accel_reg_val} (via backend)")
+        return
+    
+    # --- Fallback to legacy servo_protocol ---
     if utils.ser is None:
         print("[Pi] Serial port not initialized, cannot set single servo position.")
         return
@@ -406,7 +531,7 @@ def set_single_servo_position_rads(servo_id: int, position_rad: float, speed: in
     raw_pos_value = angle_to_raw(position_rad, config_index)
 
     # Clamp the speed value.
-    clamped_speed = int(max(0, min(4095, speed)))
+    clamped_speed = int(max(0, min(utils.ENCODER_RESOLUTION, speed)))
 
     # Build the command tuple in the format the sync write function expects.
     command_tuple = (servo_id, raw_pos_value, clamped_speed, accel_reg_val)
@@ -416,6 +541,29 @@ def set_single_servo_position_rads(servo_id: int, position_rad: float, speed: in
     
     print(f"[Pi] Commanded single servo {servo_id} to {position_rad:.2f} rad ({raw_pos_value}) "
           f"with Speed={clamped_speed}, AccelReg={accel_reg_val}")
+
+
+def read_single_servo_position(servo_id: int) -> Optional[int]:
+    """
+    Read the raw position of a single servo.
+    
+    Args:
+        servo_id: The hardware ID of the servo.
+        
+    Returns:
+        The raw encoder value (0-4095 typically), or None if read failed.
+        
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.read_single_actuator_position().
+    Otherwise falls back to legacy servo_protocol.
+    """
+    backend = _get_backend()
+    if backend and _use_backend():
+        return backend.read_single_actuator_position(servo_id)
+    
+    # Fallback to legacy servo_protocol
+    return servo_protocol.read_servo_position(servo_id)
 
 
 def set_servo_positions(logical_joint_angles_rad: list[float], speed_value: int, acceleration_value_deg_s2: float):
@@ -433,7 +581,33 @@ def set_servo_positions(logical_joint_angles_rad: list[float], speed_value: int,
         logical_joint_angles_rad (list[float]): A list of 6 joint angles in radians.
         speed_value (int): The speed for the move (0-4095).
         acceleration_value_deg_s2 (float): The acceleration for the move in deg/s^2.
+        
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.set_joint_positions() which
+    handles all the mapping and conversion internally. Otherwise falls back to
+    legacy servo_protocol-based writing.
     """
+    # Check if we can use the backend
+    backend = _get_backend()
+    if backend is not None and backend.is_initialized:
+        # --- Backend-based position setting ---
+        if len(logical_joint_angles_rad) != backend.num_joints:
+            print(f"[Pi] Error: Expected {backend.num_joints} logical joint angles, got {len(logical_joint_angles_rad)}")
+            return
+        
+        # Update the global state
+        utils.current_logical_joint_angles_rad = list(logical_joint_angles_rad)
+        
+        # Use the backend
+        backend.set_joint_positions(
+            positions_rad=logical_joint_angles_rad,
+            speed=float(speed_value),
+            acceleration=acceleration_value_deg_s2,
+        )
+        return
+    
+    # --- Legacy servo_protocol-based writing ---
     if utils.ser is None:
         print("[Pi] Serial port not initialized, cannot set positions.")
         return
@@ -461,16 +635,10 @@ def set_servo_positions(logical_joint_angles_rad: list[float], speed_value: int,
         accel_reg_val_for_cycle = 0 # Explicitly set to 0 for max physical acceleration
 
     # Clamp the global speed value once
-    clamped_speed_value_for_cycle = int(max(0, min(4095, speed_value)))
+    clamped_speed_value_for_cycle = int(max(0, min(utils.ENCODER_RESOLUTION, speed_value)))
 
-    logical_to_physical_map = {
-        0: [0],     # Logical J1 -> Physical Servo ID 10
-        1: [1, 2],  # Logical J2 -> Physical Servo IDs 20, 21
-        2: [3, 4],  # Logical J3 -> Physical Servo IDs 30, 31
-        3: [5],     # Logical J4 -> Physical Servo ID 40
-        4: [6],     # Logical J5 -> Physical Servo ID 50
-        5: [7],     # Logical J6 -> Physical Servo ID 60
-    }
+    # Use robot configuration for logical-to-physical mapping
+    logical_to_physical_map = robot_config.LOGICAL_TO_PHYSICAL_MAP
 
     for logical_joint_index in range(utils.NUM_LOGICAL_JOINTS):
         # Master offset is still useful for high-level adjustments
@@ -502,13 +670,13 @@ def set_servo_positions(logical_joint_angles_rad: list[float], speed_value: int,
 
             # Apply mapping direction
             if utils._is_servo_direct_mapping(physical_servo_config_index):
-                raw_servo_value = normalized_value * 4095.0
+                raw_servo_value = normalized_value * utils.ENCODER_RESOLUTION
             else: 
-                raw_servo_value = (1.0 - normalized_value) * 4095.0
+                raw_servo_value = (1.0 - normalized_value) * utils.ENCODER_RESOLUTION
             
             # The calculation is now simpler as we don't add a software offset.
             final_servo_pos_value = int(round(raw_servo_value))
-            final_servo_pos_value = max(0, min(4095, final_servo_pos_value))
+            final_servo_pos_value = max(0, min(utils.ENCODER_RESOLUTION, final_servo_pos_value))
 
             # --- IMPORTANT: Only command servos that are present ---
             if current_physical_servo_id not in servo_protocol.get_present_servo_ids():
@@ -555,18 +723,18 @@ def servo_value_to_radians(servo_value: int, physical_servo_config_index: int) -
         return 0.0 # Or some indicator of failure
 
     # Ensure servo_value is within expected bounds for safety in calculation, though it should be.
-    servo_value = max(0, min(4095, servo_value))
+    servo_value = max(0, min(utils.ENCODER_RESOLUTION, servo_value))
 
     min_map_rad, max_map_rad = utils.EFFECTIVE_MAPPING_RANGES[physical_servo_config_index]
 
-    # 1. Normalize the servo value from [0, 4095] to [0, 1]
+    # 1. Normalize the servo value from [0, ENCODER_RESOLUTION] to [0, 1]
     # Undo inversion based on the physical_servo_config_index
     is_direct_mapping = utils._is_servo_direct_mapping(physical_servo_config_index)
 
     if is_direct_mapping:
-        normalized_direct = servo_value / 4095.0
+        normalized_direct = servo_value / utils.ENCODER_RESOLUTION
     else: # Standard inverted mapping
-        normalized_inverted = servo_value / 4095.0
+        normalized_inverted = servo_value / utils.ENCODER_RESOLUTION
         normalized_direct = 1.0 - normalized_inverted
     
     # 3. De-normalize this direct value back to the radian range for that joint.
@@ -577,7 +745,7 @@ def servo_value_to_radians(servo_value: int, physical_servo_config_index: int) -
 
 def angle_to_raw(angle_rad: float, physical_servo_config_index: int) -> int:
     """
-    Converts a physical angle in radians to a raw servo value (0-4095).
+    Converts a physical angle in radians to a raw servo value (0-ENCODER_RESOLUTION).
     This is the core conversion logic used by both single and sync servo writes.
     """
     min_map_rad, max_map_rad = utils.EFFECTIVE_MAPPING_RANGES[physical_servo_config_index]
@@ -589,31 +757,31 @@ def angle_to_raw(angle_rad: float, physical_servo_config_index: int) -> int:
 
     # Apply mapping direction
     if utils._is_servo_direct_mapping(physical_servo_config_index):
-        raw_servo_value = normalized_value * 4095.0
+        raw_servo_value = normalized_value * utils.ENCODER_RESOLUTION
     else: 
-        raw_servo_value = (1.0 - normalized_value) * 4095.0
+        raw_servo_value = (1.0 - normalized_value) * utils.ENCODER_RESOLUTION
     
     final_servo_pos_value = int(round(raw_servo_value))
-    return max(0, min(4095, final_servo_pos_value))
+    return max(0, min(utils.ENCODER_RESOLUTION, final_servo_pos_value))
 
 
 def raw_to_angle_rad(raw_value: int, physical_servo_config_index: int) -> float:
     """
-    Converts a raw servo value (0-4095) to a physical angle in radians.
+    Converts a raw servo value (0-ENCODER_RESOLUTION) to a physical angle in radians.
     This is the inverse of angle_to_raw.
     """
     if raw_value is None:
         return 0.0
 
-    servo_value = max(0, min(4095, raw_value))
+    servo_value = max(0, min(utils.ENCODER_RESOLUTION, raw_value))
     min_map_rad, max_map_rad = utils.EFFECTIVE_MAPPING_RANGES[physical_servo_config_index]
     
     is_direct = utils._is_servo_direct_mapping(physical_servo_config_index)
     
     if is_direct:
-        normalized = servo_value / 4095.0
+        normalized = servo_value / utils.ENCODER_RESOLUTION
     else:
-        normalized = 1.0 - (servo_value / 4095.0)
+        normalized = 1.0 - (servo_value / utils.ENCODER_RESOLUTION)
         
     angle = normalized * (max_map_rad - min_map_rad) + min_map_rad
     return angle
@@ -632,6 +800,11 @@ def set_servo_pid_gains(servo_id: int, kp: int, ki: int, kd: int) -> bool:
 
     Returns:
         bool: True on success, False on failure.
+        
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.set_pid_gains() which
+    handles the register writes internally.
     """
     def _clamp_byte(value: int) -> int:
         try:
@@ -652,6 +825,19 @@ def set_servo_pid_gains(servo_id: int, kp: int, ki: int, kd: int) -> bool:
         print(f"[Pi] PID inputs clamped to 0-254 for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
     else:
         print(f"[Pi] Setting PID for Servo {servo_id}: Kp={kp}, Ki={ki}, Kd={kd}")
+
+    # Check if we can use the backend
+    backend = _get_backend()
+    if backend is not None and backend.is_initialized:
+        # --- Backend-based PID setting ---
+        success = backend.set_pid_gains(servo_id, kp, ki, kd)
+        if success:
+            print(f"[Pi] Successfully set PID for Servo {servo_id} via backend")
+        else:
+            print(f"[Pi] PID setting FAILED for Servo {servo_id} via backend")
+        return success
+    
+    # --- Legacy servo_protocol-based PID setting ---
     # Note: PID registers are in EEPROM. Need to ensure EEPROM is unlocked if necessary.
     # The STSServoDriver.cpp unlocks EEPROM (reg 0x37) before writing to ID (0x05) or PosCorrection (0x1F).
     # For standard PID registers, direct write might be okay if servo isn't locked by default for these.
@@ -739,10 +925,33 @@ def get_current_arm_state_rad(verbose: bool = True) -> list[float]:
 
     Returns:
         list[float]: A list of 6 joint angles in radians.
+        
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.get_joint_positions() which
+    handles all the servo reading and mapping internally. Otherwise falls back to
+    legacy servo_protocol-based reading.
     """
     if verbose:
         print("[Pi] Getting current arm state...")
 
+    # Check if we can use the backend
+    backend = _get_backend()
+    if backend is not None and backend.is_initialized:
+        # --- Backend-based reading ---
+        current_logical_angles_rad = backend.get_joint_positions(verbose=verbose)
+        
+        # Update the global state with the newly read values
+        utils.current_logical_joint_angles_rad = current_logical_angles_rad
+        
+        if verbose:
+            angles_deg = np.rad2deg(current_logical_angles_rad)
+            print(f"[Pi] Current logical angles (deg): {np.round(angles_deg, 2)}")
+        
+        return current_logical_angles_rad
+
+    # --- Legacy servo_protocol-based reading ---
+    
     # Use a single SYNC READ for efficiency, targeting only the arm servos (not gripper)
     arm_servo_ids = [sid for sid in utils.SERVO_IDS if sid != utils.SERVO_ID_GRIPPER]
     
@@ -763,17 +972,11 @@ def get_current_arm_state_rad(verbose: bool = True) -> list[float]:
     # Convert raw servo values to logical joint angles in radians
     current_logical_angles_rad = [0.0] * utils.NUM_LOGICAL_JOINTS
     
-    # Define the mapping from logical joints to their corresponding physical servo IDs
-    logical_to_physical_map = {
-        0: [10],
-        1: [20, 21],
-        2: [30, 31],
-        3: [40],
-        4: [50],
-        5: [60],
-    }
+    # Get logical-to-physical mapping from robot config (not hardcoded)
+    # Build a map from logical joint index to servo IDs
+    logical_to_physical_id_map = _build_logical_to_servo_id_map()
 
-    for logical_joint_index, physical_ids in logical_to_physical_map.items():
+    for logical_joint_index, physical_ids in logical_to_physical_id_map.items():
         angles_for_this_joint = []
         for servo_id in physical_ids:
             if servo_id in raw_positions:
@@ -811,6 +1014,34 @@ def get_current_arm_state_rad(verbose: bool = True) -> list[float]:
     return current_logical_angles_rad
 
 
+def _build_logical_to_servo_id_map() -> dict[int, list[int]]:
+    """
+    Build a map from logical joint index (0-based) to physical servo IDs.
+    
+    This uses the robot configuration instead of hardcoded values.
+    
+    Returns:
+        dict[int, list[int]]: Maps logical joint index to list of servo IDs.
+    """
+    # Get the logical_to_physical_map from robot config
+    # This maps logical joint index -> list of config indices
+    # NOTE: Must access robot_config directly (not utils) to get latest values
+    logical_to_physical = robot_config.LOGICAL_TO_PHYSICAL_MAP
+    servo_ids = robot_config.SERVO_IDS
+    
+    if logical_to_physical is None or servo_ids is None:
+        # Fallback if robot config not yet set
+        print("[Pi] Warning: Robot config not set, cannot build logical-to-servo map")
+        return {}
+    
+    result = {}
+    for logical_idx, physical_indices in logical_to_physical.items():
+        # Convert config indices to servo IDs
+        result[logical_idx] = [servo_ids[idx] for idx in physical_indices]
+    
+    return result
+
+
 def set_current_position_as_hardware_zero(servo_id: int):
     """
     Commands a servo to set its current physical position as its new zero point.
@@ -818,7 +1049,33 @@ def set_current_position_as_hardware_zero(servo_id: int):
 
     Args:
         servo_id (int): The ID of the servo to calibrate.
+        
+    Migration Note:
+    ---------------
+    If an ActuatorBackend is available, uses backend.set_current_position_as_zero()
+    which handles the calibration command internally.
     """
+    # Check if we can use the backend
+    backend = _get_backend()
+    if backend is not None and backend.is_initialized:
+        # --- Backend-based calibration ---
+        present_ids = backend.get_present_actuator_ids()
+        if servo_id not in present_ids:
+            print(f"[Pi] Cannot set zero for absent servo {servo_id}.")
+            return
+        
+        print(f"[Pi] Setting zero for servo {servo_id} via backend...")
+        if backend.set_current_position_as_zero(servo_id):
+            print(f"[Pi] Servo {servo_id} has set its current position as the new zero point.")
+            # Refresh limits for gripper
+            if servo_id == utils.SERVO_ID_GRIPPER:
+                print(f"[Pi] Refreshing gripper limits after zeroing...")
+                set_servo_angle_limits_from_urdf()
+        else:
+            print(f"[Pi] Failed to set zero for servo {servo_id}.")
+        return
+    
+    # --- Legacy servo_protocol-based calibration ---
     if utils.ser is None or not utils.ser.is_open:
         print(f"[Pi] Serial port not open. Cannot set zero for servo {servo_id}.")
         return
@@ -991,10 +1248,8 @@ def logical_q_to_syncwrite_tuple(logical_joint_angles_rad: list[float],
     Returns:
         A list of tuples, where each tuple is (servo_id, position, speed, accel).
     """
-    # This map needs to be kept in sync with the physical robot structure.
-    logical_to_physical_map = {
-        0: [0], 1: [1, 2], 2: [3, 4], 3: [5], 4: [6], 5: [7],
-    }
+    # Use robot configuration for logical-to-physical mapping
+    logical_to_physical_map = robot_config.LOGICAL_TO_PHYSICAL_MAP
 
     commands = []
     for logical_idx, physical_indices in logical_to_physical_map.items():

@@ -1,22 +1,41 @@
 # This script will be the main entry point for running the robot controller.
 # It will import logic from the 'src/arm_controller' package and start the UDP server.
+#
+# Configuration:
+# --------------
+# The robot and servo backend are configured via command-line arguments:
+#   --robot: Which robot configuration to use (e.g., "gradient0")
+#   --servo-backend: Which servo backend to use (e.g., "feetech")
+#
+# This allows the frontend to expose robot/servo selection and makes the
+# configuration explicit at startup rather than buried in code.
+
 import socket
 import time
 import traceback
 import sys
 import os
-import numpy as np # Added for gripper angle conversion
+import numpy as np
 import argparse
 import threading
 import subprocess
 import json
 
 try:
+    # Import the backend registry FIRST - it must be configured before other modules
+    from .arm_controller.backends import registry as backend_registry
+    
     from .arm_controller import (
         command_api,
         servo_driver,
         servo_protocol,
-        utils
+        utils,
+        robot_config,
+    )
+    from .arm_controller.robots import (
+        get_robot_config,
+        list_available_robots,
+        RobotConfig,
     )
     from .telemetry import alerts as _alerts
 except ImportError as e:
@@ -24,44 +43,175 @@ except ImportError as e:
     print("Please ensure the script is run from the project root directory and 'src' is in the Python path.")
     sys.exit(1)
 
+# Get available servo backends from the registry
+AVAILABLE_SERVO_BACKENDS = backend_registry.list_available_backends()
+
 
 def main():
     """
     Main entry point for the robot controller.
 
     This function performs the following steps:
-    1. Initializes the hardware (serial port, servos, PID gains, angle limits).
-    2. Performs an initial read of servo positions to synchronize the internal state.
-    3. Enters an infinite loop to listen for UDP commands.
-    4. Parses incoming commands and dispatches them to the appropriate handler
+    1. Parses command-line arguments for robot and servo configuration.
+    2. Initializes the robot configuration and servo backend.
+    3. Initializes the hardware (serial port, servos, PID gains, angle limits).
+    4. Performs an initial read of servo positions to synchronize the internal state.
+    5. Enters an infinite loop to listen for UDP commands.
+    6. Parses incoming commands and dispatches them to the appropriate handler
        in the `command_api` module.
-    5. Manages a simple calibration mode for streaming servo data.
-    6. Ensures a graceful shutdown of the serial port on exit.
+    7. Manages a simple calibration mode for streaming servo data.
+    8. Ensures a graceful shutdown of the serial port on exit.
     """
-    parser = argparse.ArgumentParser(description="Robot Arm Controller")
+    # Get list of available robots for help text
+    available_robots = list_available_robots()
+    
+    parser = argparse.ArgumentParser(
+        description="Robot Arm Controller",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"""
+Available robots: {', '.join(available_robots)}
+Available servo backends: {', '.join(AVAILABLE_SERVO_BACKENDS)}
+
+Examples:
+  python -m gradient_os.run_controller --robot gradient0 --servo-backend feetech
+  python -m gradient_os.run_controller --robot gradient0 --sim
+        """
+    )
+    parser.add_argument(
+        "--robot",
+        type=str,
+        default="gradient0",
+        choices=available_robots,
+        help=f"Robot configuration to use. Available: {', '.join(available_robots)} (default: gradient0)",
+    )
+    parser.add_argument(
+        "--servo-backend",
+        type=str,
+        default=None,  # Will use robot's default if not specified
+        choices=AVAILABLE_SERVO_BACKENDS,
+        help=f"Servo backend to use. Available: {', '.join(AVAILABLE_SERVO_BACKENDS)} (default: from robot config)",
+    )
     parser.add_argument(
         "--serial-port",
         type=str,
-        default="/dev/ttyUSB0",
-        help="The serial port to connect to the robot arm.",
+        default=None,
+        help="Override the serial port (default: from robot config).",
     )
     parser.add_argument(
         "--sim",
         action="store_true",
         help="Run the controller against an in-memory servo simulator instead of hardware.",
     )
+    parser.add_argument(
+        "--list-robots",
+        action="store_true",
+        help="List available robot configurations and exit.",
+    )
     args = parser.parse_args()
 
-    # Update the serial port from the command line argument
+    # Handle --list-robots
+    if args.list_robots:
+        print("Available robot configurations:")
+        for robot_name in available_robots:
+            try:
+                cfg = get_robot_config(robot_name)
+                print(f"  - {robot_name}: {cfg.name} v{cfg.version} ({cfg.num_logical_joints} joints, {cfg.num_physical_actuators} actuators)")
+            except Exception as e:
+                print(f"  - {robot_name}: (error loading: {e})")
+        sys.exit(0)
+
+    # ==========================================================================
+    # Initialize Robot Configuration
+    # ==========================================================================
+    print(f"[Controller] Loading robot configuration: {args.robot}")
+    try:
+        selected_robot = get_robot_config(args.robot)
+        print(f"[Controller] Robot: {selected_robot.name} v{selected_robot.version}")
+        print(f"[Controller]   - {selected_robot.num_logical_joints} logical joints")
+        print(f"[Controller]   - {selected_robot.num_physical_actuators} physical actuators")
+        print(f"[Controller]   - Gripper: {'Yes' if selected_robot.has_gripper else 'No'}")
+        
+        # Update the global robot configuration
+        robot_config.set_active_robot(selected_robot)
+    except Exception as e:
+        print(f"[Controller] Error loading robot configuration '{args.robot}': {e}")
+        sys.exit(1)
+
+    # ==========================================================================
+    # Configure Serial Port
+    # ==========================================================================
+    # Priority: command-line arg > robot config default
     if args.serial_port:
         utils.SERIAL_PORT = args.serial_port
+        print(f"[Controller] Serial port (from command line): {utils.SERIAL_PORT}")
+    else:
+        utils.SERIAL_PORT = selected_robot.default_serial_port
+        print(f"[Controller] Serial port (from robot config): {utils.SERIAL_PORT}")
 
+    # ==========================================================================
+    # Configure Servo Backend (MUST be done before using any servo-dependent modules)
+    # ==========================================================================
+    # Priority: command-line arg > robot's default
+    # If --sim is specified, override to use simulation backend
+    if args.sim:
+        servo_backend = "simulation"
+        print("[Controller] Running in SIMULATION mode (no hardware)")
+    else:
+        servo_backend = args.servo_backend if args.servo_backend else selected_robot.default_servo_backend
+    
+    print(f"[Controller] Servo backend: {servo_backend}")
+    
+    # Set active backend CONFIG (loads constants like encoder resolution, register addresses)
+    # Note: For simulation, we still use feetech config since it doesn't have its own
+    config_backend = servo_backend if servo_backend != "simulation" else "feetech"
+    backend_registry.set_active_backend(config_backend)
+    
+    # Populate utils with servo-specific constants from the active backend
+    utils._populate_servo_constants()
+    
+    # Now that backend is configured, update robot_config's BAUD_RATE
+    robot_config.BAUD_RATE = backend_registry.get_default_baud_rate()
+    
+    # ==========================================================================
+    # Create and Initialize Backend Instance
+    # ==========================================================================
+    # This creates the actual ActuatorBackend object that performs I/O operations.
+    # The backend is created from the robot config and handles all hardware communication.
+    print(f"[Controller] Creating {servo_backend} backend instance...")
+    robot_config_dict = selected_robot.get_config_dict()
+    
+    try:
+        active_backend = backend_registry.create_backend(
+            backend_name=servo_backend,
+            robot_config=robot_config_dict,
+            serial_port=utils.SERIAL_PORT,
+        )
+        
+        # Set as active backend BEFORE initialization (in case other modules query it)
+        backend_registry.set_active_backend_instance(active_backend)
+        
+        # Initialize the backend (opens serial port, pings servos, sets PID gains)
+        # Note: We still call the legacy servo_driver.initialize_servos() for now
+        # since higher-level modules depend on it. In Phase 2, we'll migrate to
+        # using the backend directly.
+    except Exception as e:
+        print(f"[Controller] Error creating backend: {e}")
+        print("[Controller] Falling back to legacy initialization...")
+        # For backward compatibility during migration, if backend creation fails,
+        # we continue with legacy initialization
+
+    # ==========================================================================
+    # Legacy Initialization (to be migrated in Phase 2)
+    # ==========================================================================
+    # For now, we still use servo_driver which uses servo_protocol directly.
+    # Once Phase 2 is complete, this will be replaced with:
+    #   active_backend.initialize()
+    #   active_backend.apply_joint_limits()
     if args.sim:
         from .arm_controller import sim_backend
-
         sim_backend.activate()
 
-    # Initialize the hardware
+    # Initialize the hardware using legacy servo_driver
     servo_driver.initialize_servos()
     servo_driver.set_servo_angle_limits_from_urdf()
 
@@ -70,11 +220,8 @@ def main():
     utils.current_logical_joint_angles_rad = servo_driver.get_current_arm_state_rad()
     # If gripper is present, also get its initial state
     if utils.gripper_present:
-        # Use the generic and robust word-reading function
-        raw_pos = servo_protocol.read_servo_register_word(
-            utils.SERVO_ID_GRIPPER,
-            utils.SERVO_ADDR_PRESENT_POSITION
-        )
+        # Read gripper position via servo_driver (uses backend if available)
+        raw_pos = servo_driver.read_single_servo_position(utils.SERVO_ID_GRIPPER)
         if raw_pos is not None:
             try:
                 gripper_config_index = utils.SERVO_IDS.index(utils.SERVO_ID_GRIPPER)
@@ -113,6 +260,10 @@ def main():
             period = 1.0 / max(1, int(telemetry_hz))
             udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             last_extra_ts = 0.0  # throttle extended servo telemetry to ~2 Hz
+            
+            # Get telemetry block configuration from the active backend
+            telemetry_blocks = backend_registry.get_telemetry_blocks()
+            
             while not telemetry_stop_event.is_set():
                 try:
                     q = servo_driver.get_current_arm_state_rad(verbose=False)
@@ -120,101 +271,53 @@ def main():
                     msg: dict[str, object] = {"t": time.time(), "joints": [float(x) for x in q]}
                     if g is not None:
                         msg["gripper"] = float(g)
+                    
                     # --- Servo telemetry (voltage/temp/current/torque + alarms) ---
                     now = time.time()
                     if now - last_extra_ts >= 0.5:
                         last_extra_ts = now
                         try:
-                            present_ids = list(servo_protocol.get_present_servo_ids())
+                            # Get present servo IDs from backend or use configured IDs
+                            backend = backend_registry.get_active_backend()
+                            if backend and hasattr(backend, 'present_servo_ids'):
+                                present_ids = list(backend.present_servo_ids)
+                            else:
+                                present_ids = list(utils.SERVO_IDS)
+                            
                             if present_ids:
-                                blk1 = servo_protocol.sync_read_block(present_ids, start_address=0x38, data_len=8, timeout_s=0.05, diagnostics=False)  # pos,speed,duty,voltage,temp
-                                blk2 = servo_protocol.sync_read_block(present_ids, start_address=0x41, data_len=5, timeout_s=0.05, diagnostics=False)  # status,moving,*,*,current
-                                blk3 = servo_protocol.sync_read_block(present_ids, start_address=0x13, data_len=2, timeout_s=0.05, diagnostics=False)  # unloading,led_alarm
+                                # Read telemetry blocks using backend-defined addresses
+                                block_data = []
+                                for addr, length in telemetry_blocks:
+                                    if backend and hasattr(backend, 'sync_read_block'):
+                                        block_data.append(backend.sync_read_block(
+                                            present_ids, start_address=addr, data_len=length
+                                        ))
+                                    else:
+                                        block_data.append(servo_protocol.sync_read_block(
+                                            present_ids, start_address=addr, data_len=length,
+                                            timeout_s=0.05, diagnostics=False
+                                        ))
+                                
                                 servos: dict[str, dict[str, object]] = {}
                                 for sid in present_ids:
-                                    d1 = blk1.get(sid)
-                                    d2 = blk2.get(sid)
-                                    d3 = blk3.get(sid)
-                                    if not d1 and not d2 and not d3:
-                                        continue
-                                    voltage_v = None
-                                    temp_c = None
-                                    current_a = None
-                                    drive_pm = None
-                                    if d1 and len(d1) == 8:
-                                        # d1 layout (@0x38, len 8): pos(2), speed(2), load/drive duty (2), voltage(1), temp(1)
-                                        load_raw = int.from_bytes(d1[4:6], "little", signed=False)
-                                        # Feetech STS "Present Load" encodes direction in bit 10 (0x400),
-                                        # magnitude in bits 0..9 (per‑mille, 0..1023). Keep full magnitude (allows >100%).
-                                        load_mag_pm = (load_raw & 0x3FF)
-                                        # Direction bit is not needed for the UI; use absolute magnitude only
-                                        drive_pm = load_mag_pm
-                                        voltage_v = float(d1[6]) / 10.0
-                                        temp_c = int(d1[7])
-                                    if d2 and len(d2) == 5:
-                                        # d2: [status(1), moving(1), rsvd(1), rsvd(1), current(2)]
-                                        status_byte = int(d2[0])
-                                        current_raw = int.from_bytes(d2[4:6], "little", signed=True)
-                                        current_a = current_raw * 0.0065
                                     sample: dict[str, object] = {}
-                                    if voltage_v is not None:
-                                        sample["voltage_v"] = voltage_v
-                                    if temp_c is not None:
-                                        sample["temp_c"] = temp_c
-                                    if current_a is not None:
-                                        sample["current_a"] = current_a
-                                    if drive_pm is not None:
-                                        sample["drive_duty_per_mille"] = drive_pm
-                                    if d3 and len(d3) == 2:
-                                        unload = int(d3[0]); led = int(d3[1])
-                                        sample["unloading_condition"] = unload
-                                        sample["led_alarm_condition"] = led
-                                        def _names_for(val: int) -> list[str]:
-                                            labels = {
-                                                0: "Overload",
-                                                1: "Overheat",
-                                                2: "Overvoltage",
-                                                3: "Undervoltage",
-                                                4: "Stall",
-                                                5: "Position Fault",
-                                                6: "Comm/Error",
-                                                7: "Unknown",
-                                            }
-                                            return [labels.get(i, f"b{i}") for i in range(8) if ((val >> i) & 1) == 1]
-                                        def _bits(b: int) -> str:
-                                            bits = [f"b{i}" for i in range(8) if ((b >> i) & 1) == 1]
-                                            return ",".join(bits)
-                                        sample["unloading_bits"] = _bits(unload)
-                                        sample["led_alarm_bits"] = _bits(led)
-                                        sample["unloading_names"] = _names_for(unload)
-                                        sample["led_alarm_names"] = _names_for(led)
-                                    # Active status (live)
-                                    try:
-                                        sbits = _bits(status_byte)
-                                        sample["status_bits"] = sbits
-                                        # Map status bits to readable names (best-effort)
-                                        def _status_names(val: int) -> list[str]:
-                                            labels = {
-                                                0: "Overload",
-                                                1: "Overheat",
-                                                2: "Overvoltage",
-                                                3: "Undervoltage",
-                                                4: "Stall",
-                                                5: "Position Fault",
-                                                6: "Comm/Error",
-                                                7: "Unknown",
-                                            }
-                                            return [labels.get(i, f"b{i}") for i in range(8) if ((val >> i) & 1) == 1]
-                                        sample["status_names"] = _status_names(status_byte)
-                                    except Exception:
-                                        pass
+                                    
+                                    # Parse each block using backend-specific parsing
+                                    for block_idx, raw_block in enumerate(block_data):
+                                        data = raw_block.get(sid)
+                                        if data:
+                                            parsed = backend_registry.parse_telemetry_block(block_idx, data)
+                                            sample.update(parsed)
+                                    
                                     if sample:
                                         servos[str(sid)] = sample
+                                
                                 if servos:
                                     msg["servos"] = servos
                         except Exception:
                             # Do not let telemetry extras break the main joints stream
                             pass
+                    
                     # Drain any alerts collected by lower layers and attach them
                     try:
                         drained = _alerts.drain_alerts(max_items=25)
@@ -226,6 +329,7 @@ def main():
                             msg["alerts"] = drained
                     except Exception:
                             pass
+                    
                     if telemetry_target is not None:
                         udp.sendto(json.dumps(msg).encode("utf-8"), telemetry_target)
                 except Exception:
@@ -264,7 +368,7 @@ def main():
                         calibrating_servo_id = None
                         calibration_client_addr = None
                     else: # Continue streaming calibration data
-                        raw_pos = servo_protocol.read_servo_position(calibrating_servo_id)
+                        raw_pos = servo_driver.read_single_servo_position(calibrating_servo_id)
                         if raw_pos is not None:
                             reply = f"CALIB_DATA,{calibrating_servo_id},{raw_pos}"
                             sock.sendto(reply.encode("utf-8"), calibration_client_addr)
@@ -286,22 +390,15 @@ def main():
 
                 elif command == "SET_ZERO":
                     try:
-                        joint_num = int(parts[1])  # Expect 1-6 now
-
-                        if not (1 <= joint_num <= utils.NUM_LOGICAL_JOINTS or joint_num == 7): # 7 is for gripper
-                            print("[Controller] Error: Joint number must be 1-6 for arm, or 7 for gripper.")
+                        joint_num = int(parts[1])  # Expect 1-6 for arm, 7 for gripper
+                        
+                        # Get joint-to-servo mapping from robot config
+                        joint_to_servo_ids = selected_robot.logical_joint_to_actuator_ids
+                        max_joint = max(joint_to_servo_ids.keys())
+                        
+                        if joint_num not in joint_to_servo_ids:
+                            print(f"[Controller] Error: Joint number must be 1-{selected_robot.num_logical_joints} for arm, or {max_joint} for gripper.")
                             continue
-
-                        # Map logical joint numbers to their physical servo IDs
-                        joint_to_servo_ids = {
-                            1: [10],      # Base
-                            2: [20, 21],  # Shoulder
-                            3: [30, 31],  # Elbow
-                            4: [40],      # Wrist roll
-                            5: [50],      # Wrist pitch
-                            6: [60],      # Wrist yaw
-                            7: [utils.SERVO_ID_GRIPPER], # Gripper
-                        }
 
                         servos_to_zero = joint_to_servo_ids[joint_num]
                         print(f"[Controller] SET_ZERO (Joint {joint_num}) will calibrate servos: {servos_to_zero}")
@@ -318,14 +415,28 @@ def main():
                         print(f"[Controller] WARNING: Received FACTORY_RESET for Servo ID: {servo_id_to_reset}.")
                         print("[Controller] This will reset all EEPROM values (PID, offsets, limits) to factory defaults, except for the ID.")
 
-                        if servo_protocol.factory_reset_servo(servo_id_to_reset):
+                        # Use backend if available, otherwise fall back to servo_protocol
+                        backend = backend_registry.get_active_backend()
+                        reset_success = False
+                        if backend and hasattr(backend, 'factory_reset_actuator'):
+                            reset_success = backend.factory_reset_actuator(servo_id_to_reset)
+                        else:
+                            reset_success = servo_protocol.factory_reset_servo(servo_id_to_reset)
+                        
+                        if reset_success:
                             print(f"[Controller] Factory reset command sent to servo {servo_id_to_reset}.")
                             # Add a longer delay for the servo to process the EEPROM write before restarting.
                             print("[Controller] Waiting 1 second for servo to process reset...")
                             time.sleep(1.0)
 
                             print(f"[Controller] Now sending RESTART command to servo ID {servo_id_to_reset}.")
-                            if servo_protocol.restart_servo(servo_id_to_reset):
+                            restart_success = False
+                            if backend and hasattr(backend, 'restart_actuator'):
+                                restart_success = backend.restart_actuator(servo_id_to_reset)
+                            else:
+                                restart_success = servo_protocol.restart_servo(servo_id_to_reset)
+                            
+                            if restart_success:
                                 print(f"[Controller] Servo {servo_id_to_reset} has been reset and restarted.")
                                 # CRITICAL: Re-initialize the servo with our application's settings
                                 time.sleep(1.0) # Wait for servo to be fully online after restart
@@ -339,13 +450,17 @@ def main():
 
                 elif command == "GET_ALL_POSITIONS":
                     # Use a single SYNC READ command for faster bulk feedback
-                    positions_dict = servo_protocol.sync_read_positions(utils.SERVO_IDS)
+                    backend = backend_registry.get_active_backend()
+                    if backend and hasattr(backend, 'sync_read_positions'):
+                        positions_dict = backend.sync_read_positions(utils.SERVO_IDS)
+                    else:
+                        positions_dict = servo_protocol.sync_read_positions(utils.SERVO_IDS)
 
                     # If the sync read failed, fall back to the slower per-servo read to maintain functionality
                     if positions_dict is None:
                         positions_dict = {}
                         for s_id in utils.SERVO_IDS:
-                            raw_pos = servo_protocol.read_servo_position(s_id)
+                            raw_pos = servo_driver.read_single_servo_position(s_id)
                             positions_dict[s_id] = raw_pos
                             time.sleep(0.01)  # brief spacing to avoid overwhelming the bus
 
@@ -857,7 +972,7 @@ def main():
             except socket.timeout:
                 if in_calibration_mode and calibrating_servo_id is not None:
                     # Keep streaming calibration data if no new command arrives
-                    raw_pos = servo_protocol.read_servo_position(calibrating_servo_id)
+                    raw_pos = servo_driver.read_single_servo_position(calibrating_servo_id)
                     if raw_pos is not None:
                         reply = f"CALIB_DATA,{calibrating_servo_id},{raw_pos}"
                         sock.sendto(reply.encode("utf-8"), calibration_client_addr)
@@ -875,6 +990,14 @@ def main():
     finally:
         print("[Controller] Shutting down.")
         sock.close()
+        
+        # Shutdown the backend instance (closes serial port, releases resources)
+        try:
+            backend_registry.shutdown_backend()
+        except Exception as e:
+            print(f"[Controller] Backend shutdown error: {e}")
+        
+        # Legacy: Also close the global serial port if open
         if utils.ser and utils.ser.is_open:
             utils.ser.close()
             print("[Controller] Serial port closed.")
