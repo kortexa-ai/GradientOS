@@ -191,9 +191,9 @@ Examples:
         backend_registry.set_active_backend_instance(active_backend)
         
         # Initialize the backend (opens serial port, pings servos, sets PID gains)
-        # Note: We still call the legacy servo_driver.initialize_servos() for now
-        # since higher-level modules depend on it. In Phase 2, we'll migrate to
-        # using the backend directly.
+        if not active_backend.initialize():
+            print("[Controller] WARNING: Backend initialization returned False")
+        
     except Exception as e:
         print(f"[Controller] Error creating backend: {e}")
         print("[Controller] Falling back to legacy initialization...")
@@ -452,7 +452,7 @@ Examples:
                     # Use a single SYNC READ command for faster bulk feedback
                     backend = backend_registry.get_active_backend()
                     if backend and hasattr(backend, 'sync_read_positions'):
-                        positions_dict = backend.sync_read_positions(utils.SERVO_IDS)
+                        positions_dict = backend.sync_read_positions()
                     else:
                         positions_dict = servo_protocol.sync_read_positions(utils.SERVO_IDS)
 

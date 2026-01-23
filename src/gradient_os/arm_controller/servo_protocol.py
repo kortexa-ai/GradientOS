@@ -168,11 +168,11 @@ def ping(servo_id: int) -> bool:
     # PING Packet: [0xFF, 0xFF, ID, Length=2, Instr=0x01, Checksum]
     # Length = (Num Instruction Parameters) + 2. Here: 0 params. 0+2=2.
     ping_command = bytearray(6)
-    ping_command[0] = SERVO_HEADER
-    ping_command[1] = SERVO_HEADER
+    ping_command[0] = utils.SERVO_HEADER
+    ping_command[1] = utils.SERVO_HEADER
     ping_command[2] = servo_id
     ping_command[3] = 2  # Length
-    ping_command[4] = SERVO_INSTRUCTION_PING
+    ping_command[4] = utils.SERVO_INSTRUCTION_PING
     
     # Checksum for ping command (ID, Length, Instr)
     ping_command[5] = calculate_checksum(ping_command[2:5])
@@ -279,12 +279,12 @@ def send_servo_command(servo_id: int, position_value: int, speed_value: int = No
     # Start Address = SERVO_ADDR_TARGET_POSITION (0x2A)
 
     packet = bytearray(13)
-    packet[0] = SERVO_HEADER # 0xFF
-    packet[1] = SERVO_HEADER # 0xFF
+    packet[0] = utils.SERVO_HEADER # 0xFF
+    packet[1] = utils.SERVO_HEADER # 0xFF
     packet[2] = servo_id     # Servo ID
     packet[3] = 9            # Packet Length = (Num Instruction Parameters) + 2. Here: Addr + 6 data bytes = 7 params. 7+2=9.
-    packet[4] = SERVO_INSTRUCTION_WRITE # 0x03
-    packet[5] = SERVO_ADDR_TARGET_POSITION # 0x2A (Start address for Goal Position)
+    packet[4] = utils.SERVO_INSTRUCTION_WRITE # 0x03
+    packet[5] = utils.SERVO_ADDR_TARGET_POSITION # 0x2A (Start address for Goal Position)
     packet[6] = pos_val_clamped & 0xFF # Position Low Byte
     packet[7] = (pos_val_clamped >> 8) & 0xFF # Position High Byte
     packet[8] = 0 # Padding / Time_L (set to 0)
@@ -318,26 +318,32 @@ def write_servo_angle_limits(servo_id: int, min_limit_raw: int, max_limit_raw: i
     Returns:
         bool: True if all steps were successful, False otherwise.
     """
+    # Get constants from backend config
+    cfg = _get_backend_config()
+    ADDR_WRITE_LOCK = cfg.SERVO_ADDR_WRITE_LOCK
+    ADDR_MIN_ANGLE = cfg.SERVO_ADDR_MIN_ANGLE_LIMIT
+    ADDR_MAX_ANGLE = cfg.SERVO_ADDR_MAX_ANGLE_LIMIT
+    
     # 1. Unlock EEPROM
-    if not write_servo_register_byte(servo_id, SERVO_ADDR_WRITE_LOCK, 0):
+    if not write_servo_register_byte(servo_id, ADDR_WRITE_LOCK, 0):
         print(f"[Pi LimitSet] FAILED to unlock EEPROM for servo {servo_id}.")
         return False
     time.sleep(0.01)
 
     # 2. Write Min and Max Angle Limits
-    min_ok = write_servo_register_word(servo_id, SERVO_ADDR_MIN_ANGLE_LIMIT, min_limit_raw)
+    min_ok = write_servo_register_word(servo_id, ADDR_MIN_ANGLE, min_limit_raw)
     time.sleep(0.01)
-    max_ok = write_servo_register_word(servo_id, SERVO_ADDR_MAX_ANGLE_LIMIT, max_limit_raw)
+    max_ok = write_servo_register_word(servo_id, ADDR_MAX_ANGLE, max_limit_raw)
     time.sleep(0.01)
 
     if not (min_ok and max_ok):
         print(f"[Pi LimitSet] FAILED to write angle limits for servo {servo_id}.")
         # Attempt to re-lock EEPROM even on failure for safety
-        write_servo_register_byte(servo_id, SERVO_ADDR_WRITE_LOCK, 1)
+        write_servo_register_byte(servo_id, ADDR_WRITE_LOCK, 1)
         return False
 
     # 3. Re-lock EEPROM
-    if not write_servo_register_byte(servo_id, SERVO_ADDR_WRITE_LOCK, 1):
+    if not write_servo_register_byte(servo_id, ADDR_WRITE_LOCK, 1):
         # This is not a critical failure, but should be noted.
         print(f"[Pi LimitSet] WARNING: Failed to re-lock EEPROM for servo {servo_id}.")
 
@@ -371,12 +377,12 @@ def set_servo_acceleration(servo_id: int, acceleration_value_deg_s2: float):
     # PacketLen = NumParams (Addr + Value = 2) + 2 = 4.
     # Checksum on ID, PacketLen, Instr, Addr, Value
     packet = bytearray(8)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 4  # Packet Length
-    packet[4] = SERVO_INSTRUCTION_WRITE # 0x03 (WRITE)
-    packet[5] = SERVO_ADDR_TARGET_ACCELERATION # 0x29
+    packet[4] = utils.SERVO_INSTRUCTION_WRITE # 0x03 (WRITE)
+    packet[5] = utils.SERVO_ADDR_TARGET_ACCELERATION # 0x29
     packet[6] = servo_register_value # Acceleration value (0-254)
 
     packet_data_for_sum = packet[2:7] # ID, Len, Instr, Addr, Value
@@ -409,11 +415,11 @@ def read_servo_register_word(servo_id: int, register_address: int) -> int | None
 
     # Command Packet: [0xFF, 0xFF, ID, Length=4, Instr=0x02, Addr, BytesToRead=2, Checksum]
     read_command = bytearray(8)
-    read_command[0] = SERVO_HEADER
-    read_command[1] = SERVO_HEADER
+    read_command[0] = utils.SERVO_HEADER
+    read_command[1] = utils.SERVO_HEADER
     read_command[2] = servo_id
     read_command[3] = 4  # Length
-    read_command[4] = SERVO_INSTRUCTION_READ
+    read_command[4] = utils.SERVO_INSTRUCTION_READ
     read_command[5] = register_address
     read_command[6] = 2  # Number of bytes to read (word)
     
@@ -477,12 +483,12 @@ def read_servo_position(servo_id: int) -> int | None:
     # Command Packet: [0xFF, 0xFF, ID, Length=4, Instr=0x02, Addr=0x38, BytesToRead=2, Checksum]
     # Length = (Num Instruction Parameters) + 2. Here: Addr + BytesToRead = 2 params. 2+2=4.
     read_command = bytearray(8)
-    read_command[0] = SERVO_HEADER
-    read_command[1] = SERVO_HEADER
+    read_command[0] = utils.SERVO_HEADER
+    read_command[1] = utils.SERVO_HEADER
     read_command[2] = servo_id
     read_command[3] = 4  # Length
-    read_command[4] = SERVO_INSTRUCTION_READ
-    read_command[5] = SERVO_ADDR_PRESENT_POSITION
+    read_command[4] = utils.SERVO_INSTRUCTION_READ
+    read_command[5] = utils.SERVO_ADDR_PRESENT_POSITION
     read_command[6] = 2  # Number of bytes to read (for position)
     
     # Checksum for read command (ID, Length, Instr, Addr, BytesToRead)
@@ -503,7 +509,7 @@ def read_servo_position(servo_id: int) -> int | None:
             # print(f"[Pi ReadPos] Servo {servo_id}: No/incomplete response (got {len(response)} bytes).")
             return None
 
-        if response[0] != SERVO_HEADER or response[1] != SERVO_HEADER:
+        if response[0] != utils.SERVO_HEADER or response[1] != utils.SERVO_HEADER:
             print(f"[Pi ReadPos] Servo {servo_id}: Invalid response header: {list(response[:2])}")
             return None
         
@@ -570,11 +576,11 @@ def read_servo_register_signed_word(servo_id: int, register_address: int) -> int
 
     # Command to read 2 bytes from the specified address
     read_command = bytearray(8)
-    read_command[0] = SERVO_HEADER
-    read_command[1] = SERVO_HEADER
+    read_command[0] = utils.SERVO_HEADER
+    read_command[1] = utils.SERVO_HEADER
     read_command[2] = servo_id
     read_command[3] = 4  # Length
-    read_command[4] = SERVO_INSTRUCTION_READ
+    read_command[4] = utils.SERVO_INSTRUCTION_READ
     read_command[5] = register_address
     read_command[6] = 2  # Number of bytes to read
     read_command[7] = calculate_checksum(read_command[2:7])
@@ -592,7 +598,7 @@ def read_servo_register_signed_word(servo_id: int, register_address: int) -> int
             return None
 
         # Basic validation
-        if response[0] != SERVO_HEADER or response[1] != SERVO_HEADER or response[2] != servo_id:
+        if response[0] != utils.SERVO_HEADER or response[1] != utils.SERVO_HEADER or response[2] != servo_id:
             print(f"[Pi ReadWord] Servo {servo_id}: Invalid response header or ID mismatch.")
             return None
         
@@ -648,11 +654,11 @@ def write_servo_register_word(servo_id: int, register_address: int, value: int) 
     val_clamped = int(value)
 
     packet = bytearray(9)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 5  # Packet Length: Instr(1) + Addr(1) + Data(2) + 2 = 5
-    packet[4] = SERVO_INSTRUCTION_WRITE
+    packet[4] = utils.SERVO_INSTRUCTION_WRITE
     packet[5] = register_address
     packet[6] = val_clamped & 0xFF      # Low byte
     packet[7] = (val_clamped >> 8) & 0xFF # High byte
@@ -690,11 +696,11 @@ def write_servo_register_byte(servo_id: int, register_address: int, value: int) 
     val_clamped = int(max(0, min(255, value)))
 
     packet = bytearray(8)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 4  # Packet Length (Instr + Addr + Value + Checksum = 2 + 1 + 1)
-    packet[4] = SERVO_INSTRUCTION_WRITE
+    packet[4] = utils.SERVO_INSTRUCTION_WRITE
     packet[5] = register_address
     packet[6] = val_clamped
     packet_data_for_sum = packet[2:7]
@@ -738,20 +744,20 @@ def sync_write_goal_pos_speed_accel(servo_data_list: list[tuple[int, int, int, i
         # print("[Pi SyncWrite] No servo data to send.")
         return
 
-    packet_len_field_value = num_servos * (1 + SYNC_WRITE_DATA_LEN_PER_SERVO) + 4
+    packet_len_field_value = num_servos * (1 + utils.SYNC_WRITE_DATA_LEN_PER_SERVO) + 4
 
     # Total packet size = Header(2) + BroadcastID(1) + PacketLenField(1) + ContentDescribedByPacketLenField + Checksum(1)
     total_packet_bytes = 4 + packet_len_field_value + 1
 
     packet = bytearray(total_packet_bytes)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
-    packet[2] = SERVO_BROADCAST_ID
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
+    packet[2] = utils.SERVO_BROADCAST_ID
     packet[3] = packet_len_field_value
 
-    packet[4] = SERVO_INSTRUCTION_SYNC_WRITE
-    packet[5] = SYNC_WRITE_START_ADDRESS
-    packet[6] = SYNC_WRITE_DATA_LEN_PER_SERVO
+    packet[4] = utils.SERVO_INSTRUCTION_SYNC_WRITE
+    packet[5] = utils.SYNC_WRITE_START_ADDRESS
+    packet[6] = utils.SYNC_WRITE_DATA_LEN_PER_SERVO
 
     current_byte_index = 7
     for servo_id, pos_val, speed_val, accel_reg_val in servo_data_list:
@@ -809,11 +815,11 @@ def calibrate_servo_middle_position(servo_id: int) -> bool:
 
     # Packet: [0xFF, 0xFF, ID, Length=2, Instr=0x0B, Checksum]
     packet = bytearray(6)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 2 # Packet Length = NumParams(0) + 2
-    packet[4] = SERVO_INSTRUCTION_CALIBRATE_MIDDLE
+    packet[4] = utils.SERVO_INSTRUCTION_CALIBRATE_MIDDLE
     
     packet_data_for_sum = packet[2:5] # ID, Len, Instr
     packet[5] = calculate_checksum(packet_data_for_sum)
@@ -854,11 +860,11 @@ def factory_reset_servo(servo_id: int) -> bool:
 
     # Packet: [0xFF, 0xFF, ID, Length=2, Instr=0x06, Checksum]
     packet = bytearray(6)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 2  # Packet Length = NumParams(0) + 2
-    packet[4] = SERVO_INSTRUCTION_RESET
+    packet[4] = utils.SERVO_INSTRUCTION_RESET
     
     packet_data_for_sum = packet[2:5]  # ID, Len, Instr
     packet[5] = calculate_checksum(packet_data_for_sum)
@@ -899,11 +905,11 @@ def restart_servo(servo_id: int) -> bool:
 
     # Packet: [0xFF, 0xFF, ID, Length=2, Instr=0x08, Checksum]
     packet = bytearray(6)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
     packet[2] = servo_id
     packet[3] = 2  # Packet Length = NumParams(0) + 2
-    packet[4] = SERVO_INSTRUCTION_RESTART
+    packet[4] = utils.SERVO_INSTRUCTION_RESTART
 
     packet_data_for_sum = packet[2:5]  # ID, Len, Instr
     packet[5] = calculate_checksum(packet_data_for_sum)
@@ -946,9 +952,11 @@ def sync_read_positions(
         Use ``backend.sync_read_positions(servo_ids)`` instead.
     """
     # Dispatch to backend if available
+    # Note: The ActuatorBackend.sync_read_positions() doesn't take servo_ids as an argument.
+    # The backend reads from all configured arm servos internally.
     backend = _get_backend()
     if backend and hasattr(backend, 'sync_read_positions'):
-        return backend.sync_read_positions(servo_ids, timeout_s=timeout_s)
+        return backend.sync_read_positions(timeout_s=timeout_s)
     
     # Fallback to direct serial communication
     if utils.ser is None or not utils.ser.is_open:
@@ -964,12 +972,12 @@ def sync_read_positions(
     packet_len_field_value = num_servos + 4
     
     packet = bytearray(7 + num_servos + 1) # Header(2) + BcastID(1) + Len(1) + Instr(1) + Addr(1) + DataLen(1) + IDs(N) + Checksum(1)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
-    packet[2] = SERVO_BROADCAST_ID
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
+    packet[2] = utils.SERVO_BROADCAST_ID
     packet[3] = packet_len_field_value
-    packet[4] = SERVO_INSTRUCTION_SYNC_READ
-    packet[5] = SERVO_ADDR_PRESENT_POSITION # Start Address to read from (0x38)
+    packet[4] = utils.SERVO_INSTRUCTION_SYNC_READ
+    packet[5] = utils.SERVO_ADDR_PRESENT_POSITION # Start Address to read from (0x38)
     packet[6] = 2 # Length of data to read per servo (Pos_L, Pos_H)
 
     # Add all the servo IDs to the packet
@@ -1017,7 +1025,7 @@ def sync_read_positions(
         parse_start = time.perf_counter()
         for i in range(0, len(response_data) - 7): # Iterate with a sliding window
             # Look for the header
-            if response_data[i] == SERVO_HEADER and response_data[i+1] == SERVO_HEADER:
+            if response_data[i] == utils.SERVO_HEADER and response_data[i+1] == utils.SERVO_HEADER:
                 # Potential packet found, extract it
                 packet_candidate = response_data[i : i+8]
                 
@@ -1120,12 +1128,12 @@ def fast_sync_read_positions(
     packet_len_field_value = num_servos + 4
     
     packet = bytearray(7 + num_servos + 1) # Header(2) + BcastID(1) + Len(1) + Instr(1) + Addr(1) + DataLen(1) + IDs(N) + Checksum(1)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
-    packet[2] = SERVO_BROADCAST_ID
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
+    packet[2] = utils.SERVO_BROADCAST_ID
     packet[3] = packet_len_field_value
-    packet[4] = SERVO_INSTRUCTION_SYNC_READ
-    packet[5] = SERVO_ADDR_PRESENT_POSITION # Start Address to read from (0x38)
+    packet[4] = utils.SERVO_INSTRUCTION_SYNC_READ
+    packet[5] = utils.SERVO_ADDR_PRESENT_POSITION # Start Address to read from (0x38)
     packet[6] = 2 # Length of data to read per servo (Pos_L, Pos_H)
 
     # Add all the servo IDs to the packet
@@ -1173,7 +1181,7 @@ def fast_sync_read_positions(
         parse_start = time.perf_counter()
         for i in range(0, len(response_data) - 7): # Iterate with a sliding window
             # Look for the header
-            if response_data[i] == SERVO_HEADER and response_data[i+1] == SERVO_HEADER:
+            if response_data[i] == utils.SERVO_HEADER and response_data[i+1] == utils.SERVO_HEADER:
                 # Potential packet found, extract it
                 packet_candidate = response_data[i : i+8]
                 
@@ -1274,11 +1282,11 @@ def sync_read_block(
 
     packet_len_field_value = num_servos + 4
     packet = bytearray(7 + num_servos + 1)
-    packet[0] = SERVO_HEADER
-    packet[1] = SERVO_HEADER
-    packet[2] = SERVO_BROADCAST_ID
+    packet[0] = utils.SERVO_HEADER
+    packet[1] = utils.SERVO_HEADER
+    packet[2] = utils.SERVO_BROADCAST_ID
     packet[3] = packet_len_field_value
-    packet[4] = SERVO_INSTRUCTION_SYNC_READ
+    packet[4] = utils.SERVO_INSTRUCTION_SYNC_READ
     packet[5] = start_address
     packet[6] = data_len
     for i, servo_id in enumerate(servo_ids):
@@ -1320,7 +1328,7 @@ def sync_read_block(
         i = 0
         end = len(response_data) - per_packet + 1
         while i < end:
-            if response_data[i] == SERVO_HEADER and response_data[i + 1] == SERVO_HEADER:
+            if response_data[i] == utils.SERVO_HEADER and response_data[i + 1] == utils.SERVO_HEADER:
                 pkt = response_data[i : i + per_packet]
                 sid = pkt[2]
                 if sid in expected_ids:

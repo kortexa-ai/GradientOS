@@ -924,7 +924,7 @@ def _closed_loop_executor_thread(
             per_cycle_timeout = max(0.01, time_step * 0.8)
             backend = _get_backend()
             if backend and _use_backend():
-                raw_positions = backend.sync_read_positions(PRIMARY_FB_IDS)
+                raw_positions = backend.sync_read_positions(timeout_s=per_cycle_timeout)
             else:
                 raw_positions = servo_protocol.sync_read_positions(
                     PRIMARY_FB_IDS,

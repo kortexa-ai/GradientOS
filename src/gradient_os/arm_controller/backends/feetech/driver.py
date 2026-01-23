@@ -147,6 +147,19 @@ class FeetechBackend(ActuatorBackend):
         """Get the serial port handle (for advanced usage)."""
         return self._ser
     
+    @property
+    def encoder_resolution(self) -> int:
+        """
+        Returns the encoder resolution for Feetech STS/SCS servos.
+        
+        Feetech STS3215 and similar servos use 12-bit encoders with
+        a maximum value of 4095.
+        
+        Returns:
+            int: 4095 (12-bit encoder max value)
+        """
+        return 4095
+    
     def set_alert_callback(self, callback: Callable) -> None:
         """
         Set a callback function for error/warning alerts.
@@ -372,6 +385,46 @@ class FeetechBackend(ActuatorBackend):
             arm_servo_ids,
             timeout_s=timeout_s,
             alert_callback=self._alert_callback,
+        )
+
+    def sync_read_block(
+        self,
+        servo_ids: list[int],
+        start_address: int,
+        data_len: int,
+        timeout_s: Optional[float] = None,
+        poll_delay_s: float = 0.0,
+        diagnostics: bool = False,
+    ) -> dict[int, bytes]:
+        """
+        Batch read a contiguous register block from specified servos.
+        
+        Args:
+            servo_ids: Servo IDs to read from.
+            start_address: Register start address.
+            data_len: Number of bytes to read per servo.
+            timeout_s: Optional timeout for the read operation in seconds.
+            poll_delay_s: Optional delay after issuing the read before collecting responses.
+            diagnostics: Whether to record timing diagnostics.
+        
+        Returns:
+            dict[int, bytes]: Mapping of servo_id to raw bytes.
+        """
+        if not self._initialized:
+            return {}
+
+        filtered_ids = [sid for sid in servo_ids if sid in self._present_servo_ids]
+        if not filtered_ids:
+            return {}
+
+        return protocol.sync_read_block(
+            self._ser,
+            filtered_ids,
+            start_address=start_address,
+            data_len=data_len,
+            timeout_s=timeout_s,
+            poll_delay_s=poll_delay_s,
+            diagnostics=diagnostics,
         )
     
     def raw_to_joint_positions(self, raw_positions: dict[int, int]) -> list[float]:

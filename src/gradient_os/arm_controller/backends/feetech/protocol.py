@@ -579,6 +579,104 @@ def sync_read_positions(
 
 
 # =============================================================================
+# Sync Read (Generic Block)
+# =============================================================================
+def sync_read_block(
+    ser: serial.Serial,
+    servo_ids: list[int],
+    start_address: int,
+    data_len: int,
+    timeout_s: Optional[float] = None,
+    poll_delay_s: float = 0.0,
+    diagnostics: bool = False,
+) -> dict[int, bytes]:
+    """
+    Perform a generic SYNC READ for a contiguous block of registers starting at
+    `start_address` with length `data_len` for each servo in `servo_ids`.
+    
+    Returns a mapping of servo_id -> raw bytes (length == data_len) for all servos
+    that responded with a valid status packet. Missing IDs indicate no valid
+    response was parsed.
+    """
+    if ser is None or not ser.is_open:
+        return {}
+
+    num_servos = len(servo_ids)
+    if num_servos == 0 or data_len <= 0:
+        return {}
+
+    packet_len_field = num_servos + 4
+    packet = bytearray(7 + num_servos + 1)
+    packet[0] = config.SERVO_HEADER
+    packet[1] = config.SERVO_HEADER
+    packet[2] = config.SERVO_BROADCAST_ID
+    packet[3] = packet_len_field
+    packet[4] = config.SERVO_INSTRUCTION_SYNC_READ
+    packet[5] = start_address
+    packet[6] = data_len
+    for i, servo_id in enumerate(servo_ids):
+        packet[7 + i] = servo_id
+    packet[-1] = calculate_checksum(packet[2:-1])
+
+    try:
+        original_timeout = None
+        if timeout_s is not None:
+            original_timeout = ser.timeout
+            ser.timeout = timeout_s
+
+        write_start = time.perf_counter()
+        with _SERIAL_LOCK:
+            ser.reset_input_buffer()
+            ser.write(packet)
+        write_dur = time.perf_counter() - write_start
+
+        if poll_delay_s > 0.0:
+            time.sleep(poll_delay_s)
+
+        per_packet = 6 + data_len
+        bytes_to_read = num_servos * per_packet
+        read_start = time.perf_counter()
+        with _SERIAL_LOCK:
+            response_data = ser.read(bytes_to_read)
+        read_dur = time.perf_counter() - read_start
+
+        if len(response_data) < per_packet:
+            return {}
+
+        results: dict[int, bytes] = {}
+        expected_ids = set(servo_ids)
+        parse_start = time.perf_counter()
+        i = 0
+        end = len(response_data) - per_packet + 1
+        while i < end:
+            if response_data[i] == config.SERVO_HEADER and response_data[i + 1] == config.SERVO_HEADER:
+                pkt = response_data[i : i + per_packet]
+                sid = pkt[2]
+                if sid in expected_ids:
+                    if pkt[4] == 0:
+                        if calculate_checksum(pkt[2:(2 + 1 + 1 + 1 + data_len)]) == pkt[-1]:
+                            results[sid] = bytes(pkt[5 : 5 + data_len])
+                            expected_ids.discard(sid)
+                            i += per_packet
+                            continue
+                i += 1
+            else:
+                i += 1
+        parse_dur = time.perf_counter() - parse_start
+
+        if diagnostics:
+            _sync_profiles.append((write_dur, read_dur, parse_dur))
+
+        return results
+    except Exception as e:
+        print(f"[Feetech SyncReadBlk] Error: {e}")
+        return {}
+    finally:
+        if timeout_s is not None and original_timeout is not None:
+            ser.timeout = original_timeout
+
+
+# =============================================================================
 # Special Commands
 # =============================================================================
 

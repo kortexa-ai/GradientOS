@@ -186,6 +186,28 @@ class SimulationBackend(ActuatorBackend):
                     result[servo_id] = int(self._positions[joint_idx] * scale + center)
         
         return result
+
+    def sync_read_block(
+        self,
+        servo_ids: list[int],
+        start_address: int,
+        data_len: int,
+        timeout_s: Optional[float] = None,
+        poll_delay_s: float = 0.0,
+        diagnostics: bool = False,
+    ) -> dict[int, bytes]:
+        """
+        Simulate a block read by returning zeroed bytes for each servo.
+        
+        This keeps telemetry consumers running in simulation mode without
+        requiring real hardware feedback.
+        """
+        actuator_ids = self._robot_config.get('actuator_ids', []) if self._robot_config else []
+        target_ids = servo_ids if servo_ids else list(actuator_ids)
+        if not target_ids or data_len <= 0:
+            return {}
+        payload = bytes([0] * data_len)
+        return {sid: payload for sid in target_ids}
     
     def raw_to_joint_positions(self, raw_positions: dict[int, int]) -> list[float]:
         result = [0.0] * self._num_joints
