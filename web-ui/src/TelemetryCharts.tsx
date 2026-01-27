@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 
 type ServoSample = {
   voltage_v?: number;
@@ -126,27 +126,47 @@ function MultiChart({
   ids.forEach((id, idx) => {
     idToColor[id] = palette[idx % palette.length];
   });
-  // Precompute latest values per ID for tooltip display
-  const latestItems = useMemo(() => {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [tooltip, setTooltip] = useState<{
+    x: number;
+    y: number;
+    index: number;
+    items: { id: string; value: number; color: string }[];
+  } | null>(null);
+  const getIndexForX = (x: number) => {
+    if (maxLen <= 1) return 0;
+    const clampedX = Math.min(Math.max(x, padX), w - padX);
+    const rawIndex = Math.round((clampedX - padX) / dxBase - 1);
+    return Math.max(0, Math.min(maxLen - 1, rawIndex));
+  };
+  const buildItemsAtIndex = (globalIndex: number) => {
     const items: { id: string; value: number; color: string }[] = [];
     for (const id of ids) {
       const arr = series[id];
-      if (Array.isArray(arr) && arr.length) {
-        const value = arr[arr.length - 1];
-        if (typeof value === "number" && Number.isFinite(value)) {
-          items.push({ id, value, color: idToColor[id] });
-        }
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      const offset = maxLen - arr.length;
+      const localIndex = globalIndex - offset;
+      if (localIndex < 0 || localIndex >= arr.length) continue;
+      const value = arr[localIndex];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        items.push({ id, value, color: idToColor[id] });
       }
     }
     // Sort numerically by servo id if possible
     items.sort((a, b) => Number(a.id) - Number(b.id));
     return items;
-  }, [ids, series]);
-  const [tooltip, setTooltip] = useState<{
-    x: number;
-    y: number;
-    items: { id: string; value: number; color: string }[];
-  } | null>(null);
+  };
+  const updateTooltip = (e: MouseEvent<HTMLDivElement>) => {
+    const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    let chartX = x;
+    const svgRect = svgRef.current?.getBoundingClientRect();
+    if (svgRect) chartX = e.clientX - svgRect.left;
+    const index = getIndexForX(chartX);
+    const items = buildItemsAtIndex(index);
+    setTooltip({ x, y, index, items });
+  };
   const paths = ids.map((id) => {
     const data = series[id];
     if (!data || data.length < 2) return null;
@@ -166,16 +186,8 @@ function MultiChart({
   return (
     <div
       className="relative rounded-lg border border-slate-700/60 bg-slate-950/70 p-3"
-      onMouseEnter={(e) => {
-        const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-        setTooltip({ x: rect.width / 2, y: 0, items: latestItems });
-      }}
-      onMouseMove={(e) => {
-        const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        setTooltip({ x, y, items: latestItems });
-      }}
+      onMouseEnter={updateTooltip}
+      onMouseMove={updateTooltip}
       onMouseLeave={() => setTooltip(null)}
     >
       <div className="mb-1 flex items-center justify-between">
@@ -186,7 +198,7 @@ function MultiChart({
           {typeof latestVal === "number" ? `${latestVal.toFixed(2)}${unit ?? ""}` : "—"}
         </div>
       </div>
-      <svg width={w} height={h} style={{ display: "block" }}>
+      <svg ref={svgRef} width={w} height={h} style={{ display: "block" }}>
         <rect x="0" y="0" width={w} height={h} rx="6" ry="6" fill="transparent" />
         {paths.map(({ id, d, color }) => (
           <path key={id} d={d} stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
@@ -202,7 +214,10 @@ function MultiChart({
           }}
         >
           <div className="mb-1 text-[10px] uppercase tracking-widest text-slate-400">
-            Live per-servo
+            {(() => {
+              const samplesAgo = Math.max(0, maxLen - 1 - tooltip.index);
+              return samplesAgo === 0 ? "Live per-servo" : `History (${samplesAgo} samples ago)`;
+            })()}
           </div>
           <table className="w-full border-separate border-spacing-y-1">
             <tbody>

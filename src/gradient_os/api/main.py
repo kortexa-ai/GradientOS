@@ -31,7 +31,9 @@ _REST_POSE_COMMAND = ",".join(str(value) for value in _REST_POSE_RAD)
 
 def _default_controller_port() -> int:
     if controller_utils is not None:
-        return int(getattr(controller_utils, "UDP_PORT", 3000))
+        port = getattr(controller_utils, "UDP_PORT", None)
+        if port is not None:
+            return int(port)
     return 3000
 
 

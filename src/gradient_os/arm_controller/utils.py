@@ -1,158 +1,190 @@
 # Contains utility functions and constants shared across the arm_controller package. 
+#
+# NOTE: This file imports configuration from:
+#   - robot_config.py for robot-specific settings
+#   - backends/registry.py for servo-backend-specific constants
+#
+# The backend registry MUST be configured before accessing servo-specific values.
+# This is done in run_controller.py at startup via backend_registry.set_active_backend().
+#
+# For new code, prefer importing directly from:
+#   - robot_config.py for robot-specific settings
+#   - backends/registry.py for servo-backend constants
+
 import math
 import os
 import numpy as np
 
+# Import robot configuration for backward compatibility
+from . import robot_config
+
+# Import backend registry for servo-specific constants (dynamically configured at runtime)
+from .backends import registry as backend_registry
+
+# =============================================================================
+# Re-export robot configuration for backward compatibility
+# =============================================================================
+
 # --- UDP Configuration ---
-PI_IP = "0.0.0.0"  # Listen on all available interfaces
-UDP_PORT = 3000    # Same port as in follow_target_rmp_UDPsend.py
-BUFFER_SIZE = 1024 # Size of the UDP receive buffer in bytes
+PI_IP = robot_config.PI_IP
+UDP_PORT = robot_config.UDP_PORT
+BUFFER_SIZE = robot_config.BUFFER_SIZE
 
 # --- Kinematics & Planning ---
-NUM_LOGICAL_JOINTS = 6 # Number of controllable joints in the kinematic model
+NUM_LOGICAL_JOINTS = robot_config.NUM_LOGICAL_JOINTS
 
 # --- Servo Configuration ---
-NUM_PHYSICAL_SERVOS = 9 # Total number of physical servos (J1 is no longer doubled up)
-SERVO_IDS = [10, 20, 21, 30, 31, 40, 50, 60, 100] # Hardware ID of each servo, 100 is gripper
+NUM_PHYSICAL_SERVOS = robot_config.NUM_PHYSICAL_SERVOS
+SERVO_IDS = robot_config.SERVO_IDS
 
 # IDs for the second motor on multi-servo joints
-SERVO_ID_JOINT_2_SECOND = 21
-SERVO_ID_JOINT_3_SECOND = 31
+SERVO_ID_JOINT_2_SECOND = robot_config.SERVO_ID_JOINT_2_SECOND
+SERVO_ID_JOINT_3_SECOND = robot_config.SERVO_ID_JOINT_3_SECOND
 
 # ID for the gripper servo
-SERVO_ID_GRIPPER = 100
+SERVO_ID_GRIPPER = robot_config.SERVO_ID_GRIPPER
 
 # --- Default Motion Parameters ---
-DEFAULT_SERVO_SPEED = 500 # Default speed for servos if not specified (0-4095)
-DEFAULT_PROFILE_VELOCITY = 0.1 # m/s, for trapezoidal profiles
-DEFAULT_PROFILE_ACCELERATION = 0.05 # m/s^2, for trapezoidal profiles
-CORRECTION_KP_GAIN = 0.0 # Proportional gain for the closed-loop executor (disabled for inner-PID tuning)
-CORRECTION_KI_GAIN = 0.0 # Integral gain (rad/s) for the closed-loop executor (disabled for inner-PID tuning)
-CORRECTION_INTEGRAL_CLAMP_RAD = 0.6 # Anti-windup clamp for integral term (±20°)
+DEFAULT_SERVO_SPEED = robot_config.DEFAULT_SERVO_SPEED
+DEFAULT_PROFILE_VELOCITY = robot_config.DEFAULT_PROFILE_VELOCITY
+DEFAULT_PROFILE_ACCELERATION = robot_config.DEFAULT_PROFILE_ACCELERATION
+CORRECTION_KP_GAIN = robot_config.CORRECTION_KP_GAIN
+CORRECTION_KI_GAIN = robot_config.CORRECTION_KI_GAIN
+CORRECTION_INTEGRAL_CLAMP_RAD = robot_config.CORRECTION_INTEGRAL_CLAMP_RAD
 
 # --- Serial Port Configuration ---
-# Raspberry Pi GPIO 14 (TXD) and GPIO 15 (RXD) often map to /dev/ttyS0 or /dev/serial0.
-# You may need to configure your Pi to enable the hardware serial port and disable the
-# serial console. On a Raspberry Pi, run 'sudo raspi-config' and go to:
-#  1. Interface Options -> Serial Port
-#  2. Answer 'No' to 'Would you like a login shell to be accessible over serial?'
-#  3. Answer 'Yes' to 'Would you like the serial port hardware to be enabled?'
-#  4. Reboot your Pi.
-SERIAL_PORT = "/dev/ttyUSB0"  # this uses the usb port   # "/dev/ttyAMA0"  # use ttyAMA0 if using GPIO setup with Raspberry Pi GPIO
-BAUD_RATE = 1000000 # Communication speed for the Feetech servos
+SERIAL_PORT = robot_config.SERIAL_PORT
+BAUD_RATE = robot_config.BAUD_RATE
 
 # --- Master Calibration Offsets ---
-LOGICAL_JOINT_MASTER_OFFSETS_RAD = [
-    0.0,  # Logical Joint 1 (IDs 10, 11)
-    0.0,  # Logical Joint 2 (IDs 20, 21)
-    0.0,  # Logical Joint 3 (IDs 30, 31)
-    0.0,  # Logical Joint 4 (ID 40)
-    0.0,  # Logical Joint 5 (ID 50)
-    0.0   # Logical Joint 6 (ID 60)
-]
+LOGICAL_JOINT_MASTER_OFFSETS_RAD = robot_config.LOGICAL_JOINT_MASTER_OFFSETS_RAD
 
-# The `SERVO_ENCODER_ZERO_POSITIONS` list is now obsolete and has been removed.
-# Calibration is now handled by the servo's internal `POSITION_CORRECTION` register,
-# which is set using the `SET_ZERO,ID` UDP command.
+# --- Joint Limits ---
+LOGICAL_JOINT_LIMITS_RAD = robot_config.LOGICAL_JOINT_LIMITS_RAD
+GRIPPER_LIMITS_RAD = robot_config.GRIPPER_LIMITS_RAD
+URDF_JOINT_LIMITS = robot_config.URDF_JOINT_LIMITS
+EFFECTIVE_MAPPING_RANGES = robot_config.EFFECTIVE_MAPPING_RANGES
 
-# --- END CALIBRATION INPUTS ---
+# --- PID Configuration ---
+DEFAULT_KP = robot_config.DEFAULT_KP
+DEFAULT_KI = robot_config.DEFAULT_KI
+DEFAULT_KD = robot_config.DEFAULT_KD
+J1_PID_GAINS = robot_config.J1_PID_GAINS
+J2_PID_GAINS = robot_config.J2_PID_GAINS
+J3_PID_GAINS = robot_config.J3_PID_GAINS
+J4_PID_GAINS = robot_config.J4_PID_GAINS
+J5_PID_GAINS = robot_config.J5_PID_GAINS
+J6_PID_GAINS = robot_config.J6_PID_GAINS
+Gripper_PID_GAINS = robot_config.GRIPPER_PID_GAINS
+DEFAULT_PID_GAINS = robot_config.DEFAULT_PID_GAINS
 
-# Logical Joint Limits (radians) [min_limit, max_limit]
-# These are the effective limits for the 6 logical joints of the arm.
-LOGICAL_JOINT_LIMITS_RAD = [
-    [-3.1416, 3.1416], # Logical J1 (Base)
-    [-1.5708, 1.5708], # Logical J2 (Shoulder)
-    [-1.5708, 1.5708], # Logical J3 (Elbow)
-    [-3.1416, 3.1416], # Logical J4 (Wrist Roll)
-    [-1.8326, 2.0944], # Logical J5 (Wrist Pitch)
-    [-3.1416, 3.1416]  # Logical J6 (Wrist Yaw)
-]
+# =============================================================================
+# Servo Protocol Constants (from active backend via registry)
+# These are initialized to None and populated when the backend is configured.
+# =============================================================================
 
-# Gripper servo limits (radians)
-GRIPPER_LIMITS_RAD = [0, 3.1416]  # 0° (closed) to 90° (open)
+# Encoder resolution (actuator-specific) - populated from backend registry
+ENCODER_RESOLUTION = None
+ENCODER_CENTER = None
 
-# URDF Joint Limits (radians) [min_limit, max_limit] - These are for the LOGICAL joints
-# but need to be consistent with the physical servo capabilities after all offsets.
-# The config for physical servos (config indices 0-8) must match up.
-# E.g. URDF_JOINT_LIMITS[0] and [1] are for Servos ID 10 and 11 (J1).
-URDF_JOINT_LIMITS = [ # Per PHYSICAL servo config index
-    LOGICAL_JOINT_LIMITS_RAD[0], # Servo ID 10 (J1)
-    LOGICAL_JOINT_LIMITS_RAD[1], # Servo ID 20 (Logical J2, Servo 1)
-    LOGICAL_JOINT_LIMITS_RAD[1], # Servo ID 21 (Logical J2, Servo 2) - Must match Servo ID 20
-    LOGICAL_JOINT_LIMITS_RAD[2], # Servo ID 30 (Logical J3, Servo 1)
-    LOGICAL_JOINT_LIMITS_RAD[2], # Servo ID 31 (Logical J3, Servo 2) - Must match Servo ID 30
-    LOGICAL_JOINT_LIMITS_RAD[3], # Servo ID 40 (Logical J4)
-    LOGICAL_JOINT_LIMITS_RAD[4], # Servo ID 50 (Logical J5)
-    LOGICAL_JOINT_LIMITS_RAD[5], # Servo ID 60 (Logical J6)
-    GRIPPER_LIMITS_RAD           # Servo ID 100 (Gripper)
-]
+# Protocol constants - populated from backend registry
+SERVO_HEADER = None
+SERVO_INSTRUCTION_WRITE = None
+SERVO_INSTRUCTION_READ = None
+SERIAL_READ_TIMEOUT = None
+SERVO_ADDR_TARGET_POSITION = None
+SERVO_ADDR_PRESENT_POSITION = None
+SERVO_ADDR_TARGET_ACCELERATION = None
+SERVO_ADDR_POSITION_CORRECTION = None
+DEFAULT_SERVO_ACCELERATION_DEG_S2 = None
+ACCELERATION_SCALE_FACTOR = None
+SERVO_ADDR_POS_KP = None
+SERVO_ADDR_POS_KI = None
+SERVO_ADDR_POS_KD = None
+SERVO_INSTRUCTION_PING = None
+SERVO_INSTRUCTION_RESET = None
+SERVO_INSTRUCTION_RESTART = None
+SERVO_INSTRUCTION_CALIBRATE_MIDDLE = None
+SERVO_ADDR_WRITE_LOCK = None
+SERVO_ADDR_MIN_ANGLE_LIMIT = None
+SERVO_ADDR_MAX_ANGLE_LIMIT = None
 
-# Effective Mapping Ranges: Assuming 0-4095 on servo maps to +/- PI radians from servo zero.
-EFFECTIVE_MAPPING_RANGES = [] # Per PHYSICAL servo config index
-for _ in range(NUM_PHYSICAL_SERVOS): 
-    EFFECTIVE_MAPPING_RANGES.append([-math.pi, math.pi])
+# Sync Write/Read Constants
+SERVO_INSTRUCTION_SYNC_WRITE = None
+SERVO_BROADCAST_ID = None
+SYNC_WRITE_START_ADDRESS = None
+SYNC_WRITE_DATA_LEN_PER_SERVO = None
+SERVO_INSTRUCTION_SYNC_READ = None
 
-# --- Servo Protocol Constants ---
-"""Constants that define the Feetech servo protocol, such as instruction bytes and register addresses."""
-SERVO_HEADER = 0xFF
-SERVO_INSTRUCTION_WRITE = 0x03
-SERVO_INSTRUCTION_READ = 0x02
-SERIAL_READ_TIMEOUT = 0.05 
 
-SERVO_ADDR_TARGET_POSITION = 0x2A 
-SERVO_ADDR_PRESENT_POSITION = 0x38 
-SERVO_ADDR_TARGET_ACCELERATION = 0x29 
-SERVO_ADDR_POSITION_CORRECTION = 31 # Register 0x1F, for storing hardware zero offset
+def _populate_servo_constants():
+    """
+    Populate servo-specific constants from the active servo backend.
+    Called after backend_registry.set_active_backend() in run_controller.py.
+    
+    These are protocol/hardware constants for the specific servo type (e.g., Feetech),
+    distinct from robot-specific constants which are populated by _populate_robot_constants().
+    """
+    global ENCODER_RESOLUTION, ENCODER_CENTER, BAUD_RATE
+    global SERVO_HEADER, SERVO_INSTRUCTION_WRITE, SERVO_INSTRUCTION_READ
+    global SERIAL_READ_TIMEOUT, SERVO_ADDR_TARGET_POSITION, SERVO_ADDR_PRESENT_POSITION
+    global SERVO_ADDR_TARGET_ACCELERATION, SERVO_ADDR_POSITION_CORRECTION
+    global DEFAULT_SERVO_ACCELERATION_DEG_S2, ACCELERATION_SCALE_FACTOR
+    global SERVO_ADDR_POS_KP, SERVO_ADDR_POS_KI, SERVO_ADDR_POS_KD
+    global SERVO_INSTRUCTION_PING, SERVO_INSTRUCTION_RESET, SERVO_INSTRUCTION_RESTART
+    global SERVO_INSTRUCTION_CALIBRATE_MIDDLE
+    global SERVO_ADDR_WRITE_LOCK, SERVO_ADDR_MIN_ANGLE_LIMIT, SERVO_ADDR_MAX_ANGLE_LIMIT
+    global SERVO_INSTRUCTION_SYNC_WRITE, SERVO_BROADCAST_ID
+    global SYNC_WRITE_START_ADDRESS, SYNC_WRITE_DATA_LEN_PER_SERVO, SERVO_INSTRUCTION_SYNC_READ
+    
+    servo_config = backend_registry.get_config()
+    
+    ENCODER_RESOLUTION = servo_config.SERVO_VALUE_MAX
+    ENCODER_CENTER = servo_config.SERVO_VALUE_CENTER
+    BAUD_RATE = servo_config.DEFAULT_BAUD_RATE
+    SERVO_HEADER = servo_config.SERVO_HEADER
+    SERVO_INSTRUCTION_WRITE = servo_config.SERVO_INSTRUCTION_WRITE
+    SERVO_INSTRUCTION_READ = servo_config.SERVO_INSTRUCTION_READ
+    SERIAL_READ_TIMEOUT = servo_config.SERIAL_READ_TIMEOUT
+    SERVO_ADDR_TARGET_POSITION = servo_config.SERVO_ADDR_TARGET_POSITION
+    SERVO_ADDR_PRESENT_POSITION = servo_config.SERVO_ADDR_PRESENT_POSITION
+    SERVO_ADDR_TARGET_ACCELERATION = servo_config.SERVO_ADDR_TARGET_ACCELERATION
+    SERVO_ADDR_POSITION_CORRECTION = servo_config.SERVO_ADDR_POSITION_CORRECTION
+    DEFAULT_SERVO_ACCELERATION_DEG_S2 = servo_config.DEFAULT_SERVO_ACCELERATION_DEG_S2
+    ACCELERATION_SCALE_FACTOR = servo_config.ACCELERATION_SCALE_FACTOR
+    SERVO_ADDR_POS_KP = servo_config.SERVO_ADDR_POS_KP
+    SERVO_ADDR_POS_KI = servo_config.SERVO_ADDR_POS_KI
+    SERVO_ADDR_POS_KD = servo_config.SERVO_ADDR_POS_KD
+    SERVO_INSTRUCTION_PING = servo_config.SERVO_INSTRUCTION_PING
+    SERVO_INSTRUCTION_RESET = servo_config.SERVO_INSTRUCTION_RESET
+    SERVO_INSTRUCTION_RESTART = servo_config.SERVO_INSTRUCTION_RESTART
+    SERVO_INSTRUCTION_CALIBRATE_MIDDLE = servo_config.SERVO_INSTRUCTION_CALIBRATE_MIDDLE
+    SERVO_ADDR_WRITE_LOCK = servo_config.SERVO_ADDR_WRITE_LOCK
+    SERVO_ADDR_MIN_ANGLE_LIMIT = servo_config.SERVO_ADDR_MIN_ANGLE_LIMIT
+    SERVO_ADDR_MAX_ANGLE_LIMIT = servo_config.SERVO_ADDR_MAX_ANGLE_LIMIT
+    SERVO_INSTRUCTION_SYNC_WRITE = servo_config.SERVO_INSTRUCTION_SYNC_WRITE
+    SERVO_BROADCAST_ID = servo_config.SERVO_BROADCAST_ID
+    SYNC_WRITE_START_ADDRESS = servo_config.SYNC_WRITE_START_ADDRESS
+    SYNC_WRITE_DATA_LEN_PER_SERVO = servo_config.SYNC_WRITE_DATA_LEN_PER_SERVO
+    SERVO_INSTRUCTION_SYNC_READ = servo_config.SERVO_INSTRUCTION_SYNC_READ
 
-# Default values for the servo's internal controller and motion profiles
-DEFAULT_SERVO_ACCELERATION_DEG_S2 = 500
-ACCELERATION_SCALE_FACTOR = 100
 
-SERVO_ADDR_POS_KP = 0x15
-SERVO_ADDR_POS_KI = 0x17 
-SERVO_ADDR_POS_KD = 0x16
+# Keep old name as alias for backward compatibility during migration
+_populate_backend_constants = _populate_servo_constants
 
-# PID values range from 0 to 254
+# =============================================================================
+# Trajectory Planning Configuration
+# =============================================================================
 
-# If it overshoots a lot and oscillates, either the integral gain (I) needs to be increased or all gains (P,I,D) should be reduced
-# Too much overshoot? Increase D, decrease P.
-# Response too damped? Increase P.
-# Ramps up quickly to a value below target value and then slows down as it approaches target value? Try increasing the I constant.
-
-DEFAULT_KP = 50  
-DEFAULT_KI = 1   
-DEFAULT_KD = 30
-
-# Default PID gains for the servos (per-joint tuned baseline)
-J1_PID_GAINS = (50, 1, 20) # J1 pattern is  (KP, KI, KD)
-J2_PID_GAINS = (65, 1, 30) # J2 pattern is  (KP, KI, KD)
-J3_PID_GAINS = (50, 1, 25) # J3 pattern is  (KP, KI, KD)
-J4_PID_GAINS = (50, 0, 10) # J4 pattern is  (KP, KI, KD)
-J5_PID_GAINS = (50, 0, 10) # J5 pattern is  (KP, KI, KD)
-J6_PID_GAINS = (50, 0, 10) # J6 pattern is  (KP, KI, KD)
-Gripper_PID_GAINS = (40, 0, 10) # Gripper pattern is  (KP, KI, KD)
-
-# Per-servo default PID gains (Kp, Ki, Kd), keyed by hardware Servo ID.
-# If a servo ID is missing from this map, the controller falls back to
-# DEFAULT_KP/DEFAULT_KI/DEFAULT_KD above for that servo.
-DEFAULT_PID_GAINS: dict[int, tuple[int, int, int]] = {
-    10: J1_PID_GAINS,  # J1
-    20: J2_PID_GAINS,  # J2 master
-    21: J2_PID_GAINS,  # J2 slave
-    30: J3_PID_GAINS,  # J3 master
-    31: J3_PID_GAINS,  # J3 slave
-    40: J4_PID_GAINS,  # J4
-    50: J5_PID_GAINS,  # J5
-    60: J6_PID_GAINS,  # J6
-    100: Gripper_PID_GAINS, # Gripper
-}
-
-# Trajectory Planning Optimization
-IK_PLANNING_FREQUENCY = 100 # Hz. We solve IK at this rate, then interpolate for smoother, faster execution.
+# IK planning frequency (Hz) - solve IK at this rate, interpolate for execution
+IK_PLANNING_FREQUENCY = 100
 
 # Trajectory Caching
-# Note: The path is adjusted to navigate from `src/arm_controller` up to the project root.
 TRAJECTORY_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "trajectory_cache"))
+
+# =============================================================================
+# Global Runtime State
+# =============================================================================
 
 # Global state for trajectory execution
 trajectory_state = {
@@ -161,9 +193,11 @@ trajectory_state = {
     "thread": None,
     # Diagnostics toggle (runtime), used to enable IK/executor logging and charts
     "diagnostics_enabled": False,
-    # --- New state for real-time jogging ---
+    # --- Real-time jogging state ---
     "is_jogging": False,
-    # 6D vector: [vx, vy, vz, v_roll, v_pitch, v_yaw]
+    # Separate thread handle for jogging (do not reuse "thread", which is reserved for trajectories)
+    "jog_thread": None,
+    # 6D velocity vector: [vx, vy, vz, v_roll, v_pitch, v_yaw]
     "jog_velocities": np.zeros(6, dtype=float),
     "last_jog_command_time": 0.0,
     # Deadman gate for jog (must be True to apply non-zero velocities)
@@ -172,48 +206,99 @@ trajectory_state = {
     "jog_debug": False,
 }
 
+# =============================================================================
+# Global Serial & State Objects
+# =============================================================================
 
-# Servo Sync Write Constants
-SERVO_INSTRUCTION_SYNC_WRITE = 0x83
-SERVO_BROADCAST_ID = 0xFE # Typically 0xFE for Feetech Sync Write
-# Start address for Sync Write block (Accel, Pos, Time, Speed)
-SYNC_WRITE_START_ADDRESS = SERVO_ADDR_TARGET_ACCELERATION # 0x29
-# Length of data block per servo in Sync Write: Accel (1) + Pos (2) + Time (2) + Speed (2) = 7 bytes
-SYNC_WRITE_DATA_LEN_PER_SERVO = 7
-# Servo Sync Read Constants
-SERVO_INSTRUCTION_SYNC_READ = 0x82
-
-# Global serial object
+# Global serial object (managed by servo_driver.initialize_servos())
 ser: 'serial.Serial | None' = None
 
 # Global state for the arm's last known logical joint angles (in radians)
-current_logical_joint_angles_rad = [0.0] * NUM_LOGICAL_JOINTS
-# NEW: Global state for the gripper's last known angle (in radians)
+# NOTE: This is initialized as empty and populated by run_controller.py after
+# the robot configuration is set. Code should check len() before accessing.
+current_logical_joint_angles_rad: list[float] = []
+
+# Global state for the gripper's last known angle (in radians)
 current_gripper_angle_rad = 0.0
-# NEW: Flag to indicate if the gripper servo (ID 100) was detected on startup
+
+# Flag to indicate if the gripper servo was detected on startup
 gripper_present = False
 
-# -----------------------------------------------------------------------------
-# Servo Orientation Mapping (RAW ↔︎ Angle)
-# -----------------------------------------------------------------------------
-# For each physical servo we have to know whether a positive physical rotation of
-# the joint corresponds to an increase ("direct") or a decrease ("inverted") of
-# the raw encoder/command value.  This depends on how the servo is mounted.
-#
-# Mapping for the current robot (verified by physical testing):
-#   Joint 1 : ID 10 → inverted
-#   Joint 2 : ID 20 → inverted| ID 21 → direct
-#   Joint 3 : ID 30 → inverted| ID 31 → direct
-#   Joint 4 : ID 40 → inverted
-#   Joint 5 : ID 50 → inverted
-#   Joint 6 : ID 60 → direct
-#
-# If you commission a new robot and the mounting differs, simply edit the
-# `INVERTED_SERVO_IDS` set below so the control-system math stays correct.
 
-# IDs whose raw value DECREASES when the joint rotates in the positive logical
-# direction.
-INVERTED_SERVO_IDS: set[int] = {10, 20, 30, 40, 50, 60, 100} # Assuming gripper (100) is inverse mapping
+def _populate_robot_constants() -> None:
+    """
+    Populate robot-specific constants from the active robot configuration.
+    
+    Called by robot_config.set_active_robot() to ensure utils module globals
+    are refreshed when the active robot changes.
+    
+    These are robot-specific constants (joint IDs, limits, mappings),
+    distinct from servo-specific constants which are populated by _populate_servo_constants().
+    """
+    global current_logical_joint_angles_rad
+    global NUM_LOGICAL_JOINTS, NUM_PHYSICAL_SERVOS, SERVO_IDS
+    global SERVO_ID_GRIPPER, SERVO_ID_JOINT_2_SECOND, SERVO_ID_JOINT_3_SECOND
+    global URDF_JOINT_LIMITS, EFFECTIVE_MAPPING_RANGES, INVERTED_SERVO_IDS
+    global LOGICAL_JOINT_MASTER_OFFSETS_RAD, LOGICAL_JOINT_LIMITS_RAD, GRIPPER_LIMITS_RAD
+    global PI_IP, UDP_PORT, BUFFER_SIZE, SERIAL_PORT
+    global DEFAULT_SERVO_SPEED, DEFAULT_PROFILE_VELOCITY, DEFAULT_PROFILE_ACCELERATION
+    global CORRECTION_KP_GAIN, CORRECTION_KI_GAIN, CORRECTION_INTEGRAL_CLAMP_RAD
+    global DEFAULT_KP, DEFAULT_KI, DEFAULT_KD, DEFAULT_PID_GAINS
+    global J1_PID_GAINS, J2_PID_GAINS, J3_PID_GAINS, J4_PID_GAINS, J5_PID_GAINS, J6_PID_GAINS
+    global Gripper_PID_GAINS
+    
+    # Re-read from robot_config (which was just updated by set_active_robot)
+    NUM_LOGICAL_JOINTS = robot_config.NUM_LOGICAL_JOINTS
+    NUM_PHYSICAL_SERVOS = robot_config.NUM_PHYSICAL_SERVOS
+    SERVO_IDS = robot_config.SERVO_IDS
+    SERVO_ID_GRIPPER = robot_config.SERVO_ID_GRIPPER
+    SERVO_ID_JOINT_2_SECOND = robot_config.SERVO_ID_JOINT_2_SECOND
+    SERVO_ID_JOINT_3_SECOND = robot_config.SERVO_ID_JOINT_3_SECOND
+    URDF_JOINT_LIMITS = robot_config.URDF_JOINT_LIMITS
+    EFFECTIVE_MAPPING_RANGES = robot_config.EFFECTIVE_MAPPING_RANGES
+    INVERTED_SERVO_IDS = robot_config.INVERTED_SERVO_IDS
+    LOGICAL_JOINT_MASTER_OFFSETS_RAD = robot_config.LOGICAL_JOINT_MASTER_OFFSETS_RAD
+    LOGICAL_JOINT_LIMITS_RAD = robot_config.LOGICAL_JOINT_LIMITS_RAD
+    GRIPPER_LIMITS_RAD = robot_config.GRIPPER_LIMITS_RAD
+    DEFAULT_SERVO_SPEED = robot_config.DEFAULT_SERVO_SPEED
+    DEFAULT_PROFILE_VELOCITY = robot_config.DEFAULT_PROFILE_VELOCITY
+    DEFAULT_PROFILE_ACCELERATION = robot_config.DEFAULT_PROFILE_ACCELERATION
+    CORRECTION_KP_GAIN = robot_config.CORRECTION_KP_GAIN
+    CORRECTION_KI_GAIN = robot_config.CORRECTION_KI_GAIN
+    CORRECTION_INTEGRAL_CLAMP_RAD = robot_config.CORRECTION_INTEGRAL_CLAMP_RAD
+    DEFAULT_KP = robot_config.DEFAULT_KP
+    DEFAULT_KI = robot_config.DEFAULT_KI
+    DEFAULT_KD = robot_config.DEFAULT_KD
+    DEFAULT_PID_GAINS = robot_config.DEFAULT_PID_GAINS
+    J1_PID_GAINS = robot_config.J1_PID_GAINS
+    J2_PID_GAINS = robot_config.J2_PID_GAINS
+    J3_PID_GAINS = robot_config.J3_PID_GAINS
+    J4_PID_GAINS = robot_config.J4_PID_GAINS
+    J5_PID_GAINS = robot_config.J5_PID_GAINS
+    J6_PID_GAINS = robot_config.J6_PID_GAINS
+    Gripper_PID_GAINS = robot_config.GRIPPER_PID_GAINS
+    
+    # Communication settings
+    PI_IP = robot_config.PI_IP
+    UDP_PORT = robot_config.UDP_PORT
+    BUFFER_SIZE = robot_config.BUFFER_SIZE
+    SERIAL_PORT = robot_config.SERIAL_PORT
+    
+    n_joints = NUM_LOGICAL_JOINTS
+    if n_joints is not None and len(current_logical_joint_angles_rad) != n_joints:
+        current_logical_joint_angles_rad = [0.0] * n_joints
+
+
+# Keep old name as alias for backward compatibility during migration
+_reinitialize_state = _populate_robot_constants
+
+# =============================================================================
+# Servo Orientation Mapping
+# =============================================================================
+
+# Import from robot_config for backward compatibility
+INVERTED_SERVO_IDS = robot_config.INVERTED_SERVO_IDS
+
 
 def _is_servo_direct_mapping(physical_servo_config_index: int) -> bool:
     """
@@ -221,16 +306,17 @@ def _is_servo_direct_mapping(physical_servo_config_index: int) -> bool:
     or decreases (inverted). This is necessary for correct angle-to-raw-value conversion.
 
     Args:
-        physical_servo_config_index (int): The 0-based index of the servo in the SERVO_IDS list.
+        physical_servo_config_index: The 0-based index of the servo in the SERVO_IDS list.
 
     Returns:
         bool: True if the mapping is direct, False if inverted.
     """
-    current_physical_servo_id = SERVO_IDS[physical_servo_config_index]
+    return robot_config._is_servo_direct_mapping(physical_servo_config_index)
 
-    # Return False (inverted) if the ID is in the inverted set; True otherwise.
-    return current_physical_servo_id not in INVERTED_SERVO_IDS
 
+# =============================================================================
+# Utility Functions
+# =============================================================================
 
 def _convert_numpy_to_list(obj):
     """
@@ -251,3 +337,17 @@ def _convert_numpy_to_list(obj):
         return [_convert_numpy_to_list(elem) for elem in obj]
     return obj
 
+
+def get_actuator_backend():
+    """
+    Get the currently active actuator backend instance.
+    
+    This function provides access to the actuator backend for advanced usage.
+    For most cases, use the functions in servo_driver.py instead.
+    
+    Returns:
+        ActuatorBackend: The active backend, or None if not initialized.
+    """
+    # Import here to avoid circular dependency
+    from . import servo_driver
+    return getattr(servo_driver, '_actuator_backend', None)

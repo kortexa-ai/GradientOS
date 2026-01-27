@@ -12,6 +12,8 @@ import os
 import csv
 import threading
 
+from typing import Optional
+
 try:
     from .. import ik_solver
     from .. import trajectory_planner
@@ -23,6 +25,84 @@ except ImportError:
 from . import utils
 from . import servo_driver
 from . import servo_protocol
+from . import robot_config
+from .backends import registry as backend_registry
+from .actuator_interface import ActuatorBackend
+
+
+# =============================================================================
+# Backend Accessor Functions
+# =============================================================================
+
+def _get_backend() -> Optional[ActuatorBackend]:
+    """Returns the active ActuatorBackend instance, or None if not set."""
+    try:
+        return backend_registry.get_active_backend()
+    except backend_registry.BackendInstanceNotSetError:
+        return None
+
+
+def _use_backend() -> bool:
+    """Returns True if an ActuatorBackend instance is active and initialized."""
+    backend = _get_backend()
+    return backend is not None and backend.is_initialized
+
+
+def _build_primary_feedback_ids() -> list[int]:
+    """
+    Build a list of primary servo IDs for feedback (one per logical joint).
+    Uses the first servo ID from each logical joint's actuator list.
+    """
+    primary_ids = []
+    active_robot = robot_config.get_active_robot()
+    logical_map = active_robot.logical_joint_to_actuator_ids
+    num_logical_joints = active_robot.num_logical_joints
+    # Sort by logical joint number (1-based in the map)
+    for joint_num in sorted(logical_map.keys()):
+        actuator_ids = logical_map[joint_num]
+        if actuator_ids and joint_num <= num_logical_joints:  # Skip gripper (joint 7)
+            primary_ids.append(actuator_ids[0])
+    return primary_ids
+
+
+def _build_logical_to_physical_index_map() -> dict[int, list[int]]:
+    """
+    Build a mapping from logical joint index (0-based) to physical servo indices in SERVO_IDS.
+    """
+    active_robot = robot_config.get_active_robot()
+    logical_map = active_robot.logical_joint_to_actuator_ids
+    num_logical_joints = active_robot.num_logical_joints
+    servo_ids = robot_config.SERVO_IDS
+    result = {}
+    for joint_num in sorted(logical_map.keys()):
+        if joint_num > num_logical_joints:  # Skip gripper
+            continue
+        actuator_ids = logical_map[joint_num]
+        indices = []
+        for aid in actuator_ids:
+            if aid in servo_ids:
+                indices.append(servo_ids.index(aid))
+        result[joint_num - 1] = indices  # Convert to 0-based
+    return result
+
+
+def _get_twin_motor_pairs() -> list[tuple[int, int]]:
+    """
+    Get the twin motor pairs (primary_id, secondary_id) from robot config.
+    Returns a list of tuples like [(20, 21), (30, 31)].
+    """
+    twin_map = robot_config.get_active_robot().twin_motor_actuator_ids
+    pairs = []
+    # twin_map is like {1: 21, 2: 31} mapping logical joint to secondary servo ID
+    logical_map = robot_config.get_active_robot().logical_joint_to_actuator_ids
+    for logical_joint, secondary_id in twin_map.items():
+        # The logical_joint here is 1-based index in the physical config
+        # We need to find the primary ID for this joint
+        actuator_ids = logical_map.get(logical_joint + 1, [])  # +1 because logical_joint in twin_map is 0-based offset
+        if len(actuator_ids) >= 2:
+            primary_id = actuator_ids[0]
+            pairs.append((primary_id, secondary_id))
+    return pairs
 
 JointTraj = Union[Sequence[Sequence[float]], np.ndarray]
 
@@ -656,7 +736,7 @@ def _open_loop_executor_thread(
     # Pre-allocate Sync-Write command buffers
     # ----------------------------------------------
     precomputed_cmds: list[list[tuple[int,int,int,int]]] = [
-        servo_driver.logical_q_to_syncwrite_tuple(q, 4095, 0) for q in joint_path
+        servo_driver.logical_q_to_syncwrite_tuple(q, utils.ENCODER_RESOLUTION, 0) for q in joint_path
     ]
 
     # ----------------------------------------------
@@ -680,7 +760,12 @@ def _open_loop_executor_thread(
 
             # --- Actuation (WRITE) ---
             w_t0 = time.perf_counter()
-            servo_protocol.sync_write_goal_pos_speed_accel(cmd)
+            backend = _get_backend()
+            if backend and _use_backend():
+                # Backend expects a list of (servo_id, position, speed, accel) tuples.
+                backend.sync_write(cmd)
+            else:
+                servo_protocol.sync_write_goal_pos_speed_accel(cmd)
             _write_durations.append(time.perf_counter() - w_t0)
 
             # --- Timing / sleep ---
@@ -715,9 +800,7 @@ def _open_loop_executor_thread(
         #  Statistics & Diagnostics
         # ----------------------------
         if _loop_durations:
-            import statistics, math, datetime, matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
+            import statistics
 
             avg_ms = statistics.mean(_loop_durations) * 1000.0
             max_ms = max(_loop_durations) * 1000.0
@@ -809,18 +892,11 @@ def _closed_loop_executor_thread(
         _actual_angles_per_joint: list[list[float]] = [[] for _ in range(utils.NUM_LOGICAL_JOINTS)]
 
         # We need a mapping from logical joint index back to the physical servos to command.
-        # This is the reverse of the logic in set_servo_positions.
-        # This could be pre-calculated, but is clear here for now.
-        logical_to_physical_map = {
-            0: [0],     # Logical J1 -> Physical Servo ID 10
-            1: [1, 2],  # Logical J2 -> Physical Servo IDs 20, 21
-            2: [3, 4],  # Logical J3 -> Physical Servo IDs 30, 31
-            3: [5],     # Logical J4 -> Physical Servo ID 40
-            4: [6],     # Logical J5 -> Physical Servo ID 50
-            5: [7]      # Logical J6 -> Physical Servo ID 60
-        }
+        # This is dynamically built from robot config.
+        logical_to_physical_map = _build_logical_to_physical_index_map()
         all_physical_servo_ids = [utils.SERVO_IDS[i] for i in range(utils.NUM_PHYSICAL_SERVOS)]
-        PRIMARY_FB_IDS = [10, 20, 30, 40, 50, 60]
+        PRIMARY_FB_IDS = _build_primary_feedback_ids()
+        twin_motor_pairs = _get_twin_motor_pairs()
 
         # Integral accumulators for steady-state error compensation (gravity, bias)
         integral_error_rad = [0.0 for _ in range(utils.NUM_LOGICAL_JOINTS)]
@@ -842,11 +918,15 @@ def _closed_loop_executor_thread(
             # Use a fixed but small timeout to ensure full packets arrive; setting
             # too low leads to intermittent Sync Read failures.
             per_cycle_timeout = max(0.01, time_step * 0.8)
-            raw_positions = servo_protocol.sync_read_positions(
-                PRIMARY_FB_IDS,
-                timeout_s=per_cycle_timeout,
-                poll_delay_s=0.0,
-            )
+            backend = _get_backend()
+            if backend and _use_backend():
+                raw_positions = backend.sync_read_positions(timeout_s=per_cycle_timeout)
+            else:
+                raw_positions = servo_protocol.sync_read_positions(
+                    PRIMARY_FB_IDS,
+                    timeout_s=per_cycle_timeout,
+                    poll_delay_s=0.0,
+                )
             _read_durations.append(time.perf_counter() - read_t0)
 
             # ------------------------------------------------------------
@@ -862,37 +942,37 @@ def _closed_loop_executor_thread(
             #  This keeps the downstream control law unchanged.
 
             def _angle_to_raw(angle_rad: float, physical_idx: int) -> int:
-                """Convert a physical angle into a raw servo value (0-4095) using the
+                """Convert a physical angle into a raw servo value using the
                 mapping rules held in utils.  Clamp to valid range."""
                 min_map_rad, max_map_rad = utils.EFFECTIVE_MAPPING_RANGES[physical_idx]
                 angle_clamped = max(min_map_rad, min(max_map_rad, angle_rad))
                 norm_val = (angle_clamped - min_map_rad) / (max_map_rad - min_map_rad)
+                encoder_max = utils.ENCODER_RESOLUTION
 
                 if utils._is_servo_direct_mapping(physical_idx):
-                    raw = norm_val * 4095.0
+                    raw = norm_val * encoder_max
                 else:
-                    raw = (1.0 - norm_val) * 4095.0
+                    raw = (1.0 - norm_val) * encoder_max
 
-                return int(round(max(0, min(4095, raw))))
+                return int(round(max(0, min(encoder_max, raw))))
 
-            # --- Joint 2 mirror (IDs 20 & 21) ---
-            if 20 in raw_positions and 21 not in raw_positions:
-                angle_rad_20 = servo_driver.servo_value_to_radians(raw_positions[20], 1)  # index of 20
-                raw_positions[21] = _angle_to_raw(angle_rad_20, 2)  # index of 21
-
-            # --- Joint 3 mirror (IDs 30 & 31) ---
-            if 30 in raw_positions and 31 not in raw_positions:
-                angle_rad_30 = servo_driver.servo_value_to_radians(raw_positions[30], 3)  # index of 30
-                raw_positions[31] = _angle_to_raw(angle_rad_30, 4)  # index of 31
+            # --- Twin motor mirroring (dynamically from robot config) ---
+            for primary_id, secondary_id in twin_motor_pairs:
+                if primary_id in raw_positions and secondary_id not in raw_positions:
+                    primary_idx = utils.SERVO_IDS.index(primary_id)
+                    secondary_idx = utils.SERVO_IDS.index(secondary_id)
+                    angle_rad = servo_driver.servo_value_to_radians(raw_positions[primary_id], primary_idx)
+                    raw_positions[secondary_id] = _angle_to_raw(angle_rad, secondary_idx)
 
             # Record target vs actual angles per logical joint using primary IDs
             try:
-                primary_ids = {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 60}
+                # Build primary_ids dict from the PRIMARY_FB_IDS list
+                primary_ids = {i: PRIMARY_FB_IDS[i] for i in range(len(PRIMARY_FB_IDS))}
                 for logical_joint_index in range(utils.NUM_LOGICAL_JOINTS):
                     target_angle_rad = target_q_step[logical_joint_index]
                     _target_angles_per_joint[logical_joint_index].append(target_angle_rad)
-                    primary_id = primary_ids[logical_joint_index]
-                    if primary_id in raw_positions:
+                    primary_id = primary_ids.get(logical_joint_index)
+                    if primary_id and primary_id in raw_positions:
                         config_index = utils.SERVO_IDS.index(primary_id)
                         actual_angle = servo_driver.servo_value_to_radians(raw_positions[primary_id], config_index)
                         # Undo master offset to get logical angle
@@ -953,7 +1033,7 @@ def _closed_loop_executor_thread(
                     # to let inner servo PID be the only stabilizing loop during tuning.
                     commanded_physical_angle_rad = target_physical_angle_rad
                     
-                    # 4. Convert the final commanded angle to a raw servo value (0-4095)
+                    # 4. Convert the final commanded angle to a raw servo value
                     # This block is the same as in set_servo_positions
                     min_urdf_rad, max_urdf_rad = utils.URDF_JOINT_LIMITS[physical_servo_config_index]
                     angle_clamped_to_urdf = max(min_urdf_rad, min(max_urdf_rad, commanded_physical_angle_rad))
@@ -961,21 +1041,27 @@ def _closed_loop_executor_thread(
                     min_map_rad, max_map_rad = utils.EFFECTIVE_MAPPING_RANGES[physical_servo_config_index]
                     angle_for_norm = max(min_map_rad, min(max_map_rad, angle_clamped_to_urdf))
                     normalized_value = (angle_for_norm - min_map_rad) / (max_map_rad - min_map_rad)
+                    encoder_max = utils.ENCODER_RESOLUTION
                     
-                    raw_servo_value = (normalized_value * 4095.0) if utils._is_servo_direct_mapping(physical_servo_config_index) else ((1.0 - normalized_value) * 4095.0)
+                    raw_servo_value = (normalized_value * encoder_max) if utils._is_servo_direct_mapping(physical_servo_config_index) else ((1.0 - normalized_value) * encoder_max)
                     
                     final_servo_pos_value = int(round(raw_servo_value))
                     
-                    # Add to the command list. Speed is max (4095) and Accel is none (0)
+                    # Add to the command list. Speed is max and Accel is none (0)
                     # because the path is timed by the closed-loop executor itself.
-                    commands_for_sync_write.append((servo_id, final_servo_pos_value, 4095, 0))
+                    commands_for_sync_write.append((servo_id, final_servo_pos_value, encoder_max, 0))
 
             _compute_durations.append(time.perf_counter() - compute_t0)
 
             # --- Actuation (Write) ---
             if commands_for_sync_write:
                 write_t0 = time.perf_counter()
-                servo_protocol.sync_write_goal_pos_speed_accel(commands_for_sync_write)
+                backend = _get_backend()
+                if backend and _use_backend():
+                    # Backend expects a list of (servo_id, position, speed, accel) tuples.
+                    backend.sync_write(commands_for_sync_write)
+                else:
+                    servo_protocol.sync_write_goal_pos_speed_accel(commands_for_sync_write)
                 _write_durations.append(time.perf_counter() - write_t0)
             else:
                 _write_durations.append(0.0)
@@ -1033,6 +1119,12 @@ def _closed_loop_executor_thread(
             # ------------------
             if diagnostics_enabled:
                 session_id = utils.trajectory_state.get('diagnostics_session_id')
+                # Get sync profiles from backend if available, else from servo_protocol
+                backend = _get_backend()
+                if backend and _use_backend() and hasattr(backend, 'get_sync_profiles'):
+                    sync_profiles = backend.get_sync_profiles()
+                else:
+                    sync_profiles = servo_protocol.get_sync_profiles()
                 _save_executor_diagnostics_charts(
                     mode="closed_loop",
                     session_id=session_id,
@@ -1044,7 +1136,7 @@ def _closed_loop_executor_thread(
                     actual_angles_per_joint=_actual_angles_per_joint,
                     read_durations=_read_durations,
                     compute_durations=_compute_durations,
-                    sync_profiles=servo_protocol.get_sync_profiles(),
+                    sync_profiles=sync_profiles,
                 )
 
         # If this executor thread is the one registered in trajectory_state, clear it
