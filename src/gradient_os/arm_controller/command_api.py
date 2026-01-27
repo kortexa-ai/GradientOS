@@ -181,6 +181,10 @@ def handle_set_orientation_command(
     utils.trajectory_state["should_stop"] = False # Reset stop flag on new move
     print(f"[Pi IK] Received SET_ORIENTATION command: Roll={roll}, Pitch={pitch}, Yaw={yaw} degrees")
 
+    if utils.trajectory_state.get("is_running"):
+        print("[Pi IK] ERROR: Cannot start SET_ORIENTATION, another task is running.")
+        return
+
     # 1. Get current state (joint angles and full pose).
     initial_angles = utils.current_logical_joint_angles_rad
     current_pose_matrix = ik_solver.get_fk_matrix(initial_angles)
@@ -273,8 +277,13 @@ def handle_set_orientation_command(
         kwargs={'joint_path': joint_path, 'frequency': frequency_hz, 'diagnostics': diagnostics_enabled}
     )
 
-    executor_thread.start()
-    executor_thread.join() # Block until the move is finished
+    # Mark motion active so jog pauses during execution.
+    utils.trajectory_state["is_running"] = True
+    try:
+        executor_thread.start()
+        executor_thread.join() # Block until the move is finished
+    finally:
+        utils.trajectory_state["is_running"] = False
 
     # ------------------------------------------------------------------
     # 6. Final verification (optional, quick FK check).
@@ -409,6 +418,10 @@ def handle_run_trajectory(trajectory_name: str, use_cache: bool = False, loop_ov
     """
     utils.trajectory_state["should_stop"] = False # Reset stop flag for a new trajectory run
     print(f"[Pi Trajectory] Received RUN_TRAJECTORY for '{trajectory_name}' (Use Cache: {use_cache}, Loop Override: {loop_override})")
+
+    if utils.trajectory_state.get("is_running"):
+        print("[Pi Trajectory] ERROR: Cannot start trajectory, another task is running.")
+        return
 
     # --- 1. Load Trajectory Definition ---
     trajectory = _load_trajectory_by_name(trajectory_name)
@@ -1082,11 +1095,30 @@ def _jog_controller_thread():
     
     last_status_log_time = time.monotonic()
     timeout_zero_logged = False
+    was_paused_for_motion = False
 
     while utils.trajectory_state.get("is_jogging"):
         loop_start_time = time.monotonic()
         dt = loop_start_time - last_loop_time
         last_loop_time = loop_start_time
+
+        # If a non-jog motion starts, pause jogging to avoid fighting other controllers.
+        # When the motion ends, resync q_current from the physical robot so we do not
+        # "snap back" to stale internal state.
+        if utils.trajectory_state.get("is_running"):
+            was_paused_for_motion = True
+            loop_duration = time.monotonic() - loop_start_time
+            sleep_time = (1.0 / JOG_CONTROL_FREQUENCY_HZ) - loop_duration
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            continue
+        elif was_paused_for_motion:
+            fresh_q = servo_driver.get_current_arm_state_rad(verbose=False)
+            if fresh_q is not None:
+                q_current = fresh_q
+            last_loop_time = time.monotonic()
+            was_paused_for_motion = False
+            continue
 
         # --- Safety Timeout ---
         # If we haven't received a velocity command recently, set velocities to zero.
@@ -1217,9 +1249,10 @@ def _jog_controller_thread():
             last_status_log_time = now
 
     print("[Jog] Jog controller thread stopped.")
-    # Ensure the thread reference is cleared upon exit
-    if utils.trajectory_state.get("thread") is threading.current_thread():
-        utils.trajectory_state["thread"] = None
+    # Ensure global state reflects the jog thread is no longer active.
+    utils.trajectory_state["is_jogging"] = False
+    if utils.trajectory_state.get("jog_thread") is threading.current_thread():
+        utils.trajectory_state["jog_thread"] = None
 
 
 def handle_jog_start():
@@ -1235,7 +1268,7 @@ def handle_jog_start():
     utils.trajectory_state["jog_gripper_velocity_deg_s"] = 0.0
 
     jog_thread = threading.Thread(target=_jog_controller_thread, daemon=True)
-    utils.trajectory_state["thread"] = jog_thread
+    utils.trajectory_state["jog_thread"] = jog_thread
     jog_thread.start()
 
 
@@ -1245,10 +1278,11 @@ def handle_jog_stop():
     utils.trajectory_state["is_jogging"] = False # Signal the thread to exit
     utils.trajectory_state["jog_gripper_velocity_deg_s"] = 0.0
 
-    # Give the thread a moment to stop
-    thread = utils.trajectory_state.get("thread")
+    # Give the jog thread a moment to stop
+    thread = utils.trajectory_state.get("jog_thread")
     if thread and thread.is_alive():
         thread.join(timeout=0.5)
+    utils.trajectory_state["jog_thread"] = None
 
     # Hard stop the servos as a final safety measure
     current_angles = servo_driver.get_current_arm_state_rad(verbose=False)
@@ -1534,19 +1568,29 @@ def handle_plan_trajectory_points(points, sock, addr):
     except Exception as e:
         print(f"[Pi Trajectory] WARNING: Failed to persist planner preview to {preview_path}: {e}")
 
+    # NOTE: Keep UDP responses small. The web API and UI only need the cartesian preview,
+    # waypoints, and the trajectory definition. Sending full joint-space steps can exceed
+    # UDP limits (Errno 90: Message too long).
     payload = {
         "name": PLANNED_PREVIEW_NAME,
-        "steps": utils._convert_numpy_to_list(planned_steps),
         "trajectory": traj_dict,
         "cartesian_path": cartesian_samples,
         "waypoints": [item["position"] for item in waypoint_results],
         "file_path": preview_path,
+        "step_summaries": [
+            {"type": step.get("type"), "freq": step.get("freq"), "points": len(step.get("path", []))}
+            for step in planned_steps
+        ],
     }
     message = "PLANNED_TRAJECTORY_POINTS," + json.dumps(payload)
     try:
-        sock.sendto(message.encode("utf-8"), addr)
+        encoded = message.encode("utf-8")
+        sock.sendto(encoded, addr)
     except Exception as e:
-        print(f"[Pi Trajectory] WARNING: Failed to send PLAN_TRAJECTORY_POINTS result: {e}")
+        print(
+            "[Pi Trajectory] WARNING: Failed to send PLAN_TRAJECTORY_POINTS result "
+            f"({len(message)} chars): {e}"
+        )
 
 
 # -----------------------------------------------------------------------------

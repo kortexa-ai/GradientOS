@@ -1,0 +1,163 @@
+flowchart TB
+%% =========================================================
+%% A6-400EC BENCH SYSTEM — FULL CIRCUIT (AC + 24V + BRAKE)
+%% Your exact parts: RS PRO 0466283, Schneider A9D11806,
+%% Roxburgh DRF06, Schneider LC1D09BD, RS PRO 1368321,
+%% Finder 95.05 + 40.52 + 99.02, nVent Eriflex 563720,
+%% Motor brake leads BK+/BK-, flyback diode across brake coil.
+%% =========================================================
+
+%% -------------------- LEGEND -----------------------------
+subgraph LEGEND[Legend]
+  L1[Brown = AC Active (L)]:::legend
+  N1[Blue = AC Neutral (N)]:::legend
+  PE1[Green/Yellow = Protective Earth (PE)]:::legend
+  P24[Red = +24 V DC]:::legend
+  N24[Black = 0 V DC]:::legend
+  SIG[Yellow = Control/Signal]:::legend
+end
+
+%% -------------------- AC INPUT ---------------------------
+subgraph AC[AC POWER-IN (240 V AC Domestic)]
+  WS[Wall Socket / Plug Pack<br/>240 V AC: L / N / PE]:::ac
+
+  ISO[RS PRO 0466283 Isolator<br/>3P 40 A IP65 (use 2 poles)<br/>L IN / L OUT, N IN / N OUT]:::ac
+
+  RCBO[Schneider Acti9 A9D11806 RCBO<br/>6 A, Curve C, 1P+N<br/>30 mA Type A]:::ac
+
+  FILT[Roxburgh DRF06 EMC Filter<br/>6 A, 250 V AC, DIN rail<br/>IN: L/N  OUT: L/N<br/>Earth stud -> PE]:::ac
+
+  CONT_PWR[Schneider LC1D09BD Main Contacts<br/>Power poles (L & N pass-through)]:::ac
+
+  DRIVE_AC[A6-400EC Servo Drive<br/>AC Input Terminals<br/>L1 / L2 / PE]:::ac
+end
+
+%% -------------------- MOTOR POWER & REGEN ----------------
+subgraph MOTORPOWER[DRIVE -> MOTOR POWER & REGEN]
+  DRIVE_UVW[A6-400EC Motor Output<br/>U / V / W / PE]:::ac
+  MOTOR[Servo Motor A6M60-400H2B1-M17<br/>U/V/W + PE]:::ac
+
+  RES[Uxcell Braking Resistor<br/>50 Ω 500 W (recommended)<br/>Mount on metal, allow heat]:::ac
+  PC[A6-400EC Regen Terminals<br/>P / C]:::ac
+end
+
+%% -------------------- 24V CONTROL SUPPLY -----------------
+subgraph DC[24 V DC CONTROL (External PSU)]
+  PSU[RS PRO 1368321 PSU<br/>240 VAC -> 24 VDC 10 A<br/>Outputs: +24 / 0V / PE]:::dc
+
+  FUSE_COIL[(Optional Fuse)<br/>0.2–0.5 A<br/>Relay+coil branch]:::dc
+  ESTOP[E-STOP Pushbutton<br/>Use NC contact<br/>(in series with contactor coil)]:::dc
+
+  CONT_COIL[LC1D09BD Coil Terminals<br/>A1 (+) / A2 (-)<br/>24 VDC coil]:::dc
+end
+
+%% -------------------- CN1 I/O (BRAKE CONTROL SIGNAL) -----
+subgraph CN1[DRIVE CN1 I/O (DB-15) — Brake Output]
+  CN1_HDR[CN1 Connector (DB-15/DA-15)<br/>Pins used here:<br/>Pin 5 = DO3+ (Brake)<br/>Pin 4 = DO3- (Brake)<br/>Pin 15 = +24V internal (200 mA max) (NOT used for brake power)<br/>Pin 14 = COM- (internal 0V ref)]:::sig
+
+  DO3P[CN1 Pin 5<br/>DO3+ (Brake)]:::sig
+  DO3N[CN1 Pin 4<br/>DO3- (Brake)]:::sig
+end
+
+%% -------------------- FINDER RELAY (COIL + CONTACTS) -----
+subgraph RELAY[Finder Relay Assembly (Your exact parts)]
+  F95[Finder 95.05 Socket (DIN)<br/>Coil: A1 / A2<br/>Contacts Pole1: 11(COM) 12(NC) 14(NO)<br/>Contacts Pole2: 21(COM) 22(NC) 24(NO)]:::relay
+
+  F4052[Finder 40.52.9.024.0000 Relay<br/>24 VDC coil, DPDT, 8 A contacts]:::relay
+  F9902[Finder 99.02 LED/Diode Module<br/>(Across A1/A2) — coil polarity matters<br/>A1 must be +, A2 must be -]:::relay
+end
+
+%% -------------------- MOTOR BRAKE POWER ------------------
+subgraph BRAKE[Motor Brake Power (External 24 V switched)]
+  FUSE_BR[(Fuse)<br/>0.5–1 A<br/>Brake branch]:::dc
+
+  BKCOIL[Motor Brake Coil<br/>Leads: BK+ / BK-<br/>Brake RELEASES when 24 V applied]:::dc
+
+  DIODE[Flyback Diode across brake coil<br/>1N4007 (typ.)<br/>Stripe (cathode) -> BK+<br/>Non-stripe (anode) -> BK-]:::dc
+end
+
+%% -------------------- PE / EARTH --------------------------
+subgraph EARTH[Protective Earth (PE) — Common Bond]
+  PEBAR[nVent Eriflex 563720 used as PE bar<br/>Bond to mains PE]:::pe
+end
+
+%% =========================================================
+%% AC WIRING (L / N / PE) — Power chain
+%% =========================================================
+WS -->|Brown L| ISO -->|Brown L| RCBO -->|Brown L| FILT -->|Brown L| CONT_PWR -->|Brown L| DRIVE_AC
+WS -->|Blue N|  ISO -->|Blue N|  RCBO -->|Blue N|  FILT -->|Blue N|  CONT_PWR -->|Blue N|  DRIVE_AC
+
+%% PE bonds (always present)
+WS -->|G/Y PE| PEBAR
+FILT -->|G/Y PE (short)| PEBAR
+DRIVE_AC -->|G/Y PE| PEBAR
+PSU -->|PE terminal| PEBAR
+CONT_PWR -->|Frame/earth| PEBAR
+
+%% =========================================================
+%% Drive to motor power + braking resistor
+%% =========================================================
+DRIVE_UVW -->|U/V/W + PE| MOTOR
+PC -->|P-C| RES
+
+%% =========================================================
+%% 24V E-STOP controlling the CONTACTOR COIL (system E-stop)
+%% =========================================================
+PSU -->|Red +24| FUSE_COIL -->|Red +24| ESTOP -->|Red +24| CONT_COIL
+CONT_COIL -->|Black 0V| PSU
+
+%% Note: CONT_COIL energised -> CONT_PWR closes -> AC reaches drive.
+CONT_COIL -.->|Coil energised closes contacts| CONT_PWR
+
+%% =========================================================
+%% BRAKE CONTROL — CN1 DO3 controls Finder relay coil
+%% IMPORTANT: We use EXTERNAL 24 V for coil power (robust).
+%% DO3 acts like the switching element for the coil circuit.
+%% =========================================================
+
+%% Coil power in (A1 fixed to +24 because 99.02 diode module)
+PSU -->|Red +24| F95
+F95 -->|A1 (+)| F9902
+F95 -->|A2 (-) via output| DO3P
+
+%% DO3 return to PSU 0V (typical)
+DO3N -->|Black 0V return| PSU
+
+%% Relay coil/internal association
+F95 --- F4052
+F9902 --- F95
+
+%% =========================================================
+%% BRAKE POWER — Finder contacts switch external +24 to BK+/BK-
+%% =========================================================
+PSU -->|Red +24| FUSE_BR -->|Red +24| F95
+F95 -->|Pole1 COM 11| F95
+F95 -->|Pole1 NO 14 (closes when relay ON)| BKCOIL
+BKCOIL -->|BK- to Black 0V| PSU
+
+%% Flyback diode across brake coil (parallel, not series)
+DIODE --- BKCOIL
+
+%% =========================================================
+%% CN1 Node mapping (for clarity)
+%% =========================================================
+CN1_HDR --- DO3P
+CN1_HDR --- DO3N
+
+%% ---------------------------------------------------------
+%% NOTES (READ THIS):
+%% 1) A1/A2 are the RELAY COIL. They MUST get 24 V (energy) to actuate the relay.
+%% 2) DO3+/- are the DRIVE'S CONTROL OUTPUT. They do NOT power the brake directly.
+%% 3) Brake BK+/BK- MUST be powered from the EXTERNAL 24 V PSU through relay contacts.
+%% 4) Because you have Finder 99.02 module, keep A1 = +24 and A2 = switched/negative.
+%% 5) If DO3 logic is inverted on your drive, you may need to swap DO3P/DO3N roles
+%%    (keep A1 positive; only swap which DO3 pin goes to A2 vs 0V).
+%% ---------------------------------------------------------
+
+%% -------------------- STYLES ------------------------------
+classDef ac fill:#fff2cc,stroke:#333,stroke-width:1px;
+classDef dc fill:#d9e8ff,stroke:#333,stroke-width:1px;
+classDef pe fill:#e2f7e2,stroke:#2a7,stroke-width:1px;
+classDef sig fill:#f3e5ff,stroke:#333,stroke-width:1px;
+classDef relay fill:#ffe6cc,stroke:#333,stroke-width:1px;
+classDef legend fill:#f7f7f7,stroke:#aaa,stroke-width:1px;

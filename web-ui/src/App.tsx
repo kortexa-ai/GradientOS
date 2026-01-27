@@ -1024,17 +1024,37 @@ export default function App() {
     () => (isConnected ? "Streaming" : "Disconnected"),
     [isConnected],
   );
+  const headerAlert = [error, visionError].filter(Boolean).join(" • ");
+  const hasHeaderAlert = headerAlert.length > 0;
+  const alertTone = error ? "rose" : "amber";
 
   return (
     <div className="flex min-h-screen flex-col bg-gradient-to-b from-slate-900/80 via-slate-950 to-black text-slate-100">
       <header className="relative flex flex-col gap-4 border-b border-slate-800/40 bg-slate-950/60 px-6 py-6 shadow-inner shadow-slate-900/40 backdrop-blur">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex flex-col">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col shrink-0">
             <div className="flex justify-end text-2xl font-semibold tracking-tight text-cyan-300 sm:text-3xl w-full">
               Control Center
             </div>
             <div className="flex justify-end text-md tracking-tight text-cyan-300 sm:text-md w-full">
               Gradient Robotics
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-1 items-center sm:px-4">
+            <div
+              className={`flex h-10 w-full items-center overflow-hidden rounded-lg border px-3 text-xs sm:text-sm ${
+                hasHeaderAlert
+                  ? alertTone === "rose"
+                    ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+                    : "border-amber-500/40 bg-amber-500/10 text-amber-200"
+                  : "border-transparent bg-transparent text-transparent"
+              }`}
+              role={hasHeaderAlert ? "alert" : undefined}
+              aria-live={hasHeaderAlert ? "polite" : undefined}
+              aria-hidden={!hasHeaderAlert}
+              title={hasHeaderAlert ? headerAlert : undefined}
+            >
+              {hasHeaderAlert && <span className="w-full truncate">{headerAlert}</span>}
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -1127,16 +1147,6 @@ export default function App() {
             </button>
           </div>
         </div>
-        {error && (
-          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
-            {error}
-          </div>
-        )}
-        {visionError && (
-          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-            {visionError}
-          </div>
-        )}
       </header>
       <main className="relative flex-1 overflow-hidden">
         <ArmVisualizer

@@ -195,6 +195,8 @@ trajectory_state = {
     "diagnostics_enabled": False,
     # --- Real-time jogging state ---
     "is_jogging": False,
+    # Separate thread handle for jogging (do not reuse "thread", which is reserved for trajectories)
+    "jog_thread": None,
     # 6D velocity vector: [vx, vy, vz, v_roll, v_pitch, v_yaw]
     "jog_velocities": np.zeros(6, dtype=float),
     "last_jog_command_time": 0.0,

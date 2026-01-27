@@ -762,10 +762,8 @@ def _open_loop_executor_thread(
             w_t0 = time.perf_counter()
             backend = _get_backend()
             if backend and _use_backend():
-                # Backend expects a dict of {servo_id: (position, speed, accel)}
-                backend.sync_write(
-                    {entry[0]: (entry[1], entry[2], entry[3]) for entry in cmd}
-                )
+                # Backend expects a list of (servo_id, position, speed, accel) tuples.
+                backend.sync_write(cmd)
             else:
                 servo_protocol.sync_write_goal_pos_speed_accel(cmd)
             _write_durations.append(time.perf_counter() - w_t0)
@@ -802,9 +800,7 @@ def _open_loop_executor_thread(
         #  Statistics & Diagnostics
         # ----------------------------
         if _loop_durations:
-            import statistics, math, datetime, matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
+            import statistics
 
             avg_ms = statistics.mean(_loop_durations) * 1000.0
             max_ms = max(_loop_durations) * 1000.0
@@ -1062,10 +1058,8 @@ def _closed_loop_executor_thread(
                 write_t0 = time.perf_counter()
                 backend = _get_backend()
                 if backend and _use_backend():
-                    # Backend expects a dict of {servo_id: (position, speed, accel)}
-                    backend.sync_write(
-                        {entry[0]: (entry[1], entry[2], entry[3]) for entry in commands_for_sync_write}
-                    )
+                    # Backend expects a list of (servo_id, position, speed, accel) tuples.
+                    backend.sync_write(commands_for_sync_write)
                 else:
                     servo_protocol.sync_write_goal_pos_speed_accel(commands_for_sync_write)
                 _write_durations.append(time.perf_counter() - write_t0)
