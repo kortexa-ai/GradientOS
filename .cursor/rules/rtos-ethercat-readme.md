@@ -7,6 +7,8 @@ alwaysApply: true
 
 - High-level overview + AI to-do: `RTOS-ETHERCAT-PLAN/Plan overview & to-do.md`
 - Full specification: `RTOS-ETHERCAT-PLAN/RTOS-ETHERCAT-plan.md`
+- Living “unknowns” checklist: `RTOS-ETHERCAT-PLAN/Uncertainties.md` (keep this up to date during bring-up)
+- IgH/EtherLab notes + upstream links: `docs/ethercat/igh.md`
 
 If instructions conflict, the full specification wins.
 
@@ -23,9 +25,15 @@ If instructions conflict, the full specification wins.
 
 ## NIC assignment (locked)
 
-- `uplink0` (front RJ45, currently `eth0`, has IP): `c8:3e:a7:14:1c:75`
-- `ethercat0` (front RJ45, currently `eth1`, dedicated EtherCAT): `c8:3e:a7:14:1c:76`
+- `uplink0` (front RJ45, currently `eth1`, has IP): `c8:3e:a7:14:1c:76`
+- `ethercat0` (front RJ45, currently `eth0`, dedicated EtherCAT): `c8:3e:a7:14:1c:75`
 - PiBridge NICs (not used for motion): `pileft` `c8:3e:a7:14:1c:77`, `piright` `c8:3e:a7:14:1c:78`
+
+If you temporarily swap physical cables during diagnosis, remember:
+- IgH binds to `MASTER0_DEVICE` from `/etc/ethercat.conf` (MAC or interface name).
+- `ethercat master` showing `Active: no` is normal until RTCore (libecrt app) activates it.
+- For one-off tests, you can bind IgH without editing `/etc/ethercat.conf` via:
+  `sudo /usr/local/sbin/ethercatctl -c ~/GradientOS/scripts/ethercat/ethercat-eth0.conf start`
 
 ## Working style for small “fresh context” chunks
 

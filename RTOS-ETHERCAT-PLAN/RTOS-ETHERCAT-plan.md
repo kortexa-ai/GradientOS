@@ -516,8 +516,8 @@ Notes:
   - Plan: dedicate **one** port exclusively for EtherCAT (no IP, no NetworkManager), and keep the other for normal networking (SSH/API/UI).
   - Appliance hardening step: freeze interface naming using MAC-based rules (e.g. rename to `ethercat0` and `uplink0`) to prevent surprises if Linux reorders `eth0`/`eth1`.
   - Recorded MACs / assignment:
-    - `uplink0` (currently `eth0`, has IP): `c8:3e:a7:14:1c:75`
-    - `ethercat0` (currently `eth1`, dedicated EtherCAT): `c8:3e:a7:14:1c:76`
+    - `uplink0` (currently `eth1`, has IP): `c8:3e:a7:14:1c:76`
+    - `ethercat0` (currently `eth0`, dedicated EtherCAT): `c8:3e:a7:14:1c:75`
     - PiBridge NICs (not used for motion): `pileft` `c8:3e:a7:14:1c:77`, `piright` `c8:3e:a7:14:1c:78`
 - **Watchdog:** `/dev/watchdog0` (CPU watchdog) and `/dev/watchdog1` (RTC watchdog) exist. Plan to enable systemd watchdog + hardware watchdog for RTCore.
 - Is there a hard E‑stop loop and/or STO wiring planned?
@@ -715,8 +715,8 @@ We want safety + recovery:
 
 #### 13.2.1 Deterministic interface naming (`ethercat0` / `uplink0`)
 - Record MAC addresses and bind them to stable names:
-  - `uplink0` (currently `eth0`, has IP): `c8:3e:a7:14:1c:75`
-  - `ethercat0` (currently `eth1`, EtherCAT): `c8:3e:a7:14:1c:76`
+  - `uplink0` (currently `eth1`, has IP): `c8:3e:a7:14:1c:76`
+  - `ethercat0` (currently `eth0`, EtherCAT): `c8:3e:a7:14:1c:75`
   - PiBridge NICs (not used for motion): `pileft` `c8:3e:a7:14:1c:77`, `piright` `c8:3e:a7:14:1c:78`
 - Preferred approach: `systemd.link` files (simple, robust):
   - `/etc/systemd/network/10-ethercat0.link`:
@@ -1249,13 +1249,13 @@ Before freeze, archive:
 
 ### 14.0 Lock the “appliance invariants” (decisions before configuring anything)
 - [ ] **Choose which RJ45 is EtherCAT** and record:
-  - `uplink0` (front RJ45, currently `eth0`, left side on your RevPi):
-    - MAC: `c8:3e:a7:14:1c:75`
-    - has the controller IP / normal networking
-  - `ethercat0` (front RJ45, currently `eth1`, dedicated EtherCAT master port):
+  - `uplink0` (front RJ45, currently `eth1`):
     - MAC: `c8:3e:a7:14:1c:76`
+    - has the controller IP / normal networking
+  - `ethercat0` (front RJ45, currently `eth0`, dedicated EtherCAT master port):
+    - MAC: `c8:3e:a7:14:1c:75`
     - no IP / unmanaged by NetworkManager
-  - Note: `pileft` (`c8:3e:a7:14:1c:77`) / `piright` (`c8:3e:a7:14:1c:78`) are PiBridge-facing NICs (LAN7430/lan743x) and are not used for EtherCAT motion.
+  - Note: `pileft` (`c8:3e:a7:14:1c:77`) / `piright` (`c8:3e:a7:14:1c:78`) are PiBridge-facing NICs and are not used for EtherCAT motion.
 - [ ] **Choose kernel strategy** (13.1.2) and pin:
   - exact kernel version/build id
   - whether PREEMPT_RT is vendor-provided or custom-built
@@ -1365,7 +1365,7 @@ Template files (fill in the real MACs):
 
 ```ini
 [Match]
-MACAddress=c8:3e:a7:14:1c:76
+MACAddress=c8:3e:a7:14:1c:75
 
 [Link]
 Name=ethercat0
@@ -1375,7 +1375,7 @@ Name=ethercat0
 
 ```ini
 [Match]
-MACAddress=c8:3e:a7:14:1c:75
+MACAddress=c8:3e:a7:14:1c:76
 
 [Link]
 Name=uplink0
@@ -1464,7 +1464,7 @@ Template file:
 
 ```sh
 # Bind the EtherCAT master to the dedicated port (by MAC).
-MASTER0_DEVICE="c8:3e:a7:14:1c:76"
+MASTER0_DEVICE="c8:3e:a7:14:1c:75"
 
 # Use the generic driver first.
 DEVICE_MODULES="generic"

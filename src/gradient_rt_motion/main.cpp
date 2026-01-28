@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <grp.h>
 #include <string>
 #include <thread>
 
@@ -68,6 +69,9 @@ size_t align_up(size_t value, size_t alignment) {
 
 struct Options {
   std::string socket_path = "/run/gradient-rt-motion/ipc.sock";
+  // Filesystem group that is allowed to connect to the IPC socket (0660).
+  // Default matches the appliance user/group.
+  std::string ipc_group = "pi";
   uint64_t cycle_ns = 1000000; // 1 kHz
   uint32_t num_axes = 6;       // default arm axes for early scaffolding
 
@@ -76,6 +80,9 @@ struct Options {
   uint32_t counts_per_rev = 131072; // common 17-bit encoder counts per rev
   double gear_ratio = 1.0;
   int sign = +1;
+
+  // Safety: cap commanded motor speed (rpm). 0 disables clamping.
+  double max_rpm = 100.0;
 };
 
 bool parse_u32(const char* s, uint32_t* out) {
@@ -138,14 +145,17 @@ void print_usage(const char* argv0) {
   std::fprintf(
       stderr,
       "Usage: %s [--socket-path PATH] [--cycle-ns NS] [--num-axes N] "
-      "[--counts-per-rev N] [--gear-ratio R] [--sign (+1|-1)]\\n\\n"
+      "[--counts-per-rev N] [--gear-ratio R] [--sign (+1|-1)] [--max-rpm RPM] "
+      "[--ipc-group NAME]\\n\\n"
       "Defaults:\\n"
       "  --socket-path /run/gradient-rt-motion/ipc.sock\\n"
       "  --cycle-ns     1000000\\n"
       "  --num-axes     6\\n"
       "  --counts-per-rev 131072\\n"
       "  --gear-ratio   1.0\\n"
-      "  --sign         +1\\n",
+      "  --sign         +1\\n"
+      "  --max-rpm      100\\n"
+      "  --ipc-group    pi\\n",
       argv0);
 }
 
@@ -375,11 +385,34 @@ int main(int argc, char** argv) {
       }
       continue;
     }
+    if (arg == "--max-rpm" && i + 1 < argc) {
+      if (!parse_double(argv[++i], &opt.max_rpm) || opt.max_rpm < 0.0) {
+        logf("ERROR: invalid --max-rpm (must be >= 0)");
+        return 2;
+      }
+      continue;
+    }
+    if (arg == "--ipc-group" && i + 1 < argc) {
+      opt.ipc_group = argv[++i];
+      continue;
+    }
 
     logf("ERROR: unknown arg: %s", arg.c_str());
     print_usage(argv[0]);
     return 2;
   }
+
+#if GRADIENT_HAVE_ECRT
+  // A6-EC (CiA402 over EtherCAT) uses DC/SYNC0; the sync cycle must be a multiple
+  // of 250 μs (manual ch8; otherwise the drive can raise Er74.0).
+  constexpr uint64_t kA6ecDcQuantumNs = 250000; // 250 μs
+  if ((opt.cycle_ns % kA6ecDcQuantumNs) != 0) {
+    logf("ERROR: --cycle-ns (%llu) must be a multiple of %llu ns (250 us) for A6-EC DC/SYNC0",
+         static_cast<unsigned long long>(opt.cycle_ns),
+         static_cast<unsigned long long>(kA6ecDcQuantumNs));
+    return 2;
+  }
+#endif
 
   std::signal(SIGINT, handle_signal);
   std::signal(SIGTERM, handle_signal);
@@ -429,7 +462,41 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Best-effort permissions; systemd unit should set ownership/mode in production.
+  // Best-effort permissions for the IPC socket:
+  // - chmod 0660 so only owner/group can connect
+  // - chown the socket's group to `--ipc-group` (default: `pi`) so the Python
+  //   controller (runs unprivileged) can connect.
+  try {
+    gid_t desired_gid = static_cast<gid_t>(-1);
+
+    if (!opt.ipc_group.empty()) {
+      if (group* g = ::getgrnam(opt.ipc_group.c_str())) {
+        desired_gid = g->gr_gid;
+      } else {
+        logf("WARNING: --ipc-group '%s' not found; falling back to parent directory group",
+             opt.ipc_group.c_str());
+      }
+    }
+
+    std::filesystem::path sock_path(opt.socket_path);
+    std::filesystem::path parent = sock_path.parent_path();
+    if (!parent.empty()) {
+      struct stat st {};
+      if (::stat(parent.c_str(), &st) == 0) {
+        if (desired_gid == static_cast<gid_t>(-1)) {
+          desired_gid = st.st_gid;
+        }
+      }
+    }
+
+    // Keep uid, update gid.
+    if (desired_gid != static_cast<gid_t>(-1) &&
+        ::chown(opt.socket_path.c_str(), static_cast<uid_t>(-1), desired_gid) != 0) {
+      logf("WARNING: chown(%s) failed: %s", opt.socket_path.c_str(), std::strerror(errno));
+    }
+  } catch (const std::exception& e) {
+    logf("WARNING: failed to adjust socket ownership for %s: %s", opt.socket_path.c_str(), e.what());
+  }
   chmod(opt.socket_path.c_str(), 0660);
 
   if (listen(server_fd, 4) != 0) {
@@ -465,12 +532,17 @@ int main(int argc, char** argv) {
   struct LatestFeedback {
     std::atomic<uint64_t> seq{0};
     uint32_t wkc_actual = 0;
+    uint32_t wkc_expected = 0;
     uint32_t master_state = gradient::ipc::v1::MASTER_INIT;
     int64_t dc_offset_ns = 0;
     int64_t cycle_jitter_ns = 0;
     std::array<int32_t, gradient::ipc::v1::GRADIENT_MAX_AXES> pos_counts{};
+    std::array<int16_t, gradient::ipc::v1::GRADIENT_MAX_AXES> torque_raw{};
     std::array<uint16_t, gradient::ipc::v1::GRADIENT_MAX_AXES> statusword{};
     std::array<uint16_t, gradient::ipc::v1::GRADIENT_MAX_AXES> error_code{};
+    std::array<uint8_t, gradient::ipc::v1::GRADIENT_MAX_AXES> mode_display{};
+    std::array<uint8_t, gradient::ipc::v1::GRADIENT_MAX_AXES> ds402_state{};
+    std::array<uint32_t, gradient::ipc::v1::GRADIENT_MAX_AXES> di_bits{};
   };
 
   std::atomic<bool> armed{false};
@@ -504,6 +576,10 @@ int main(int argc, char** argv) {
 
     const uint64_t period = opt.cycle_ns;
     uint64_t next_ns = now_monotonic_ns();
+    bool shutdown_active = false;
+    uint64_t shutdown_until_ns = 0;
+    // Grace window to push DS402 disable (controlword=0) before dropping the bus.
+    constexpr uint64_t kShutdownGraceNs = 250000000ULL; // 250 ms
 
 #if GRADIENT_HAVE_ECRT
     // -----------------------------------------------------------------------
@@ -578,6 +654,37 @@ int main(int argc, char** argv) {
 
     bool ecrt_ok = false;
     const uint32_t expected_wkc = 2 * opt.num_axes;
+    const int32_t max_step_counts_per_cycle = [&]() -> int32_t {
+      if (opt.max_rpm <= 0.0) {
+        return 0;
+      }
+      const double period_s = static_cast<double>(period) / 1e9;
+      const double max_counts_per_s = (opt.max_rpm / 60.0) * static_cast<double>(opt.counts_per_rev);
+      const long long step = std::llround(max_counts_per_s * period_s);
+      if (step <= 0) {
+        return 1;
+      }
+      if (step > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
+        return std::numeric_limits<int32_t>::max();
+      }
+      return static_cast<int32_t>(step);
+    }();
+    const uint32_t max_profile_vel_counts_per_s = [&]() -> uint32_t {
+      // 0x607F "Max profile velocity" (UDINT). ESI defaults suggest this is in
+      // position units / second, matching counts_per_rev scaling.
+      if (opt.max_rpm <= 0.0) {
+        return std::numeric_limits<uint32_t>::max();
+      }
+      const double max_counts_per_s = (opt.max_rpm / 60.0) * static_cast<double>(opt.counts_per_rev);
+      const long long v = std::llround(max_counts_per_s);
+      if (v <= 0) {
+        return 1u;
+      }
+      if (v > static_cast<long long>(std::numeric_limits<uint32_t>::max())) {
+        return std::numeric_limits<uint32_t>::max();
+      }
+      return static_cast<uint32_t>(v);
+    }();
 
     master = ecrt_request_master(0);
     if (!master) {
@@ -672,13 +779,24 @@ int main(int argc, char** argv) {
     }
 #endif  // GRADIENT_HAVE_ECRT
 
-    while (!g_stop.load(std::memory_order_relaxed)) {
+    while (true) {
       next_ns += period;
 
 #if GRADIENT_HAVE_ECRT
       if (ecrt_ok) {
         // --- EtherCAT cyclic loop (1 kHz) ---
         const uint64_t now_ns = next_ns;
+
+        // If a shutdown is requested (SIGINT/SIGTERM), disable all axes for a short
+        // grace window while we still have cyclic communication. This reduces the
+        // chance of the drive faulting when the master drops out of OP.
+        if (g_stop.load(std::memory_order_relaxed) && !shutdown_active) {
+          shutdown_active = true;
+          shutdown_until_ns = now_ns + kShutdownGraceNs;
+          armed.store(false, std::memory_order_relaxed);
+          axis_enable_mask.store(0, std::memory_order_relaxed);
+          mode_of_operation.store(0, std::memory_order_relaxed);
+        }
 
         ecrt_master_application_time(master, now_ns);
         ecrt_master_receive(master);
@@ -706,22 +824,43 @@ int main(int argc, char** argv) {
           const uint16_t sw = EC_READ_U16(domain_pd + off[i].sw);
           const uint16_t err = EC_READ_U16(domain_pd + off[i].err);
           const int32_t pos = EC_READ_S32(domain_pd + off[i].pos);
+          const int16_t torque = EC_READ_S16(domain_pd + off[i].torque);
+          const uint8_t mode_disp = EC_READ_U8(domain_pd + off[i].mode_disp);
+          const uint32_t di = EC_READ_U32(domain_pd + off[i].di);
 
           (void)err; // TODO: publish/report faults.
 
           const gradient::ds402::State st = gradient::ds402::decode_statusword(sw);
           const bool want_enable = is_armed && ((en_mask & (1u << i)) != 0u);
 
-          // Hold-target initialization: first time we reach OP, latch current pos.
+          // Hold-target logic:
+          // - While not operation-enabled (or not wanting enable), keep the target aligned to feedback
+          //   so we don't present a "big step" when DS402 transitions to OperationEnabled (manual: Er87.*).
+          // - Once operation-enabled, latch once, then track commanded targets with optional per-cycle clamp.
           if (want_enable && st == gradient::ds402::State::OperationEnabled) {
             if (!have_hold[i]) {
               hold_target_counts[i] = pos;
               have_hold[i] = true;
             }
             if ((sp_mask & (1u << i)) != 0u) {
-              hold_target_counts[i] = target_counts[i];
+              const int32_t desired = target_counts[i];
+              if (max_step_counts_per_cycle > 0) {
+                const int32_t cur = hold_target_counts[i];
+                const int64_t delta = static_cast<int64_t>(desired) - static_cast<int64_t>(cur);
+                if (delta > max_step_counts_per_cycle) {
+                  hold_target_counts[i] = cur + max_step_counts_per_cycle;
+                } else if (delta < -max_step_counts_per_cycle) {
+                  hold_target_counts[i] = cur - max_step_counts_per_cycle;
+                } else {
+                  hold_target_counts[i] = desired;
+                }
+              } else {
+                hold_target_counts[i] = desired;
+              }
             }
           } else {
+            // Track feedback until OP; keeps 0x607A aligned during state transitions.
+            hold_target_counts[i] = pos;
             have_hold[i] = false;
           }
 
@@ -734,12 +873,16 @@ int main(int argc, char** argv) {
           EC_WRITE_S16(domain_pd + off[i].target_torque, 0);
           EC_WRITE_S8(domain_pd + off[i].mode, want_enable ? 8 : 0);
           EC_WRITE_U16(domain_pd + off[i].tp_func, 0);
-          EC_WRITE_U32(domain_pd + off[i].max_profile_vel, 0);
+          EC_WRITE_U32(domain_pd + off[i].max_profile_vel, max_profile_vel_counts_per_s);
 
           // Publish raw feedback (counts + status) for STATUS_SNAPSHOT.
           latest_feedback.pos_counts[i] = pos;
+          latest_feedback.torque_raw[i] = torque;
           latest_feedback.statusword[i] = sw;
           latest_feedback.error_code[i] = err;
+          latest_feedback.mode_display[i] = mode_disp;
+          latest_feedback.ds402_state[i] = static_cast<uint8_t>(st);
+          latest_feedback.di_bits[i] = di;
         }
 
         ecrt_domain_queue(domain);
@@ -758,6 +901,13 @@ int main(int argc, char** argv) {
         ecrt_domain_state(domain, &domain_state);
 
         latest_feedback.wkc_actual = static_cast<uint32_t>(domain_state.working_counter);
+        // Latch an "expected" WKC from the observed steady-state to avoid confusing
+        // bring-up prints when IgH chooses a different datagram strategy.
+        static uint32_t wkc_expected_latched = 0;
+        if (latest_feedback.wkc_actual > wkc_expected_latched) {
+          wkc_expected_latched = latest_feedback.wkc_actual;
+        }
+        latest_feedback.wkc_expected = wkc_expected_latched;
         latest_feedback.master_state =
             is_armed ? gradient::ipc::v1::MASTER_OP : gradient::ipc::v1::MASTER_SAFEOP;
         // TODO: fill dc_offset_ns from IgH reference clock delta.
@@ -769,6 +919,13 @@ int main(int argc, char** argv) {
       }
 #endif  // GRADIENT_HAVE_ECRT
 
+      // Exit after grace window has elapsed (or immediately if no grace requested).
+      if (g_stop.load(std::memory_order_relaxed)) {
+        if (!shutdown_active || next_ns >= shutdown_until_ns) {
+          break;
+        }
+      }
+
       rt_cycle_counter.fetch_add(1, std::memory_order_relaxed);
 
       timespec ts{};
@@ -776,6 +933,15 @@ int main(int argc, char** argv) {
       ts.tv_nsec = static_cast<long>(next_ns % 1000000000ULL);
       clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr);
     }
+
+#if GRADIENT_HAVE_ECRT
+    // Best-effort cleanup. This is not RT-critical (we're shutting down), and it
+    // allows IgH to deactivate the master configuration cleanly.
+    if (master) {
+      ecrt_release_master(master); // deactivates if active
+      master = nullptr;
+    }
+#endif
   });
 
   // Connection-scoped state (reset on disconnect).
@@ -810,6 +976,29 @@ int main(int argc, char** argv) {
 
   // Main accept loop.
   while (!g_stop.load(std::memory_order_relaxed)) {
+    // If a controller was connected previously, detect disconnect and free the slot.
+    // Without this, a client exiting cleanly can still leave us thinking a controller
+    // is connected (because we don't continuously read from the socket).
+    if (controlling_client_fd >= 0) {
+      pollfd cfd{};
+      cfd.fd = controlling_client_fd;
+      cfd.events = POLLIN;
+#ifdef POLLRDHUP
+      cfd.events |= POLLRDHUP;
+#endif
+      const int cpr = poll(&cfd, 1, 0);
+      if (cpr > 0) {
+        short hang_mask = static_cast<short>(POLLHUP | POLLERR);
+#ifdef POLLRDHUP
+        hang_mask = static_cast<short>(hang_mask | POLLRDHUP);
+#endif
+        if ((cfd.revents & hang_mask) != 0) {
+          logf("Controller disconnected; freeing IPC slot.");
+          reset_connection();
+        }
+      }
+    }
+
     pollfd pfd{};
     pfd.fd = server_fd;
     pfd.events = POLLIN;
@@ -1188,11 +1377,20 @@ int main(int argc, char** argv) {
           const uint64_t fb_seq = latest_feedback.seq.load(std::memory_order_acquire);
           if (fb_seq != 0) {
             snap.wkc_actual = latest_feedback.wkc_actual;
+            if (latest_feedback.wkc_expected != 0) {
+              snap.wkc_expected = latest_feedback.wkc_expected;
+            }
             snap.master_state = latest_feedback.master_state;
             snap.dc_offset_ns = latest_feedback.dc_offset_ns;
             snap.cycle_jitter_ns = latest_feedback.cycle_jitter_ns;
             for (uint32_t i = 0; i < opt.num_axes && i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
               snap.axes[i].pos_counts = latest_feedback.pos_counts[i];
+              snap.axes[i].torque_raw = latest_feedback.torque_raw[i];
+              snap.axes[i].statusword = latest_feedback.statusword[i];
+              snap.axes[i].error_code = latest_feedback.error_code[i];
+              snap.axes[i].mode_display = latest_feedback.mode_display[i];
+              snap.axes[i].ds402_state = latest_feedback.ds402_state[i];
+              snap.axes[i].di_bits = latest_feedback.di_bits[i];
             }
           } else {
             // Until EtherCAT is wired up, expose the current target counts as "position" for visibility.

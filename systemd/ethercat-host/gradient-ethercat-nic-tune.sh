@@ -5,6 +5,12 @@ set -eu
 # This must run BEFORE ethercat.service / RTCore.
 
 IFACE="ethercat0"
+if ! ip link show "${IFACE}" >/dev/null 2>&1; then
+  # Pre-rename fallback (before reboot).
+  if ip link show "eth0" >/dev/null 2>&1; then
+    IFACE="eth0"
+  fi
+fi
 
 ip link set "${IFACE}" up || true
 

@@ -113,6 +113,18 @@ class EthercatRTCoreBackend(ActuatorBackend):
 
         # Auto-arm on successful IPC connect (mirrors how serial servos become usable after init).
         self._auto_arm = os.environ.get("GRADIENT_RTCORE_AUTO_ARM", "1").lower() not in ("0", "false", "no")
+        # Optional: restrict which axes are armed/enabled on connect.
+        # Examples:
+        #   GRADIENT_RTCORE_AUTO_ARM_MASK=0x1   (only axis 0, i.e. slave position 0)
+        #   GRADIENT_RTCORE_AUTO_ARM_MASK=0x3   (axes 0 and 1)
+        raw_mask = os.environ.get("GRADIENT_RTCORE_AUTO_ARM_MASK", "").strip()
+        self._auto_arm_mask: Optional[int] = None
+        if raw_mask:
+            try:
+                # base=0 accepts 0x.. hex or decimal.
+                self._auto_arm_mask = int(raw_mask, 0)
+            except ValueError:
+                print(f"[EtherCAT RTCore] WARNING: invalid GRADIENT_RTCORE_AUTO_ARM_MASK='{raw_mask}'")
 
         self._sock: Optional[socket.socket] = None
 
@@ -439,7 +451,10 @@ class EthercatRTCoreBackend(ActuatorBackend):
         # Mirror serial backend behavior: after init, the system is usable.
         if self._auto_arm:
             try:
-                axis_mask = (1 << self._rt_num_axes) - 1 if self._rt_num_axes > 0 else 0
+                axis_mask_all = (1 << self._rt_num_axes) - 1 if self._rt_num_axes > 0 else 0
+                axis_mask = axis_mask_all
+                if self._auto_arm_mask is not None:
+                    axis_mask = int(self._auto_arm_mask) & int(axis_mask_all)
                 self._send_cmd_arm(True)
                 self._send_cmd_set_mode(axis_mask=axis_mask, mode=_MODE_CSP)
                 self._send_cmd_axis_enable(axis_mask=axis_mask)

@@ -8,6 +8,12 @@ set -eu
 # - IRQ thread priority raising is left as a follow-up once IRQ names are verified on-host.
 
 IFACE="ethercat0"
+if ! ip link show "${IFACE}" >/dev/null 2>&1; then
+  # Pre-rename fallback (before reboot).
+  if ip link show "eth0" >/dev/null 2>&1; then
+    IFACE="eth0"
+  fi
+fi
 MASK_HEX="0xC"
 
 if [ ! -f /proc/interrupts ]; then

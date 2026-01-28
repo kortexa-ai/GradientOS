@@ -57,6 +57,27 @@ IgH deliverables needed:
 - kernel modules: `ec_master`, `ec_generic` (generic NIC binding)
 - user-space: `libecrt` + `ethercat` CLI
 
+Recommended: use the repo script to build/install a pinned IgH version:
+
+```bash
+./scripts/ethercat/install_igh.sh
+```
+
+IgH background notes (where things install, meaning of `Active: no`, NIC binding tips):
+- `docs/ethercat/igh.md`
+
+Where IgH installs artifacts (host OS):
+- `ethercat` CLI: `/usr/local/bin/ethercat`
+- `ecrt.h`: `/usr/local/include/ecrt.h`
+- `libecrt`/`libethercat`: `/usr/local/lib/libethercat.so` (+ pkg-config metadata)
+- systemd unit (from IgH install): `/etc/systemd/system/ethercat.service`
+- kernel modules (after `make modules_install`): `/lib/modules/$(uname -r)/ethercat/**/ec_*.ko.xz`
+
+Repo-owned config/templates:
+- EtherCAT master binding config template: `systemd/ethercat-host/ethercat.conf` → installed to `/etc/ethercat.conf`
+- Override to force `ethercat.service` to use `/etc/ethercat.conf`:
+  `systemd/ethercat-host/ethercat.service.d/10-gradient.conf`
+
 Bind the master to the EtherCAT port by MAC in `/etc/ethercat.conf`:
 
 ```bash
@@ -70,9 +91,120 @@ Expected:
 After installation, verify:
 
 ```bash
+sudo systemctl enable --now ethercat.service
 ethercat slaves -v
 ethercat pdos
-ethercat dc
+ethercat master
+```
+
+### Monitoring / verification (post-reboot)
+
+Quick host sanity checks:
+
+```bash
+./scripts/ethercat/diagnose_host.sh
+```
+
+Key signals:
+- `/proc/cmdline` contains `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 irqaffinity=0,1`
+- `/sys/devices/system/cpu/isolated` shows `2-3` (or equivalent)
+- `ethercat master` shows Link UP and (once slaves exist) Rx frames > 0 and frame loss near 0
+  - Note: `Active: no` is normal here (means no libecrt application is running yet).
+
+### No-motion comms validation (IgH master ↔ slave)
+
+Prerequisites:
+- Drive is connected RevPi `eth0` (driver `macb`) → drive `CN3 (IN)` and is powered.
+- `ethercat.service` binds to `/etc/ethercat.conf` (MAC `c8:3e:a7:14:1c:75`).
+
+Run:
+
+```bash
+sudo systemctl restart ethercat.service
+
+# 1) Link-layer comms health
+sudo ethercat master
+
+# Expect: Slaves > 0, Rx frames > 0, Frame loss near 0
+
+# 2) Slave identity + mailbox comms
+sudo ethercat slaves -v
+
+# 3) PDOs: what the drive supports vs what is currently selected
+sudo ethercat pdos -p0  # shows SII/fixed sets (may not reflect the current selection)
+
+# Confirm the *selected* RxPDO/TxPDO via CoE assignment objects:
+sudo ethercat upload -p0 -t uint16 0x1c12 0x01  # expect 0x1702
+sudo ethercat upload -p0 -t uint16 0x1c13 0x01  # expect 0x1b02
+
+# If needed (e.g. after a drive power-cycle), select 0x1702/0x1B02 (must be PREOP):
+# sudo ethercat download -p0 -t uint8  0x1c12 0x00 0
+# sudo ethercat download -p0 -t uint16 0x1c12 0x01 0x1702
+# sudo ethercat download -p0 -t uint8  0x1c12 0x00 1
+# sudo ethercat download -p0 -t uint8  0x1c13 0x00 0
+# sudo ethercat download -p0 -t uint16 0x1c13 0x01 0x1b02
+# sudo ethercat download -p0 -t uint8  0x1c13 0x00 1
+
+# 4) Optional: read common CoE identity strings (device name / hw / sw)
+sudo ethercat upload -p0 -t string 0x1008 0x00
+sudo ethercat upload -p0 -t string 0x1009 0x00
+sudo ethercat upload -p0 -t string 0x100A 0x00
+```
+
+### A6-EC EtherCAT specifics (manual ch8–10)
+
+- **Physical layer / ports**: `100BASE-TX`, full duplex, linear topology, RJ45*2 (`IN`, `OUT`). Use the drive’s EtherCAT **`IN`** for the uplink from the master. Use Cat5 shielded (or Cat6+) and keep <100 m between nodes.
+- **Connector naming**: manual calls these EtherCAT ports **CN3 (IN)** and **CN4 (OUT)**. For a single-drive test, connect RevPi → **CN3 (IN)** and leave CN4 unused.
+- **Protocol**: CoE with **IEC 61800-7 / CiA402** drive profile; supports PP/PV/PT/HM/CSP/CSV/CST.
+- **EtherCAT state machine**: Init → Pre-Op → Safe-Op → Op (no skipping on the way up).
+- **DC / SYNC0**: drive supports **DC sync only**. Sync cycle must be an integer multiple of **250 μs** (else `Er74.0`). Missing/incorrect sync config can show `Er74.1` / `Er74.2`.
+- **Fixed PDOs used for most bring-up** (verify with `ethercat pdos`):
+  - **RxPDO `0x1702` (Outputs)**: `6040` control word, `607A` target position, `60FF` target velocity, `6071` target torque, `6060` mode selection, `60B8` touch probe function, `607F` max speed.
+  - **TxPDO `0x1B02` (Inputs)**: `603F` fault code, `6041` status word, `6064` position actual value, `6077` torque feedback, `6061` mode display, `60B9/60BA/60BC` touch probe status/edges, `60FD` DI status.
+- **PDO assignment objects**: `0x1C12:01` selects the active RPDO (`0x1600` or `0x1701..0x1705`), and `0x1C13:01` selects the active TPDO (`0x1A00` or `0x1B01..0x1B04`).
+- **PDO reconfiguration gotcha**: mapping edits are only allowed in **Pre-Operational** and **aren’t stored in EEPROM** (must be re-applied after a power cycle).
+- **Drive-side faults that often point to comms/config issues**:
+  - `Er31.0`: too many PDO mapping objects (>10)
+  - `Er32.1/Er32.5`: XML/ESI issues (check XML version `U42.0B`, re-program)
+  - `Er74.0/Er74.1/Er74.2`: DC/SYNC issues
+  - `Er87.1/Er87.2`: target position steps too large (align target to feedback before enabling / switching mode; keep increments small)
+- **DI/DO note**: `S-ON` and `ALM-RST` DI functions are **only active in non-bus control mode**; in EtherCAT mode rely on DS402 `6040` (enable/quickstop/fault reset). DI status is available via `60FD` in the TxPDOs above.
+- **Brake wiring note**: manual shows motor brake control uses DO3 (`BK+ / BK-`) and an **external 24V brake supply**; the brake coil has **no polarity**. This CN1 wiring does **not** affect EtherCAT slave discovery.
+
+### Current bring-up status (notes)
+
+If `ethercat master` shows:
+- Link: UP
+- Slaves: 0
+- Rx frames: 0
+- Frame loss: 100%
+
+…then the master is transmitting but **getting no replies**. Common causes:
+- cable is plugged into the wrong RJ45 on the drive (not EtherCAT, or OUT vs IN)
+- the drive is not in EtherCAT mode / EtherCAT interface not enabled
+- the drive is not actually on the dedicated EtherCAT port
+- the IgH master is **bound to the wrong NIC** for the current wiring (check `ethercat master` → `Main:` MAC)
+
+Extra sanity checks:
+- `ip -s link show dev ethercat0` (or `eth0` before NIC renaming takes effect) should show **RX packets > 0** once a slave is responding.
+- `sudo ethtool -S ethercat0` (or `eth0` pre-rename) should show **RX frames > 0** and should *not* show TX errors climbing 1:1 with TX frames. If RX stays at 0 and TX carrier errors climb with each frame, suspect **cable/port/device not replying** (not a PDO/DS402 issue).
+
+Suggested first checks:
+
+```bash
+sudo ethercat rescan
+sudo ethercat slaves -v
+sudo ethercat pdos
+```
+
+If you temporarily swapped which RevPi port goes to the drive, you can bind IgH to the other interface for
+diagnosis without editing `/etc/ethercat.conf`:
+
+```bash
+sudo systemctl stop ethercat.service
+sudo /usr/local/sbin/ethercatctl -c ~/GradientOS/scripts/ethercat/ethercat-eth0.conf start
+sudo ethercat master
+sudo ethercat slaves -v
 ```
 
 ### Phase D+: RTCore + Python integration
@@ -80,25 +212,86 @@ ethercat dc
 - RTCore source: `src/gradient_rt_motion/` (binary: `gradient-rt-motion`)
 - Python backend proxy: `src/gradient_os/arm_controller/backends/ethercat_rtcore/`
 
-For the current **two-drive bring-up** (J3/J4 test), run RTCore with 2 axes:
+For the current **two-drive bring-up**, run RTCore with 2 axes:
 
 ```bash
-cd src/gradient_rt_motion
-make
-sudo /usr/local/bin/gradient-rt-motion --num-axes 2
+make -C src/gradient_rt_motion
+# Run RTCore as root (EtherCAT + RT privileges). By default it makes the IPC
+# socket group-owned by `pi` (mode 0660) so the controller can connect.
+sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2
 ```
 
 Axis scaling defaults (v1):
 - `--counts-per-rev 131072`
 - `--gear-ratio 1.0`
 - `--sign +1`
+- `--max-rpm 100` (safety cap; clamps per-cycle position steps and programs `0x607F` max profile velocity; `0` disables clamping)
 
 Override as needed during commissioning, e.g.:
 
 ```bash
-sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --gear-ratio 100
+sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --gear-ratio 100
 ```
 
 The Python backend defaults to mapping those 2 RT axes to **joint 3 and joint 4**
 (`GRADIENT_RTCORE_CONTROL_JOINTS="3,4"` is the explicit override).
+
+#### Motion test (p0 only)
+
+If you want to do an initial motion test on **only the first slave** (EtherCAT position `p0` / RTCore `axis0`),
+set an auto-arm mask so the controller only enables that axis on connect:
+
+```bash
+# Only enable RTCore axis 0 (EtherCAT p0). Axis 1 (p1) remains disabled.
+export GRADIENT_RTCORE_AUTO_ARM_MASK=0x1
+
+# Optional: map RT axes -> logical joints (1-based). Example:
+#   axis0 -> J5, axis1 -> J3
+export GRADIENT_RTCORE_CONTROL_JOINTS="5,3"
+
+# Start the GradientOS controller using the EtherCAT RTCore backend.
+./run.sh --servo-backend ethercat_rtcore
+```
+
+Then use the UI or `scripts/udp_client.py` to send a **very small** joint move on the joint mapped to `axis0`
+(start with ~0.01 rad and increase slowly). RTCore clamps speed to `--max-rpm` and ignores setpoints for disabled axes.
+
+#### Sending motion commands (quickest path)
+
+If the controller is running and you see:
+- `[Controller] Listening for UDP packets on 0.0.0.0:3000`
+
+…you can command motion by sending **6 joint angles (radians)** over UDP.
+
+From the RevPi itself:
+
+```bash
+# Interactive client (type a 6-value comma list, e.g. "0,0,0,0,0.01,0")
+./.venv/bin/python scripts/udp_client.py --pi-ip 127.0.0.1
+```
+
+Example: if you mapped `axis0 -> J5` and want a tiny move on that axis:
+
+```bash
+# j1,j2,j3,j4,j5,j6 (radians)
+0,0,0,0,0.01,0
+```
+
+#### Direct RTCore jog tool (no controller)
+
+For bring-up and slave mapping, you can talk directly to RTCore without the full controller:
+
+```bash
+# In one terminal (root): start RTCore
+sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --max-rpm 100
+
+# In another terminal (pi): use a single RTCore connection (RTCore is single-client today)
+python3 scripts/rtcore_jog.py console --rate-hz 2
+
+# Then type:
+#   arm 0x1
+#   jog 0 0.01
+```
+
+More details: `docs/ethercat/rtcore_jog.md`.
 

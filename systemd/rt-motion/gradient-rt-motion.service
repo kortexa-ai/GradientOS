@@ -11,7 +11,10 @@ Type=simple
 
 # RTCore owns EtherCAT + RT scheduling; run as root on the appliance.
 User=root
-Group=root
+# Allow the non-root controller (runs as user/group `pi`) to connect to the IPC
+# socket at `/run/gradient-rt-motion/ipc.sock` (0660). This keeps EtherCAT+RT
+# privileges in RTCore while keeping the Python layer unprivileged.
+Group=pi
 
 ExecStart=/usr/local/bin/gradient-rt-motion
 

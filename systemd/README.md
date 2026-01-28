@@ -52,5 +52,12 @@ installing, removing, and managing the units.
   This installs templates into `/etc` and enables the tuning units. A reboot is
   required for NIC renaming (`eth0/eth1` → `uplink0/ethercat0`).
 
+- `wifi/` – optional Wi‑Fi keepalive (auto-reconnect). Useful on flaky networks
+  during bring-up (does not touch the EtherCAT NIC). Use:
+  ```bash
+  cd systemd/wifi
+  ./install.sh
+  ```
+
 After editing any service file, remember to re-run `sudo systemctl daemon-reload`
 before restarting the unit.

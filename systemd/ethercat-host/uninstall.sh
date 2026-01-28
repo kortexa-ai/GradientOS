@@ -18,6 +18,8 @@ sudo rm -f /etc/systemd/system/gradient-ethercat-nic-tune.service
 sudo rm -f /etc/systemd/system/gradient-irq-affinity.service
 sudo rm -f /etc/systemd/system/gradient-cpu-performance.service
 sudo rm -f /etc/ethercat.conf
+sudo rm -f /etc/systemd/system/ethercat.service.d/10-gradient.conf
+sudo rmdir /etc/systemd/system/ethercat.service.d 2>/dev/null || true
 
 sudo systemctl daemon-reload
 

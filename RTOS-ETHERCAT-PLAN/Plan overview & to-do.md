@@ -3,6 +3,10 @@
 This folder contains:
 - **`RTOS-ETHERCAT-plan.md`**: the full specification (RTOS tuning, IgH master, RTCore architecture, IPC, DS402, drive profiles, safety).
 - **`Plan overview & to-do.md`** (this file): a short overview + an implementation action plan designed for an AI/engineer with fresh context.
+- **`Uncertainties.md`**: a living checklist of everything we still need to validate on hardware.
+
+Practical bring-up runbook (repo docs):
+- `docs/ethercat/bringup.md`
 
 ### Locked decisions / invariants (do not change unless explicitly requested)
 - **Host**: RevPi Connect 5 running Linux + **PREEMPT_RT** (appliance-style “freeze” after validation).
@@ -10,15 +14,15 @@ This folder contains:
 - **RTCore language**: **C++17 user-space daemon** (`gradient-rt-motion`) linking `libecrt`.
 - **EtherCAT wiring**: Cat6 minimum (100BASE‑TX), line topology, no switch/router.
 - **NIC assignment**:
-  - **`uplink0`** (front RJ45, currently `eth0`, has IP): `c8:3e:a7:14:1c:75`
-  - **`ethercat0`** (front RJ45, currently `eth1`, EtherCAT): `c8:3e:a7:14:1c:76`
+  - **`uplink0`** (front RJ45, currently `eth1`, has IP): `c8:3e:a7:14:1c:76`
+  - **`ethercat0`** (front RJ45, currently `eth0`, EtherCAT): `c8:3e:a7:14:1c:75`
   - PiBridge NICs (not used for motion): `pileft` `c8:3e:a7:14:1c:77`, `piright` `c8:3e:a7:14:1c:78`
 
 ### What the implementer must produce (deliverables)
 - **Host config**:
   - `/etc/systemd/network/10-ethercat0.link`, `/etc/systemd/network/10-uplink0.link`
   - `/etc/NetworkManager/conf.d/10-unmanaged-ethercat.conf`
-  - `/etc/ethercat.conf` bound to `c8:3e:a7:14:1c:76`
+  - `/etc/ethercat.conf` bound to `c8:3e:a7:14:1c:75`
   - systemd units/scripts for IRQ pinning + NIC tuning
 - **RTCore**:
   - binary: `/usr/local/bin/gradient-rt-motion`
@@ -29,6 +33,17 @@ This folder contains:
   - selection wiring via backend registry + controller startup flags/unit
 - **Supportability**:
   - support bundle dumps (versions/topology/PDO/DC/jitter) and bounded logging
+
+### Current implementation status (in repo)
+
+The repo already contains an initial implementation scaffold:
+- **RTCore daemon**: `src/gradient_rt_motion/` (IPC + optional `libecrt` loop)
+- **Python backend proxy**: `src/gradient_os/arm_controller/backends/ethercat_rtcore/`
+- **Host templates + systemd helpers**: `systemd/ethercat-host/` and `systemd/rt-motion/`
+- **Diagnostics scripts**: `scripts/ethercat/diagnose_host.sh`
+- **Pinned IgH installer**: `scripts/ethercat/install_igh.sh`
+
+Bring-up should proceed by validating hardware + master discovery first, then moving to RTCore cyclic motion.
 
 ---
 
@@ -89,7 +104,7 @@ Bring-up gate:
 #### Phase C — IgH master install + validation (no motion)
 - [ ] Install/build IgH pinned version (14.3.1).
   - Important: do this **after** you are booted into the PREEMPT_RT kernel; IgH includes kernel modules and must match the running kernel/headers.
-- [ ] Set `/etc/ethercat.conf` to bind master to MAC `c8:3e:a7:14:1c:76` (14.3.2).
+- [ ] Set `/etc/ethercat.conf` to bind master to MAC `c8:3e:a7:14:1c:75` (14.3.2).
 - [ ] Validate topology and PDOs (14.4):
   - `ethercat slaves -v` shows expected chain
   - `ethercat pdos` matches planned `0x1702/0x1B02`

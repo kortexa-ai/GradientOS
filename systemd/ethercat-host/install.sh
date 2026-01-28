@@ -8,6 +8,7 @@ echo "Installing EtherCAT host configuration (NIC + tuning templates)..."
 echo "NOTE: This modifies /etc and may require a reboot for NIC renaming."
 
 sudo mkdir -p /etc/systemd/network /etc/NetworkManager/conf.d /etc/systemd/system /usr/local/sbin
+sudo mkdir -p /etc/systemd/system/ethercat.service.d
 
 echo "1) Installing deterministic NIC naming (.link)"
 sudo install -m 0644 "${SCRIPT_DIR}/10-ethercat0.link" /etc/systemd/network/10-ethercat0.link
@@ -29,6 +30,9 @@ sudo install -m 0644 "${SCRIPT_DIR}/gradient-cpu-performance.service" /etc/syste
 echo "5) Installing /etc/ethercat.conf template (IgH master binds by MAC)"
 sudo install -m 0644 "${SCRIPT_DIR}/ethercat.conf" /etc/ethercat.conf
 
+echo "6) Installing ethercat.service override to use /etc/ethercat.conf"
+sudo install -m 0644 "${SCRIPT_DIR}/ethercat.service.d/10-gradient.conf" /etc/systemd/system/ethercat.service.d/10-gradient.conf
+
 echo "Reloading systemd daemon..."
 sudo systemctl daemon-reload
 
@@ -45,6 +49,6 @@ echo "Done."
 echo "Next steps:"
 echo "  - (Optional but recommended) Apply RT CPU isolation params:"
 echo "      sudo ${SCRIPT_DIR}/rtos-apply-cmdline.sh && reboot"
-echo "  - Reboot to apply NIC renaming (eth0->uplink0, eth1->ethercat0)."
+echo "  - Reboot to apply NIC renaming (eth0->ethercat0, eth1->uplink0)."
 echo "  - Install IgH master (ethercat.service + libecrt + ethercat CLI)."
 

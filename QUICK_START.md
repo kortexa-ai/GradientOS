@@ -18,6 +18,39 @@ source ./.venv/bin/activate
 uv pip install -e .[core]
 ```
 
+### EtherCAT on RevPi Connect 5 (important port note)
+
+If you're bringing up the **RTOS/EtherCAT** path on a **RevPi Connect 5**, pay attention to which RJ45
+port you use for the EtherCAT drive chain.
+
+- **Both ports are “gigabit”, but they are different NICs/drivers**:
+  - **`eth0`**: Linux driver **`macb`** (SoC MAC) → **use this for EtherCAT** (stable with IgH `ec_generic` in our bring-up)
+  - **`eth1`**: Linux driver **`lan743x`** (PCI NIC) → use this for LAN/uplink
+- **Why**: during bring-up we consistently saw slave discovery work on `macb` (`eth0`) and fail on `lan743x` (`eth1`)
+  (Tx-only, Rx=0, 100% loss) despite Link=UP and tuning.
+
+How to verify on the RevPi:
+
+```bash
+sudo ethtool -i eth0
+sudo ethtool -i eth1
+sudo ethercat master  # check Rx frames > 0 and Slaves > 0
+```
+
+Example output (shows SoC vs PCI NIC):
+
+```bash
+$ sudo ethtool -i eth0
+driver: macb
+bus-info: 1f00100000.ethernet
+
+$ sudo ethtool -i eth1
+driver: lan743x
+bus-info: 0001:03:00.0
+```
+
+More details + IgH notes: `docs/ethercat/bringup.md` and `docs/ethercat/igh.md`.
+
 ### Run the components
 
 All commands below automatically activate the venv

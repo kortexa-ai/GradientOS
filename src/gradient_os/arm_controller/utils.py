@@ -138,6 +138,55 @@ def _populate_servo_constants():
     global SYNC_WRITE_START_ADDRESS, SYNC_WRITE_DATA_LEN_PER_SERVO, SERVO_INSTRUCTION_SYNC_READ
     
     servo_config = backend_registry.get_config()
+
+    # EtherCAT/RTCore backend is not a serial servo protocol. Skip populating
+    # the legacy "servo protocol constants" to avoid implying they're valid.
+    # (They remain None and any accidental serial-path use will fail loudly.)
+    if not getattr(servo_config, "SERVO_PROTOCOL_SUPPORTED", True):
+        try:
+            backend_name = backend_registry.get_active_backend_name()
+        except Exception:
+            backend_name = "unknown"
+        # Reset protocol constants to a known "unsupported" state. This prevents
+        # accidental use of the legacy serial paths after switching backends.
+        for _name in (
+            "ENCODER_RESOLUTION",
+            "ENCODER_CENTER",
+            "SERVO_HEADER",
+            "SERVO_INSTRUCTION_WRITE",
+            "SERVO_INSTRUCTION_READ",
+            "SERIAL_READ_TIMEOUT",
+            "SERVO_ADDR_TARGET_POSITION",
+            "SERVO_ADDR_PRESENT_POSITION",
+            "SERVO_ADDR_TARGET_ACCELERATION",
+            "SERVO_ADDR_POSITION_CORRECTION",
+            "DEFAULT_SERVO_ACCELERATION_DEG_S2",
+            "ACCELERATION_SCALE_FACTOR",
+            "SERVO_ADDR_POS_KP",
+            "SERVO_ADDR_POS_KI",
+            "SERVO_ADDR_POS_KD",
+            "SERVO_INSTRUCTION_PING",
+            "SERVO_INSTRUCTION_RESET",
+            "SERVO_INSTRUCTION_RESTART",
+            "SERVO_INSTRUCTION_CALIBRATE_MIDDLE",
+            "SERVO_ADDR_WRITE_LOCK",
+            "SERVO_ADDR_MIN_ANGLE_LIMIT",
+            "SERVO_ADDR_MAX_ANGLE_LIMIT",
+            "SERVO_INSTRUCTION_SYNC_WRITE",
+            "SERVO_BROADCAST_ID",
+            "SYNC_WRITE_START_ADDRESS",
+            "SYNC_WRITE_DATA_LEN_PER_SERVO",
+            "SERVO_INSTRUCTION_SYNC_READ",
+        ):
+            globals()[_name] = None
+        # Keep BAUD_RATE in a defined state for callers that still read it.
+        # (It is not used by ethercat_rtcore.)
+        try:
+            BAUD_RATE = int(getattr(servo_config, "DEFAULT_BAUD_RATE", 0))
+        except Exception:
+            BAUD_RATE = 0
+        print(f"[Utils] Backend '{backend_name}' does not use serial servo protocol; skipping servo constants.")
+        return
     
     ENCODER_RESOLUTION = servo_config.SERVO_VALUE_MAX
     ENCODER_CENTER = servo_config.SERVO_VALUE_CENTER
