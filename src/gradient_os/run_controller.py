@@ -180,6 +180,8 @@ Examples:
     print(f"[Controller] Creating {servo_backend} backend instance...")
     robot_config_dict = selected_robot.get_config_dict()
     
+    active_backend = None
+    backend_ready = False
     try:
         active_backend = backend_registry.create_backend(
             backend_name=servo_backend,
@@ -191,14 +193,21 @@ Examples:
         backend_registry.set_active_backend_instance(active_backend)
         
         # Initialize the backend (opens serial port, pings servos, sets PID gains)
-        if not active_backend.initialize():
+        backend_ready = bool(active_backend.initialize())
+        if not backend_ready:
             print("[Controller] WARNING: Backend initialization returned False")
         
     except Exception as e:
         print(f"[Controller] Error creating backend: {e}")
-        print("[Controller] Falling back to legacy initialization...")
-        # For backward compatibility during migration, if backend creation fails,
-        # we continue with legacy initialization
+        backend_ready = False
+        if servo_backend == "ethercat_rtcore":
+            # Critical migration rule: do NOT fall back to serial initialization when EtherCAT RTCore
+            # backend is selected. Keep the controller alive but treat motion as unavailable.
+            print("[Controller] EtherCAT RTCore backend selected; skipping legacy serial init (motion unavailable).")
+        else:
+            print("[Controller] Falling back to legacy initialization...")
+            # For backward compatibility during migration, if backend creation fails,
+            # we continue with legacy initialization
 
     # ==========================================================================
     # Legacy Initialization (to be migrated in Phase 2)
@@ -207,28 +216,46 @@ Examples:
     # Once Phase 2 is complete, this will be replaced with:
     #   active_backend.initialize()
     #   active_backend.apply_joint_limits()
-    if args.sim:
-        from .arm_controller import sim_backend
-        sim_backend.activate()
-
-    # Initialize the hardware using legacy servo_driver
-    servo_driver.initialize_servos()
-    servo_driver.set_servo_angle_limits_from_urdf()
-
-    # Homing Routine: Read servo positions to synchronize our internal state.
-    # This prevents dangerous movements if the arm isn't at zero when the script starts.
-    utils.current_logical_joint_angles_rad = servo_driver.get_current_arm_state_rad()
-    # If gripper is present, also get its initial state
-    if utils.gripper_present:
-        # Read gripper position via servo_driver (uses backend if available)
-        raw_pos = servo_driver.read_single_servo_position(utils.SERVO_ID_GRIPPER)
-        if raw_pos is not None:
+    if servo_backend == "ethercat_rtcore":
+        print("[Controller] EtherCAT RTCore backend active; skipping legacy serial servo initialization.")
+        # Best-effort state sync (no serial). If RTCore is connected, servo_driver will read via backend.
+        if backend_ready and active_backend is not None and active_backend.is_initialized:
             try:
-                gripper_config_index = utils.SERVO_IDS.index(utils.SERVO_ID_GRIPPER)
-                utils.current_gripper_angle_rad = servo_driver.raw_to_angle_rad(raw_pos, gripper_config_index)
-                print(f"[Controller] Initial gripper angle: {np.rad2deg(utils.current_gripper_angle_rad):.1f} degrees")
-            except (ValueError, IndexError):
-                print("[Controller] WARNING: Could not determine initial gripper angle.")
+                utils.current_logical_joint_angles_rad = servo_driver.get_current_arm_state_rad(verbose=False)
+            except Exception:
+                utils.current_logical_joint_angles_rad = [0.0] * selected_robot.num_logical_joints
+        else:
+            utils.current_logical_joint_angles_rad = [0.0] * selected_robot.num_logical_joints
+        # Tool/gripper I/O is handled via EtherCAT I/O later (not serial gripper servo).
+        utils.gripper_present = False
+        utils.current_gripper_angle_rad = 0.0
+    else:
+        if args.sim:
+            from .arm_controller import sim_backend
+            sim_backend.activate()
+
+        # Initialize the hardware using legacy servo_driver
+        servo_driver.initialize_servos()
+        # Angle limit writes are serial-servo specific (EEPROM registers). Skip for non-serial backends.
+        if servo_backend == "feetech":
+            servo_driver.set_servo_angle_limits_from_urdf()
+        else:
+            print(f"[Controller] Skipping URDF angle limit writes for backend: {servo_backend}")
+
+        # Homing Routine: Read servo positions to synchronize our internal state.
+        # This prevents dangerous movements if the arm isn't at zero when the script starts.
+        utils.current_logical_joint_angles_rad = servo_driver.get_current_arm_state_rad()
+        # If gripper is present, also get its initial state
+        if utils.gripper_present:
+            # Read gripper position via servo_driver (uses backend if available)
+            raw_pos = servo_driver.read_single_servo_position(utils.SERVO_ID_GRIPPER)
+            if raw_pos is not None:
+                try:
+                    gripper_config_index = utils.SERVO_IDS.index(utils.SERVO_ID_GRIPPER)
+                    utils.current_gripper_angle_rad = servo_driver.raw_to_angle_rad(raw_pos, gripper_config_index)
+                    print(f"[Controller] Initial gripper angle: {np.rad2deg(utils.current_gripper_angle_rad):.1f} degrees")
+                except (ValueError, IndexError):
+                    print("[Controller] WARNING: Could not determine initial gripper angle.")
 
     # --- UDP Server Setup ---
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

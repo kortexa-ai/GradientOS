@@ -1,0 +1,13 @@
+[Unit]
+Description=Tune EtherCAT NIC (offloads/EEE)
+After=systemd-udevd.service
+Before=ethercat.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gradient-ethercat-nic-tune.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

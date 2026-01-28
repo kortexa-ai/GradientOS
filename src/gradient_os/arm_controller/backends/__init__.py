@@ -28,11 +28,13 @@
 #   backend.sync_write(commands)
 
 import math
+import os
 
 from . import registry
 
 # Import backend classes
 from .feetech import FeetechBackend
+from .ethercat_rtcore import EthercatRTCoreBackend
 from .simulation import SimulationBackend
 
 # =============================================================================
@@ -77,6 +79,20 @@ def _create_simulation_backend(robot_config: dict, **kwargs) -> SimulationBacken
         robot_config=robot_config,  # Pass full config for servo ID mapping
     )
 
+def _create_ethercat_rtcore_backend(robot_config: dict, **kwargs) -> EthercatRTCoreBackend:
+    """
+    Factory for EthercatRTCoreBackend (RTCore proxy).
+
+    Notes:
+    - This backend does not use `serial_port` / `baud_rate`.
+    - IPC socket path can be overridden for dev via `GRADIENT_RTCORE_SOCKET_PATH`.
+    """
+    socket_path = os.environ.get("GRADIENT_RTCORE_SOCKET_PATH", "/run/gradient-rt-motion/ipc.sock")
+    return EthercatRTCoreBackend(
+        robot_config=robot_config,
+        socket_path=socket_path,
+    )
+
 
 # =============================================================================
 # Register available backends
@@ -96,4 +112,11 @@ registry.register_backend_class(
     config_module_path=None,  # Simulation uses feetech config as fallback
 )
 
-__all__ = ['FeetechBackend', 'SimulationBackend', 'registry']
+# EtherCAT RTCore proxy backend
+registry.register_backend_class(
+    name="ethercat_rtcore",
+    factory=_create_ethercat_rtcore_backend,
+    config_module_path="gradient_os.arm_controller.backends.ethercat_rtcore.config",
+)
+
+__all__ = ['FeetechBackend', 'SimulationBackend', 'EthercatRTCoreBackend', 'registry']

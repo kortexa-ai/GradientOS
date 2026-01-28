@@ -1,0 +1,6 @@
+[Match]
+MACAddress=c8:3e:a7:14:1c:75
+
+[Link]
+Name=uplink0
+
