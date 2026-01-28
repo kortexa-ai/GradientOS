@@ -43,6 +43,16 @@ The repo already contains an initial implementation scaffold:
 - **Diagnostics scripts**: `scripts/ethercat/diagnose_host.sh`
 - **Pinned IgH installer**: `scripts/ethercat/install_igh.sh`
 
+Recent progress (bring-up quality-of-life / monitoring):
+- RTCore now supports **per-axis scaling** (`counts_per_rev/gear_ratio/sign/axis_type`) and publishes it over IPC (`MSG_STATUS_AXIS_CONFIG`).
+- RTCore now implements **DS402 fault reset** (`CMD_FAULT_RESET`) as a short `0x0080` pulse sequence (still needs hardware validation).
+- A6‑EC manual codes were extracted into:
+  - `docs/resources/a6ec_manual_codes.md` (human)
+  - `docs/resources/a6ec_manual_codes.json` (machine)
+  and the jog tool now decodes `0x603F` to a readable “bus fault” name.
+- RTCore writes `/run/gradient-rt-motion/metrics.json` (RT loop Hz/jitter/WKC/etc.) so dashboards can monitor without consuming the single-client IPC slot.
+- A Sampler dashboard config exists at `scripts/sampler/rtos_monitor.yml` (requires installing `sampler`, typically built from source on aarch64).
+
 Bring-up should proceed by validating hardware + master discovery first, then moving to RTCore cyclic motion.
 
 ---

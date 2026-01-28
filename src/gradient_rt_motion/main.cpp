@@ -14,7 +14,9 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <grp.h>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -832,6 +834,7 @@ int main(int argc, char** argv) {
   // - chmod 0660 so only owner/group can connect
   // - chown the socket's group to `--ipc-group` (default: `pi`) so the Python
   //   controller (runs unprivileged) can connect.
+  gid_t ipc_gid = static_cast<gid_t>(-1);
   try {
     gid_t desired_gid = static_cast<gid_t>(-1);
 
@@ -860,6 +863,7 @@ int main(int argc, char** argv) {
         ::chown(opt.socket_path.c_str(), static_cast<uid_t>(-1), desired_gid) != 0) {
       logf("WARNING: chown(%s) failed: %s", opt.socket_path.c_str(), std::strerror(errno));
     }
+    ipc_gid = desired_gid;
   } catch (const std::exception& e) {
     logf("WARNING: failed to adjust socket ownership for %s: %s", opt.socket_path.c_str(), e.what());
   }
@@ -879,6 +883,9 @@ int main(int argc, char** argv) {
 
   // RT scaffolding: threads exist even before EtherCAT loop is implemented.
   std::atomic<uint64_t> rt_cycle_counter{0};
+  std::atomic<int64_t> rt_last_jitter_ns{0};
+  std::atomic<int64_t> rt_max_abs_jitter_ns{0};
+  std::atomic<uint64_t> rt_overrun_count{0};
 
   // Shared state (helper thread produces; RT thread consumes).
   struct LatestSetpoint {
@@ -1119,6 +1126,23 @@ int main(int argc, char** argv) {
 #endif  // GRADIENT_HAVE_ECRT
 
     while (true) {
+      // Measure wakeup jitter for the previous absolute sleep target (`next_ns`).
+      // This measures how late/early we were relative to the requested schedule.
+      const uint64_t wake_target_ns = next_ns;
+      const uint64_t wake_ns = now_monotonic_ns();
+      const int64_t jitter_ns =
+          static_cast<int64_t>(wake_ns) - static_cast<int64_t>(wake_target_ns);
+      rt_last_jitter_ns.store(jitter_ns, std::memory_order_relaxed);
+      const int64_t abs_jitter_ns = (jitter_ns >= 0) ? jitter_ns : -jitter_ns;
+      int64_t prev_max = rt_max_abs_jitter_ns.load(std::memory_order_relaxed);
+      while (abs_jitter_ns > prev_max &&
+             !rt_max_abs_jitter_ns.compare_exchange_weak(
+                 prev_max, abs_jitter_ns, std::memory_order_relaxed)) {
+      }
+      if (jitter_ns > static_cast<int64_t>(period)) {
+        rt_overrun_count.fetch_add(1, std::memory_order_relaxed);
+      }
+
       next_ns += period;
 
 #if GRADIENT_HAVE_ECRT
@@ -1271,8 +1295,8 @@ int main(int argc, char** argv) {
             is_armed ? gradient::ipc::v1::MASTER_OP : gradient::ipc::v1::MASTER_SAFEOP;
         // TODO: fill dc_offset_ns from IgH reference clock delta.
         latest_feedback.dc_offset_ns = 0;
-        // TODO: fill cycle_jitter_ns from measured vs scheduled cycle.
-        latest_feedback.cycle_jitter_ns = 0;
+        // Wakeup jitter relative to the requested absolute schedule.
+        latest_feedback.cycle_jitter_ns = jitter_ns;
         static uint64_t fb_seq = 1;
         latest_feedback.seq.store(fb_seq++, std::memory_order_release);
       }
@@ -1301,6 +1325,115 @@ int main(int argc, char** argv) {
       master = nullptr;
     }
 #endif
+  });
+
+  // Periodic metrics file for dashboards/monitoring. This intentionally does NOT
+  // require an IPC client (RTCore is single-client today).
+  const std::filesystem::path sock_parent = std::filesystem::path(opt.socket_path).parent_path();
+  const std::filesystem::path metrics_path =
+      (sock_parent.empty() ? std::filesystem::path("/tmp")
+                           : sock_parent) /
+      "metrics.json";
+  std::thread metrics_thread([&]() {
+    pthread_setname_np(pthread_self(), "metrics");
+
+    uint64_t last_cycles = rt_cycle_counter.load(std::memory_order_relaxed);
+    uint64_t last_time_ns = now_monotonic_ns();
+    uint64_t last_warn_ns = 0;
+
+    while (!g_stop.load(std::memory_order_relaxed)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      const uint64_t now_ns = now_monotonic_ns();
+
+      const uint64_t cycles = rt_cycle_counter.load(std::memory_order_relaxed);
+      const int64_t last_jitter = rt_last_jitter_ns.load(std::memory_order_relaxed);
+      const int64_t max_abs_jitter = rt_max_abs_jitter_ns.load(std::memory_order_relaxed);
+      const uint64_t overruns = rt_overrun_count.load(std::memory_order_relaxed);
+
+      double hz = 0.0;
+      if (now_ns > last_time_ns) {
+        const uint64_t dc = cycles - last_cycles;
+        const uint64_t dt = now_ns - last_time_ns;
+        hz = (static_cast<double>(dc) * 1e9) / static_cast<double>(dt);
+      }
+      last_cycles = cycles;
+      last_time_ns = now_ns;
+
+      // Snapshot EtherCAT feedback if available (double-read seq).
+      uint32_t wkc_actual = 0;
+      uint32_t wkc_expected = 0;
+      uint32_t master_state = armed.load(std::memory_order_relaxed)
+                                  ? gradient::ipc::v1::MASTER_SAFEOP
+                                  : gradient::ipc::v1::MASTER_INIT;
+      std::array<int32_t, gradient::ipc::v1::GRADIENT_MAX_AXES> pos_counts{};
+      std::array<uint16_t, gradient::ipc::v1::GRADIENT_MAX_AXES> statusword{};
+      std::array<uint16_t, gradient::ipc::v1::GRADIENT_MAX_AXES> error_code{};
+
+      bool have_fb = false;
+      const uint64_t s1 = latest_feedback.seq.load(std::memory_order_acquire);
+      if (s1 != 0) {
+        wkc_actual = latest_feedback.wkc_actual;
+        wkc_expected = latest_feedback.wkc_expected;
+        master_state = latest_feedback.master_state;
+        pos_counts = latest_feedback.pos_counts;
+        statusword = latest_feedback.statusword;
+        error_code = latest_feedback.error_code;
+        const uint64_t s2 = latest_feedback.seq.load(std::memory_order_acquire);
+        have_fb = (s1 == s2);
+      }
+
+      const uint32_t en_mask = axis_enable_mask.load(std::memory_order_relaxed);
+
+      std::ostringstream oss;
+      oss << "{";
+      oss << "\"time_ns\":" << now_ns << ",";
+      oss << "\"cycle_ns\":" << opt.cycle_ns << ",";
+      oss << "\"num_axes\":" << opt.num_axes << ",";
+      oss << "\"rt_cycle_counter\":" << cycles << ",";
+      oss << "\"rt_hz\":" << hz << ",";
+      oss << "\"rt_last_jitter_ns\":" << last_jitter << ",";
+      oss << "\"rt_max_abs_jitter_ns\":" << max_abs_jitter << ",";
+      oss << "\"rt_overrun_count\":" << overruns << ",";
+      oss << "\"armed\":" << (armed.load(std::memory_order_relaxed) ? 1 : 0) << ",";
+      oss << "\"axis_enable_mask\":" << en_mask << ",";
+      oss << "\"have_feedback\":" << (have_fb ? 1 : 0) << ",";
+      oss << "\"wkc_actual\":" << (have_fb ? wkc_actual : 0) << ",";
+      oss << "\"wkc_expected\":" << (have_fb ? wkc_expected : 0) << ",";
+      oss << "\"master_state\":" << master_state << ",";
+      oss << "\"axes\":[";
+      for (uint32_t i = 0; i < opt.num_axes && i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
+        if (i != 0) {
+          oss << ",";
+        }
+        oss << "{";
+        oss << "\"pos_counts\":" << pos_counts[i] << ",";
+        oss << "\"statusword\":" << statusword[i] << ",";
+        oss << "\"error_code\":" << error_code[i];
+        oss << "}";
+      }
+      oss << "]";
+      oss << "}\n";
+
+      try {
+        const std::filesystem::path tmp = metrics_path.string() + ".tmp";
+        std::ofstream f(tmp, std::ios::out | std::ios::trunc);
+        f << oss.str();
+        f.close();
+        std::filesystem::rename(tmp, metrics_path);
+        // Keep readable by the controller user/group.
+        if (ipc_gid != static_cast<gid_t>(-1)) {
+          (void)::chown(metrics_path.c_str(), static_cast<uid_t>(-1), ipc_gid);
+        }
+        (void)::chmod(metrics_path.c_str(), 0644);
+      } catch (const std::exception& e) {
+        // Don't spam logs if the filesystem is temporarily unhappy.
+        if (now_ns - last_warn_ns > 5000000000ULL) { // 5s
+          last_warn_ns = now_ns;
+          logf("WARNING: failed to write metrics file %s: %s",
+               metrics_path.c_str(), e.what());
+        }
+      }
+    }
   });
 
   // Connection-scoped state (reset on disconnect).
@@ -1759,7 +1892,7 @@ int main(int argc, char** argv) {
                                   ? gradient::ipc::v1::MASTER_SAFEOP
                                   : gradient::ipc::v1::MASTER_INIT;
           snap.dc_offset_ns = 0;
-          snap.cycle_jitter_ns = 0;
+          snap.cycle_jitter_ns = rt_last_jitter_ns.load(std::memory_order_relaxed);
           snap.topology_hash = topology_hash;
 
           for (uint32_t i = 0; i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
@@ -1819,6 +1952,9 @@ int main(int argc, char** argv) {
   g_stop.store(true, std::memory_order_relaxed);
   if (rt_thread.joinable()) {
     rt_thread.join();
+  }
+  if (metrics_thread.joinable()) {
+    metrics_thread.join();
   }
 
   unlink(opt.socket_path.c_str());

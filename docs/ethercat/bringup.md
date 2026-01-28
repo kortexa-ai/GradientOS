@@ -303,3 +303,14 @@ python3 scripts/rtcore_jog.py console --rate-hz 2
 
 More details: `docs/ethercat/rtcore_jog.md`.
 
+#### Live monitoring dashboard (Sampler)
+
+RTCore writes a small metrics file at:
+- `/run/gradient-rt-motion/metrics.json`
+
+You can view a live dashboard (RTCore Hz + jitter, per-core CPU usage, timer jitter on an isolated CPU vs non-isolated CPU)
+using the Sampler config in:
+- `scripts/sampler/rtos_monitor.yml`
+
+See: `scripts/sampler/README.md`.
+

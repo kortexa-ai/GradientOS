@@ -47,6 +47,14 @@ Update this file whenever:
 - [ ] **Isolation parameters validated**: `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 irqaffinity=0,1` were appended to `/boot/firmware/cmdline.txt` — requires reboot, then verify CPU2–CPU3 are truly isolated.
 - [ ] **IRQ pinning correctness**: confirm the EtherCAT NIC IRQ names/lines in `/proc/interrupts` match the script’s assumptions and the mask `0xC` (CPU2–CPU3) is correct on this CPU topology.
 - [ ] **Jitter acceptance**: run `cyclictest`/`rtla timerlat` under load and record actual jitter distributions (target thresholds are in the plan, but we need real numbers for this image).
+  - Update (implemented): RTCore now measures **wakeup jitter** in the cyclic thread and publishes:
+    - `StatusSnapshotV1.cycle_jitter_ns` (IPC)
+    - `/run/gradient-rt-motion/metrics.json` (best-effort, no IPC client required)
+  - Update (implemented): a Sampler dashboard config exists at `scripts/sampler/rtos_monitor.yml` to compare:
+    - RTCore loop Hz + jitter
+    - user-space timer jitter on an isolated CPU vs a non-isolated CPU
+    - per-core CPU usage
+  - Note: `cyclictest`/`rtla` were not installed by default on this image; the Sampler timer probe is *comparative* (useful for “RT vs non-RT”), but still collect “gold standard” numbers once the proper tools are installed.
 
 ---
 
@@ -76,6 +84,7 @@ Update this file whenever:
 - [ ] **DC/SYNC0 parameters**: confirm `assign_activate` and SYNC0 shift values for stable 1 kHz operation (we currently use a conservative default).
   - Manual (A6-EC ch8): the drive supports **DC sync only** (SYNC0-controlled). Sync cycle must be an integer multiple of **250 μs** (else `Er74.0`).
 - [ ] **Fault/reset behavior**: confirm how A6‑EC behaves on faults and whether additional manufacturer-specific steps are needed beyond canonical DS402 sequences.
+  - Update (implemented): RTCore now implements `CMD_FAULT_RESET(axis_mask)` and pulses DS402 controlword `0x0080` for a short window (still needs validation on real drives).
   - Manual (A6-EC ch10): EtherCAT config/sync related faults to watch for include `Er31.0` (PDO mapping objects >10), `Er32.1/Er32.5` (XML/ESI issues; check `U42.0B`), and `Er74.0/Er74.1/Er74.2` (DC/sync issues).
 - [ ] **Avoid “big first step” faults**: confirm RTCore seeds/aligns `0x607A` to `0x6064` before enabling / switching modes, to avoid `Er87.1/Er87.2` (manual: excessive target position increment).
 
@@ -87,12 +96,13 @@ Update this file whenever:
 - [ ] **Safety ladder**: watchdogs + safe-stop policy (WKC mismatch, OP loss, stale setpoint, etc.) are not production-complete yet.
 - [ ] **Brake sequencing**: not implemented yet (and is axis/mechanical dependent).
 - [ ] **Status fidelity**: in IPC-only mode the “pos_counts” were previously a synthetic echo; once EtherCAT is active it should always be real `0x6064`.
+- [ ] **Telemetry/monitoring channel**: RTCore now emits `/run/gradient-rt-motion/metrics.json` for dashboards without consuming the single-client IPC slot (Sampler config in `scripts/sampler/`). Decide what the long-term “official” telemetry path is (IPC status ring extensions vs a metrics file).
 
 ---
 
 ### GradientOS integration uncertainties
 
-- [ ] **Feedback conversion**: Python currently can’t convert counts → radians correctly without per-axis scaling config; `get_joint_positions()` is still “last setpoint” (safe but not real feedback).
+- [ ] **Feedback conversion**: RTCore now publishes per-axis scaling via `MSG_STATUS_AXIS_CONFIG`, and the jog tool consumes it, but the Python `ethercat_rtcore` backend still returns “last setpoint” for `get_joint_positions()` (safe but not real feedback) until we implement counts→q conversion on the Python side.
 - [ ] **Joint limit enforcement location**: decide what must be enforced in RTCore vs. what can remain in the Python layer (goal: safety-critical in RTCore).
 - [ ] **Bring-up command path**: confirm which existing UDP commands you’ll use to drive J3/J4 (likely the low-level “6 angles” path) and ensure it doesn’t touch legacy serial paths.
 
