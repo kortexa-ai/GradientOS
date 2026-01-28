@@ -222,15 +222,23 @@ sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2
 ```
 
 Axis scaling defaults (v1):
-- `--counts-per-rev 131072`
-- `--gear-ratio 1.0`
-- `--sign +1`
+- `--counts-per-rev 131072` (or comma list per axis, e.g. `131072,131072`)
+- `--gear-ratio 1.0` (or comma list per axis, e.g. `100,50`)
+- `--sign +1` (or comma list per axis, e.g. `+1,-1`)
+- `--axis-type rotary` (or comma list per axis, `rotary,linear`; rotary q=rad, linear q=m)
+- `--lead-m-per-rev M` (only for linear axes; can be a comma list)
 - `--max-rpm 100` (safety cap; clamps per-cycle position steps and programs `0x607F` max profile velocity; `0` disables clamping)
 
 Override as needed during commissioning, e.g.:
 
 ```bash
 sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --gear-ratio 100
+```
+
+Per-axis example (axis0 has 100:1, axis1 has 50:1 and inverted sign):
+
+```bash
+sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --gear-ratio 100,50 --sign +1,-1
 ```
 
 The Python backend defaults to mapping those 2 RT axes to **joint 3 and joint 4**

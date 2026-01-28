@@ -10,12 +10,14 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #include <chrono>
 #include <filesystem>
 #include <grp.h>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -67,6 +69,22 @@ size_t align_up(size_t value, size_t alignment) {
   return (value + alignment - 1) / alignment * alignment;
 }
 
+struct AxisConfig {
+  // Raw scaling inputs.
+  uint32_t counts_per_rev = 131072; // common 17-bit encoder counts per rev
+  double gear_ratio = 1.0;
+  int sign = +1; // +1 or -1 (mechanical orientation)
+  uint8_t axis_type = gradient::ipc::v1::AXIS_TYPE_ROTARY; // q is radians by default
+  double lead_m_per_rev = 0.0; // only used when axis_type==AXIS_TYPE_LINEAR
+
+  // Derived scaling (RTCore uses this for q->counts conversion).
+  double counts_per_unit = 0.0; // counts per rad (rotary) or counts per meter (linear)
+
+  // Derived safety clamps from --max-rpm (motor rpm). 0 => disabled.
+  int32_t max_step_counts_per_cycle = 0;
+  uint32_t max_profile_vel_counts_per_s = 0;
+};
+
 struct Options {
   std::string socket_path = "/run/gradient-rt-motion/ipc.sock";
   // Filesystem group that is allowed to connect to the IPC socket (0660).
@@ -76,10 +94,8 @@ struct Options {
   uint32_t num_axes = 6;       // default arm axes for early scaffolding
 
   // Axis scaling (bring-up defaults; tuned via commissioning).
-  // v1: apply the same scale to all axes until per-axis config is implemented.
-  uint32_t counts_per_rev = 131072; // common 17-bit encoder counts per rev
-  double gear_ratio = 1.0;
-  int sign = +1;
+  // Per-axis lists can be provided via the CLI (comma-separated).
+  std::array<AxisConfig, gradient::ipc::v1::GRADIENT_MAX_AXES> axis{};
 
   // Safety: cap commanded motor speed (rpm). 0 disables clamping.
   double max_rpm = 100.0;
@@ -141,21 +157,358 @@ bool parse_i32(const char* s, int* out) {
   return true;
 }
 
+std::string trim_ascii_ws(const std::string& s) {
+  const size_t first = s.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) {
+    return {};
+  }
+  const size_t last = s.find_last_not_of(" \t\r\n");
+  return s.substr(first, last - first + 1);
+}
+
+std::vector<std::string> split_csv_strict(const std::string& spec) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start <= spec.size()) {
+    size_t comma = spec.find(',', start);
+    if (comma == std::string::npos) {
+      comma = spec.size();
+    }
+    std::string tok = trim_ascii_ws(spec.substr(start, comma - start));
+    if (tok.empty()) {
+      return {}; // invalid (empty token)
+    }
+    out.push_back(tok);
+    if (comma >= spec.size()) {
+      break;
+    }
+    start = comma + 1;
+  }
+  return out;
+}
+
+bool parse_axis_type_token(const std::string& token, uint8_t* out) {
+  if (!out) {
+    return false;
+  }
+  std::string t = token;
+  for (char& c : t) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  if (t == "r" || t == "rot" || t == "rotary") {
+    *out = gradient::ipc::v1::AXIS_TYPE_ROTARY;
+    return true;
+  }
+  if (t == "l" || t == "lin" || t == "linear") {
+    *out = gradient::ipc::v1::AXIS_TYPE_LINEAR;
+    return true;
+  }
+  return false;
+}
+
+bool parse_u32_csv(const std::string& spec, std::vector<uint32_t>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  const auto toks = split_csv_strict(spec);
+  if (toks.empty()) {
+    return false;
+  }
+  for (const auto& tok : toks) {
+    uint32_t v = 0;
+    if (!parse_u32(tok.c_str(), &v) || v == 0) {
+      return false;
+    }
+    out->push_back(v);
+  }
+  return true;
+}
+
+bool parse_double_csv(const std::string& spec, std::vector<double>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  const auto toks = split_csv_strict(spec);
+  if (toks.empty()) {
+    return false;
+  }
+  for (const auto& tok : toks) {
+    double v = 0.0;
+    if (!parse_double(tok.c_str(), &v)) {
+      return false;
+    }
+    out->push_back(v);
+  }
+  return true;
+}
+
+bool parse_sign_csv(const std::string& spec, std::vector<int>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  const auto toks = split_csv_strict(spec);
+  if (toks.empty()) {
+    return false;
+  }
+  for (const auto& tok : toks) {
+    int v = 0;
+    if (!parse_i32(tok.c_str(), &v) || (v != 1 && v != -1)) {
+      return false;
+    }
+    out->push_back(v);
+  }
+  return true;
+}
+
+bool parse_axis_type_csv(const std::string& spec, std::vector<uint8_t>* out) {
+  if (!out) {
+    return false;
+  }
+  out->clear();
+  const auto toks = split_csv_strict(spec);
+  if (toks.empty()) {
+    return false;
+  }
+  for (const auto& tok : toks) {
+    uint8_t v = gradient::ipc::v1::AXIS_TYPE_UNKNOWN;
+    if (!parse_axis_type_token(tok, &v)) {
+      return false;
+    }
+    out->push_back(v);
+  }
+  return true;
+}
+
+template <typename T, typename Setter>
+bool apply_per_axis(const std::vector<T>& vals, uint32_t num_axes, Setter setter) {
+  if (vals.empty()) {
+    return true;
+  }
+  if (vals.size() == 1) {
+    for (uint32_t i = 0; i < num_axes; ++i) {
+      setter(i, vals[0]);
+    }
+    return true;
+  }
+  if (vals.size() != static_cast<size_t>(num_axes)) {
+    return false;
+  }
+  for (uint32_t i = 0; i < num_axes; ++i) {
+    setter(i, vals[i]);
+  }
+  return true;
+}
+
+bool finalize_axis_config(Options* opt,
+                          const std::string& counts_per_rev_spec,
+                          const std::string& gear_ratio_spec,
+                          const std::string& sign_spec,
+                          const std::string& axis_type_spec,
+                          const std::string& lead_m_per_rev_spec) {
+  if (!opt) {
+    return false;
+  }
+
+  // Parse optional per-axis specs (comma-separated). A single value broadcasts to all axes.
+  std::vector<uint32_t> cpr{};
+  if (!counts_per_rev_spec.empty()) {
+    if (!parse_u32_csv(counts_per_rev_spec, &cpr)) {
+      logf("ERROR: invalid --counts-per-rev (expected N or N1,N2,...)");
+      return false;
+    }
+    if (!apply_per_axis<uint32_t>(cpr, opt->num_axes, [&](uint32_t i, uint32_t v) {
+          opt->axis[i].counts_per_rev = v;
+        })) {
+      logf("ERROR: --counts-per-rev list length must be 1 or --num-axes (%u)", opt->num_axes);
+      return false;
+    }
+  }
+
+  std::vector<double> gr{};
+  if (!gear_ratio_spec.empty()) {
+    if (!parse_double_csv(gear_ratio_spec, &gr)) {
+      logf("ERROR: invalid --gear-ratio (expected R or R1,R2,...)");
+      return false;
+    }
+    if (!apply_per_axis<double>(gr, opt->num_axes, [&](uint32_t i, double v) {
+          if (v <= 0.0) {
+            v = 0.0;
+          }
+          opt->axis[i].gear_ratio = v;
+        })) {
+      logf("ERROR: --gear-ratio list length must be 1 or --num-axes (%u)", opt->num_axes);
+      return false;
+    }
+  }
+
+  std::vector<int> sgn{};
+  if (!sign_spec.empty()) {
+    if (!parse_sign_csv(sign_spec, &sgn)) {
+      logf("ERROR: invalid --sign (expected +1/-1 or S1,S2,...)");
+      return false;
+    }
+    if (!apply_per_axis<int>(sgn, opt->num_axes, [&](uint32_t i, int v) {
+          opt->axis[i].sign = v;
+        })) {
+      logf("ERROR: --sign list length must be 1 or --num-axes (%u)", opt->num_axes);
+      return false;
+    }
+  }
+
+  std::vector<uint8_t> at{};
+  if (!axis_type_spec.empty()) {
+    if (!parse_axis_type_csv(axis_type_spec, &at)) {
+      logf("ERROR: invalid --axis-type (expected rotary|linear, optionally comma-separated)");
+      return false;
+    }
+    if (!apply_per_axis<uint8_t>(at, opt->num_axes, [&](uint32_t i, uint8_t v) {
+          opt->axis[i].axis_type = v;
+        })) {
+      logf("ERROR: --axis-type list length must be 1 or --num-axes (%u)", opt->num_axes);
+      return false;
+    }
+  }
+
+  std::vector<double> lead{};
+  if (!lead_m_per_rev_spec.empty()) {
+    if (!parse_double_csv(lead_m_per_rev_spec, &lead)) {
+      logf("ERROR: invalid --lead-m-per-rev (expected M or M1,M2,...)");
+      return false;
+    }
+    if (!apply_per_axis<double>(lead, opt->num_axes, [&](uint32_t i, double v) {
+          opt->axis[i].lead_m_per_rev = v;
+        })) {
+      logf("ERROR: --lead-m-per-rev list length must be 1 or --num-axes (%u)", opt->num_axes);
+      return false;
+    }
+  }
+
+  // Validate and derive counts_per_unit and safety clamps.
+  constexpr double kTwoPi = 6.28318530717958647692;
+  const double period_s = static_cast<double>(opt->cycle_ns) / 1e9;
+  for (uint32_t i = 0; i < opt->num_axes; ++i) {
+    AxisConfig& a = opt->axis[i];
+    if (a.counts_per_rev == 0) {
+      logf("ERROR: axis%u counts_per_rev must be > 0", i);
+      return false;
+    }
+    if (a.gear_ratio <= 0.0) {
+      logf("ERROR: axis%u gear_ratio must be > 0", i);
+      return false;
+    }
+    if (a.sign != 1 && a.sign != -1) {
+      logf("ERROR: axis%u sign must be +1 or -1", i);
+      return false;
+    }
+
+    if (a.axis_type == gradient::ipc::v1::AXIS_TYPE_ROTARY) {
+      a.counts_per_unit =
+          (static_cast<double>(a.counts_per_rev) * a.gear_ratio) / kTwoPi; // counts/rad
+    } else if (a.axis_type == gradient::ipc::v1::AXIS_TYPE_LINEAR) {
+      if (a.lead_m_per_rev <= 0.0) {
+        logf("ERROR: axis%u is linear; provide --lead-m-per-rev (m/rev) for that axis", i);
+        return false;
+      }
+      a.counts_per_unit =
+          (static_cast<double>(a.counts_per_rev) * a.gear_ratio) / a.lead_m_per_rev; // counts/m
+    } else {
+      logf("ERROR: axis%u has unknown axis_type (use --axis-type rotary|linear)", i);
+      return false;
+    }
+    if (!(a.counts_per_unit > 0.0)) {
+      logf("ERROR: axis%u counts_per_unit invalid (check scaling inputs)", i);
+      return false;
+    }
+
+    // Safety clamp derived from motor rpm limit.
+    if (opt->max_rpm <= 0.0) {
+      a.max_step_counts_per_cycle = 0;
+      a.max_profile_vel_counts_per_s = std::numeric_limits<uint32_t>::max();
+    } else {
+      const double max_counts_per_s =
+          (opt->max_rpm / 60.0) * static_cast<double>(a.counts_per_rev);
+      const long long step = std::llround(max_counts_per_s * period_s);
+      if (step <= 0) {
+        a.max_step_counts_per_cycle = 1;
+      } else if (step > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
+        a.max_step_counts_per_cycle = std::numeric_limits<int32_t>::max();
+      } else {
+        a.max_step_counts_per_cycle = static_cast<int32_t>(step);
+      }
+
+      const long long v = std::llround(max_counts_per_s);
+      if (v <= 0) {
+        a.max_profile_vel_counts_per_s = 1u;
+      } else if (v > static_cast<long long>(std::numeric_limits<uint32_t>::max())) {
+        a.max_profile_vel_counts_per_s = std::numeric_limits<uint32_t>::max();
+      } else {
+        a.max_profile_vel_counts_per_s = static_cast<uint32_t>(v);
+      }
+    }
+  }
+
+  // Populate unused axis slots with sane derived values for tooling.
+  for (uint32_t i = opt->num_axes; i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
+    AxisConfig& a = opt->axis[i];
+    if (a.axis_type == gradient::ipc::v1::AXIS_TYPE_ROTARY) {
+      a.counts_per_unit =
+          (static_cast<double>(a.counts_per_rev) * a.gear_ratio) / kTwoPi; // counts/rad
+    } else {
+      // Keep defaults for unused axes.
+      a.counts_per_unit =
+          (static_cast<double>(a.counts_per_rev) * a.gear_ratio) / kTwoPi; // counts/rad
+    }
+    if (opt->max_rpm <= 0.0) {
+      a.max_step_counts_per_cycle = 0;
+      a.max_profile_vel_counts_per_s = std::numeric_limits<uint32_t>::max();
+    } else {
+      const double max_counts_per_s =
+          (opt->max_rpm / 60.0) * static_cast<double>(a.counts_per_rev);
+      const long long step = std::llround(max_counts_per_s * period_s);
+      if (step <= 0) {
+        a.max_step_counts_per_cycle = 1;
+      } else if (step > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
+        a.max_step_counts_per_cycle = std::numeric_limits<int32_t>::max();
+      } else {
+        a.max_step_counts_per_cycle = static_cast<int32_t>(step);
+      }
+
+      const long long v = std::llround(max_counts_per_s);
+      if (v <= 0) {
+        a.max_profile_vel_counts_per_s = 1u;
+      } else if (v > static_cast<long long>(std::numeric_limits<uint32_t>::max())) {
+        a.max_profile_vel_counts_per_s = std::numeric_limits<uint32_t>::max();
+      } else {
+        a.max_profile_vel_counts_per_s = static_cast<uint32_t>(v);
+      }
+    }
+  }
+
+  return true;
+}
+
 void print_usage(const char* argv0) {
   std::fprintf(
       stderr,
       "Usage: %s [--socket-path PATH] [--cycle-ns NS] [--num-axes N] "
-      "[--counts-per-rev N] [--gear-ratio R] [--sign (+1|-1)] [--max-rpm RPM] "
-      "[--ipc-group NAME]\\n\\n"
-      "Defaults:\\n"
-      "  --socket-path /run/gradient-rt-motion/ipc.sock\\n"
-      "  --cycle-ns     1000000\\n"
-      "  --num-axes     6\\n"
-      "  --counts-per-rev 131072\\n"
-      "  --gear-ratio   1.0\\n"
-      "  --sign         +1\\n"
-      "  --max-rpm      100\\n"
-      "  --ipc-group    pi\\n",
+      "[--counts-per-rev N[,N..]] [--gear-ratio R[,R..]] [--sign S[,S..]] "
+      "[--axis-type T[,T..]] [--lead-m-per-rev M[,M..]] [--max-rpm RPM] "
+      "[--ipc-group NAME]\n\n"
+      "Defaults:\n"
+      "  --socket-path /run/gradient-rt-motion/ipc.sock\n"
+      "  --cycle-ns     1000000\n"
+      "  --num-axes     6\n"
+      "  --counts-per-rev 131072\n"
+      "  --gear-ratio   1.0\n"
+      "  --sign         +1\n"
+      "  --axis-type    rotary\n"
+      "  --max-rpm      100\n"
+      "  --ipc-group    pi\n",
       argv0);
 }
 
@@ -338,6 +691,11 @@ bool ring_write(RingView ring,
 
 int main(int argc, char** argv) {
   Options opt;
+  std::string counts_per_rev_spec;
+  std::string gear_ratio_spec;
+  std::string sign_spec;
+  std::string axis_type_spec;
+  std::string lead_m_per_rev_spec;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -365,24 +723,23 @@ int main(int argc, char** argv) {
       continue;
     }
     if (arg == "--counts-per-rev" && i + 1 < argc) {
-      if (!parse_u32(argv[++i], &opt.counts_per_rev) || opt.counts_per_rev == 0) {
-        logf("ERROR: invalid --counts-per-rev");
-        return 2;
-      }
+      counts_per_rev_spec = argv[++i];
       continue;
     }
     if (arg == "--gear-ratio" && i + 1 < argc) {
-      if (!parse_double(argv[++i], &opt.gear_ratio) || opt.gear_ratio <= 0.0) {
-        logf("ERROR: invalid --gear-ratio");
-        return 2;
-      }
+      gear_ratio_spec = argv[++i];
       continue;
     }
     if (arg == "--sign" && i + 1 < argc) {
-      if (!parse_i32(argv[++i], &opt.sign) || (opt.sign != 1 && opt.sign != -1)) {
-        logf("ERROR: invalid --sign (must be +1 or -1)");
-        return 2;
-      }
+      sign_spec = argv[++i];
+      continue;
+    }
+    if (arg == "--axis-type" && i + 1 < argc) {
+      axis_type_spec = argv[++i];
+      continue;
+    }
+    if (arg == "--lead-m-per-rev" && i + 1 < argc) {
+      lead_m_per_rev_spec = argv[++i];
       continue;
     }
     if (arg == "--max-rpm" && i + 1 < argc) {
@@ -399,6 +756,15 @@ int main(int argc, char** argv) {
 
     logf("ERROR: unknown arg: %s", arg.c_str());
     print_usage(argv[0]);
+    return 2;
+  }
+
+  if (!finalize_axis_config(&opt,
+                            counts_per_rev_spec,
+                            gear_ratio_spec,
+                            sign_spec,
+                            axis_type_spec,
+                            lead_m_per_rev_spec)) {
     return 2;
   }
 
@@ -548,6 +914,7 @@ int main(int argc, char** argv) {
   std::atomic<bool> armed{false};
   std::atomic<uint32_t> axis_enable_mask{0};
   std::atomic<int32_t> mode_of_operation{0}; // e.g. 8=CSP
+  std::atomic<uint32_t> fault_reset_request{0}; // bitmask; helper thread -> RT thread
   LatestSetpoint latest_setpoint{};
   LatestTargets latest_targets{};
   LatestFeedback latest_feedback{};
@@ -618,6 +985,8 @@ int main(int argc, char** argv) {
     std::array<AxisOffsets, gradient::ipc::v1::GRADIENT_MAX_AXES> off{};
     std::array<int32_t, gradient::ipc::v1::GRADIENT_MAX_AXES> hold_target_counts{};
     std::array<bool, gradient::ipc::v1::GRADIENT_MAX_AXES> have_hold{};
+    std::array<uint8_t, gradient::ipc::v1::GRADIENT_MAX_AXES> fault_reset_left{};
+    constexpr uint8_t kFaultResetPulseCycles = 20; // ~20ms at 1kHz
 
     // Fixed A6-EC PDO config (16.2–16.4).
     static ec_pdo_entry_info_t a6ec_entries[] = {
@@ -654,37 +1023,7 @@ int main(int argc, char** argv) {
 
     bool ecrt_ok = false;
     const uint32_t expected_wkc = 2 * opt.num_axes;
-    const int32_t max_step_counts_per_cycle = [&]() -> int32_t {
-      if (opt.max_rpm <= 0.0) {
-        return 0;
-      }
-      const double period_s = static_cast<double>(period) / 1e9;
-      const double max_counts_per_s = (opt.max_rpm / 60.0) * static_cast<double>(opt.counts_per_rev);
-      const long long step = std::llround(max_counts_per_s * period_s);
-      if (step <= 0) {
-        return 1;
-      }
-      if (step > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
-        return std::numeric_limits<int32_t>::max();
-      }
-      return static_cast<int32_t>(step);
-    }();
-    const uint32_t max_profile_vel_counts_per_s = [&]() -> uint32_t {
-      // 0x607F "Max profile velocity" (UDINT). ESI defaults suggest this is in
-      // position units / second, matching counts_per_rev scaling.
-      if (opt.max_rpm <= 0.0) {
-        return std::numeric_limits<uint32_t>::max();
-      }
-      const double max_counts_per_s = (opt.max_rpm / 60.0) * static_cast<double>(opt.counts_per_rev);
-      const long long v = std::llround(max_counts_per_s);
-      if (v <= 0) {
-        return 1u;
-      }
-      if (v > static_cast<long long>(std::numeric_limits<uint32_t>::max())) {
-        return std::numeric_limits<uint32_t>::max();
-      }
-      return static_cast<uint32_t>(v);
-    }();
+    // Per-axis safety clamps (max rpm -> counts/s) are computed in finalize_axis_config().
 
     master = ecrt_request_master(0);
     if (!master) {
@@ -819,6 +1158,16 @@ int main(int argc, char** argv) {
         const bool is_armed = armed.load(std::memory_order_relaxed);
         const uint32_t en_mask = axis_enable_mask.load(std::memory_order_relaxed);
 
+        // Latch any new fault reset requests from the helper thread.
+        const uint32_t fr_req = fault_reset_request.exchange(0, std::memory_order_acq_rel);
+        if (fr_req != 0) {
+          for (uint32_t i = 0; i < opt.num_axes; ++i) {
+            if ((fr_req & (1u << i)) != 0u) {
+              fault_reset_left[i] = kFaultResetPulseCycles;
+            }
+          }
+        }
+
         // Per-axis DS402 sequencing + CSP targets.
         for (uint32_t i = 0; i < opt.num_axes; ++i) {
           const uint16_t sw = EC_READ_U16(domain_pd + off[i].sw);
@@ -832,6 +1181,12 @@ int main(int argc, char** argv) {
 
           const gradient::ds402::State st = gradient::ds402::decode_statusword(sw);
           const bool want_enable = is_armed && ((en_mask & (1u << i)) != 0u);
+          bool want_fault_reset = (fault_reset_left[i] > 0);
+          if (want_fault_reset && st != gradient::ds402::State::Fault) {
+            // Stop pulsing once the drive leaves FAULT (or if it never was in FAULT).
+            fault_reset_left[i] = 0;
+            want_fault_reset = false;
+          }
 
           // Hold-target logic:
           // - While not operation-enabled (or not wanting enable), keep the target aligned to feedback
@@ -844,13 +1199,14 @@ int main(int argc, char** argv) {
             }
             if ((sp_mask & (1u << i)) != 0u) {
               const int32_t desired = target_counts[i];
-              if (max_step_counts_per_cycle > 0) {
+              const int32_t max_step = opt.axis[i].max_step_counts_per_cycle;
+              if (max_step > 0) {
                 const int32_t cur = hold_target_counts[i];
                 const int64_t delta = static_cast<int64_t>(desired) - static_cast<int64_t>(cur);
-                if (delta > max_step_counts_per_cycle) {
-                  hold_target_counts[i] = cur + max_step_counts_per_cycle;
-                } else if (delta < -max_step_counts_per_cycle) {
-                  hold_target_counts[i] = cur - max_step_counts_per_cycle;
+                if (delta > max_step) {
+                  hold_target_counts[i] = cur + max_step;
+                } else if (delta < -max_step) {
+                  hold_target_counts[i] = cur - max_step;
                 } else {
                   hold_target_counts[i] = desired;
                 }
@@ -864,7 +1220,10 @@ int main(int argc, char** argv) {
             have_hold[i] = false;
           }
 
-          const uint16_t cw = gradient::ds402::controlword_for_enable(st, want_enable, false);
+          const uint16_t cw = gradient::ds402::controlword_for_enable(st, want_enable, want_fault_reset);
+          if (want_fault_reset && st == gradient::ds402::State::Fault && fault_reset_left[i] > 0) {
+            fault_reset_left[i]--;
+          }
 
           // Outputs (RxPDO 0x1702).
           EC_WRITE_U16(domain_pd + off[i].cw, cw);
@@ -873,7 +1232,7 @@ int main(int argc, char** argv) {
           EC_WRITE_S16(domain_pd + off[i].target_torque, 0);
           EC_WRITE_S8(domain_pd + off[i].mode, want_enable ? 8 : 0);
           EC_WRITE_U16(domain_pd + off[i].tp_func, 0);
-          EC_WRITE_U32(domain_pd + off[i].max_profile_vel, max_profile_vel_counts_per_s);
+          EC_WRITE_U32(domain_pd + off[i].max_profile_vel, opt.axis[i].max_profile_vel_counts_per_s);
 
           // Publish raw feedback (counts + status) for STATUS_SNAPSHOT.
           latest_feedback.pos_counts[i] = pos;
@@ -1237,13 +1596,28 @@ int main(int argc, char** argv) {
         eventfd_write_one(status_eventfd);
       }
 
+      // Emit STATUS_AXIS_CONFIG once on connect (bring-up tooling).
+      {
+        gradient::ipc::v1::StatusAxisConfigV1 cfg{};
+        cfg.num_axes = opt.num_axes;
+        for (uint32_t i = 0; i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
+          cfg.counts_per_rev[i] = opt.axis[i].counts_per_rev;
+          cfg.gear_ratio[i] = opt.axis[i].gear_ratio;
+          cfg.sign[i] = opt.axis[i].sign;
+          cfg.axis_type[i] = opt.axis[i].axis_type;
+          cfg.counts_per_unit[i] = opt.axis[i].counts_per_unit;
+        }
+        ring_write(status_ring,
+                   gradient::ipc::v1::MSG_STATUS_AXIS_CONFIG,
+                   &cfg,
+                   sizeof(cfg),
+                   &status_seq,
+                   now_monotonic_ns());
+        eventfd_write_one(status_eventfd);
+      }
+
       uint64_t next_snapshot_ns = now_monotonic_ns();
       uint64_t last_setpoint_seen = 0;
-
-      // Default conversion (v1): same scale for all axes.
-      const double two_pi = 6.28318530717958647692;
-      const double counts_per_rad =
-          (static_cast<double>(opt.counts_per_rev) * opt.gear_ratio) / two_pi;
 
       while (helper_running.load(std::memory_order_relaxed) &&
              !g_stop.load(std::memory_order_relaxed)) {
@@ -1302,7 +1676,20 @@ int main(int argc, char** argv) {
                   break;
                 }
                 case gradient::ipc::v1::MSG_CMD_FAULT_RESET: {
-                  // TODO(ethercat): implement DS402 fault reset pulse sequencing.
+                  if (mh->bytes >= sizeof(*mh) + sizeof(gradient::ipc::v1::CmdFaultResetV1)) {
+                    auto* cmd =
+                        reinterpret_cast<const gradient::ipc::v1::CmdFaultResetV1*>(payload);
+                    uint32_t mask = cmd->axis_mask;
+                    const uint32_t valid =
+                        (opt.num_axes >= 32) ? 0xFFFFFFFFu : ((1u << opt.num_axes) - 1u);
+                    if (mask == 0) {
+                      mask = valid;
+                    }
+                    mask &= valid;
+                    if (mask != 0) {
+                      fault_reset_request.fetch_or(mask, std::memory_order_relaxed);
+                    }
+                  }
                   break;
                 }
                 default:
@@ -1339,9 +1726,17 @@ int main(int argc, char** argv) {
               tmp.target_time_ns = target_time;
               tmp.axis_mask = axis_mask;
               for (uint32_t i = 0; i < gradient::ipc::v1::GRADIENT_MAX_AXES; ++i) {
-                const double raw = q[i] * counts_per_rad;
+                const double cpu = opt.axis[i].counts_per_unit;
+                const int sgn = opt.axis[i].sign;
+                const double raw = q[i] * cpu;
                 const long long rounded = std::llround(raw);
-                tmp.target_counts[i] = static_cast<int32_t>(opt.sign * rounded);
+                long long counts = static_cast<long long>(sgn) * rounded;
+                if (counts > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
+                  counts = static_cast<long long>(std::numeric_limits<int32_t>::max());
+                } else if (counts < static_cast<long long>(std::numeric_limits<int32_t>::min())) {
+                  counts = static_cast<long long>(std::numeric_limits<int32_t>::min());
+                }
+                tmp.target_counts[i] = static_cast<int32_t>(counts);
               }
               latest_targets.target_time_ns = tmp.target_time_ns;
               latest_targets.axis_mask = tmp.axis_mask;

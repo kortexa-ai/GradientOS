@@ -48,18 +48,23 @@ Because RTCore is single-client, use the interactive console:
 python3 scripts/rtcore_jog.py console --rate-hz 2
 ```
 
+Note: the console reads RTCore’s `STATUS_AXIS_CONFIG` message on connect, so it can interpret counts as q-units
+without requiring you to pass `--counts-per-rev/--gear-ratio/--sign` flags.
+
 #### Console commands
 
 - **help**: show help
 - **w**: toggle watch printing on/off
 - **status**: print a full multi-line status block (per-axis)
+- **config**: print RTCore axis scaling config (per-axis)
 - **arm [0xMASK]**: arm RTCore and optionally set initial enable mask
 - **disarm**: disarm RTCore (recommended before stopping RTCore)
 - **enable 0xMASK**: overwrite the enable mask
 - **disable 0xMASK**: clear bits from the enable mask
 - **set AXIS Q**: set an **absolute** setpoint for one axis (q units; rotary is radians)
-- **jog AXIS DELTA_RAD**: jog **relative** by radians (uses current encoder position)
+- **jog AXIS DELTA_Q**: jog **relative** by q units (uses current encoder position; rotary=rad, linear=m)
 - **jogc AXIS DELTA_COUNTS**: jog **relative** by raw counts
+- **reset [0xMASK]**: request a DS402 fault reset pulse (mask `0` means all axes)
 - **quit**: exit the console
 
 #### What you’re seeing (encoder + status)
@@ -72,6 +77,10 @@ Per axis (A6‑EC DS402 CSP mapping):
 - **`mode_disp`**: mode display (`0x6061`) (8 means CSP)
 - **`torque_raw`**: torque actual (`0x6077`)
 - **`di`**: digital inputs (`0x60FD`)
+
+Code reference (A6‑EC manual extracts):
+- `docs/resources/a6ec_manual_codes.md` (human-readable)
+- `docs/resources/a6ec_manual_codes.json` (machine-readable; generated from the PDF)
 
 ---
 

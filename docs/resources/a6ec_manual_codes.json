@@ -1,0 +1,1013 @@
+{
+  "counts": {
+    "alarm_codes": 17,
+    "bus_fault_codes": 24,
+    "fault_codes": 92
+  },
+  "notes": [
+    "Extracted via pdftotext -layout; table formatting is best-effort.",
+    "Bus fault codes correspond to the drive's CiA402 error code object 0x603F.",
+    "For authoritative wording and context, refer to the PDF manual."
+  ],
+  "source_pdf": "docs/resources/A6-EC_series_servo_drive_manual.pdf",
+  "tables": {
+    "alarm_codes": {
+      "ALF0.0": {
+        "alarm_code_203f": "0X0F00",
+        "bus_fault_code_603f": "0X0F00",
+        "class": null,
+        "code": "ALF0.0",
+        "name": "Emergency stop alarm",
+        "resettable": true
+      },
+      "ALF1.0": {
+        "alarm_code_203f": "0XF10",
+        "bus_fault_code_603f": "0X6320",
+        "class": null,
+        "code": "ALF1.0",
+        "name": "Re-power-on required for parameter settings to take effect",
+        "resettable": true
+      },
+      "ALF1.1": {
+        "alarm_code_203f": "0XF11",
+        "bus_fault_code_603f": "0X5530",
+        "class": null,
+        "code": "ALF1.1",
+        "name": "Frequent parameter storage alarm",
+        "resettable": true
+      },
+      "ALF1.2": {
+        "alarm_code_203f": "0XF12",
+        "bus_fault_code_603f": "0X6320",
+        "class": null,
+        "code": "ALF1.2",
+        "name": "Torque reached parameter error",
+        "resettable": true
+      },
+      "ALF1.3": {
+        "alarm_code_203f": "0XF13",
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 3",
+        "code": "ALF1.3",
+        "name": "Too frequent writing of EEPROM by host controller SDO",
+        "resettable": true
+      },
+      "ALF2.0": {
+        "alarm_code_203f": "0XF20",
+        "bus_fault_code_603f": "0X5443",
+        "class": "Class 3",
+        "code": "ALF2.0",
+        "name": "Forward overtravel alarm",
+        "resettable": true
+      },
+      "ALF2.1": {
+        "alarm_code_203f": "0XF21",
+        "bus_fault_code_603f": "0X5444",
+        "class": "Class 3",
+        "code": "ALF2.1",
+        "name": "Reverse overtravel alarm",
+        "resettable": true
+      },
+      "ALF4.0": {
+        "alarm_code_203f": "0XF40",
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 3",
+        "code": "ALF4.0",
+        "name": "Homing timeout",
+        "resettable": true
+      },
+      "ALF4.1": {
+        "alarm_code_203f": "0XF41",
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 3",
+        "code": "ALF4.1",
+        "name": "Homing DI conflict",
+        "resettable": true
+      },
+      "ALF4.2": {
+        "alarm_code_203f": "0XF42",
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 3",
+        "code": "ALF4.2",
+        "name": "Homing mode conflict",
+        "resettable": true
+      },
+      "ALF5.0": {
+        "alarm_code_203f": "0XF50",
+        "bus_fault_code_603f": "0X3210",
+        "class": "Class 3",
+        "code": "ALF5.0",
+        "name": "Braking resistor overload",
+        "resettable": true
+      },
+      "ALF5.1": {
+        "alarm_code_203f": "0XF51",
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 3",
+        "code": "ALF5.1",
+        "name": "Too small resistance of external regenerative resistor",
+        "resettable": true
+      },
+      "ALF6.1": {
+        "alarm_code_203f": "0XF61",
+        "bus_fault_code_603f": "0X3230",
+        "class": "Class 3",
+        "code": "ALF6.1",
+        "name": "Output phase loss",
+        "resettable": true
+      },
+      "ALF8.0": {
+        "alarm_code_203f": "0XF80",
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 3",
+        "code": "ALF8.0",
+        "name": "Vibration occurred during auto-tuning",
+        "resettable": true
+      },
+      "ALF9.0": {
+        "alarm_code_203f": "0XF90",
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 3",
+        "code": "ALF9.0",
+        "name": "Encoder battery voltage low",
+        "resettable": true
+      },
+      "ALFA.0": {
+        "alarm_code_203f": "0XFA0",
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 3",
+        "code": "ALFA.0",
+        "name": "Drive high temperature warning",
+        "resettable": true
+      },
+      "xxnr": {
+        "alarm_code_203f": "0XFFFF",
+        "bus_fault_code_603f": null,
+        "class": "Class 3",
+        "code": "xxnr",
+        "name": "Servo not ready",
+        "resettable": true
+      }
+    },
+    "bus_fault_codes": {
+      "0X0000": {
+        "bus_fault_code_603f": "0X0000",
+        "name": "No fault",
+        "sn": 0
+      },
+      "0X0FFF": {
+        "bus_fault_code_603f": "0X0FFF",
+        "name": "Factory fault",
+        "sn": 23
+      },
+      "0X2312": {
+        "bus_fault_code_603f": "0X2312",
+        "name": "Continuous current fault",
+        "sn": 1
+      },
+      "0X2330": {
+        "bus_fault_code_603f": "0X2330",
+        "name": "Short circuit to ground",
+        "sn": 2
+      },
+      "0X3120": {
+        "bus_fault_code_603f": "0X3120",
+        "name": "Control power overvoltage",
+        "sn": 3
+      },
+      "0X3130": {
+        "bus_fault_code_603f": "0X3130",
+        "name": "Phase loss",
+        "sn": 4
+      },
+      "0X3210": {
+        "bus_fault_code_603f": "0X3210",
+        "name": "Main circuit overvoltage",
+        "sn": 5
+      },
+      "0X3220": {
+        "bus_fault_code_603f": "0X3220",
+        "name": "Main circuit undervoltage",
+        "sn": 6
+      },
+      "0X3230": {
+        "bus_fault_code_603f": "0X3230",
+        "name": "Overload",
+        "sn": 7
+      },
+      "0X4210": {
+        "bus_fault_code_603f": "0X4210",
+        "name": "Over-temperature",
+        "sn": 8
+      },
+      "0X5443": {
+        "bus_fault_code_603f": "0X5443",
+        "name": "Forward overtravel",
+        "sn": 9
+      },
+      "0X5444": {
+        "bus_fault_code_603f": "0X5444",
+        "name": "Reverse overtravel",
+        "sn": 10
+      },
+      "0X5530": {
+        "bus_fault_code_603f": "0X5530",
+        "name": "Storage fault",
+        "sn": 11
+      },
+      "0X6320": {
+        "bus_fault_code_603f": "0X6320",
+        "name": "Parameter error",
+        "sn": 12
+      },
+      "0X7121": {
+        "bus_fault_code_603f": "0X7121",
+        "name": "Motor locked-rotor",
+        "sn": 13
+      },
+      "0X7122": {
+        "bus_fault_code_603f": "0X7122",
+        "name": "Motor mismatch",
+        "sn": 14
+      },
+      "0X7305": {
+        "bus_fault_code_603f": "0X7305",
+        "name": "Encoder error",
+        "sn": 15
+      },
+      "0X7500": {
+        "bus_fault_code_603f": "0X7500",
+        "name": "Communication fault",
+        "sn": 16
+      },
+      "0X7600": {
+        "bus_fault_code_603f": "0X7600",
+        "name": "Data storage",
+        "sn": 17
+      },
+      "0X8220": {
+        "bus_fault_code_603f": "0X8220",
+        "name": "Length error",
+        "sn": 20
+      },
+      "0X8400": {
+        "bus_fault_code_603f": "0X8400",
+        "name": "Speed control",
+        "sn": 18
+      },
+      "0X8611": {
+        "bus_fault_code_603f": "0X8611",
+        "name": "Following fault",
+        "sn": 19
+      },
+      "0X8700": {
+        "bus_fault_code_603f": "0X8700",
+        "name": "Synchronization controller",
+        "sn": 21
+      },
+      "0X8900": {
+        "bus_fault_code_603f": "0X8900",
+        "name": "Process data monitoring",
+        "sn": 22
+      }
+    },
+    "fault_codes": {
+      "Er01.0": {
+        "bus_fault_code_603f": "0X6100",
+        "class": null,
+        "code": "Er01.0",
+        "fault_code_203f": "0X010",
+        "name": "Mismatch of software versions",
+        "resettable": false
+      },
+      "Er01.1": {
+        "bus_fault_code_603f": "0X7122",
+        "class": null,
+        "code": "Er01.1",
+        "fault_code_203f": "0X011",
+        "name": "Mismatch of motor parameters",
+        "resettable": false
+      },
+      "Er02.0": {
+        "bus_fault_code_603f": "0X6100",
+        "class": null,
+        "code": "Er02.0",
+        "fault_code_203f": "0X020",
+        "name": "Product matching fault. No specified drive",
+        "resettable": false
+      },
+      "Er02.1": {
+        "bus_fault_code_603f": "0X6100",
+        "class": null,
+        "code": "Er02.1",
+        "fault_code_203f": "0X021",
+        "name": "Product matching fault. No specified motor",
+        "resettable": false
+      },
+      "Er02.2": {
+        "bus_fault_code_603f": "0X6100",
+        "class": null,
+        "code": "Er02.2",
+        "fault_code_203f": "0X022",
+        "name": "Product matching fault. No specified encoder",
+        "resettable": false
+      },
+      "Er03.0": {
+        "bus_fault_code_603f": "0X6320",
+        "class": null,
+        "code": "Er03.0",
+        "fault_code_203f": "0X030",
+        "name": "System parameter error",
+        "resettable": false
+      },
+      "Er03.1": {
+        "bus_fault_code_603f": "0X6320",
+        "class": null,
+        "code": "Er03.1",
+        "fault_code_203f": "0X031",
+        "name": "Parameter out-of-range",
+        "resettable": false
+      },
+      "Er03.2": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er03.2",
+        "fault_code_203f": "0X032",
+        "name": "Parameter writing error",
+        "resettable": false
+      },
+      "Er03.3": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er03.3",
+        "fault_code_203f": "0X033",
+        "name": "Parameter reading error",
+        "resettable": false
+      },
+      "Er05.0": {
+        "bus_fault_code_603f": "0X7500",
+        "class": "Class 1",
+        "code": "Er05.0",
+        "fault_code_203f": "0X050",
+        "name": "Current loop timeout",
+        "resettable": false
+      },
+      "Er05.1": {
+        "bus_fault_code_603f": "0X7500",
+        "class": "Class 1",
+        "code": "Er05.1",
+        "fault_code_203f": "0X051",
+        "name": "Speed loop timeout",
+        "resettable": false
+      },
+      "Er05.2": {
+        "bus_fault_code_603f": "0X7500",
+        "class": "Class 1",
+        "code": "Er05.2",
+        "fault_code_203f": "0X052",
+        "name": "Position loop timeout",
+        "resettable": false
+      },
+      "Er05.3": {
+        "bus_fault_code_603f": "0X7500",
+        "class": "Class 1",
+        "code": "Er05.3",
+        "fault_code_203f": "0X053",
+        "name": "Serial port data check failure",
+        "resettable": false
+      },
+      "Er06.0": {
+        "bus_fault_code_603f": "0X8400",
+        "class": "Class 1",
+        "code": "Er06.0",
+        "fault_code_203f": "0X060",
+        "name": "Protection from out of control",
+        "resettable": false
+      },
+      "Er10.0": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er10.0",
+        "fault_code_203f": "0X100",
+        "name": "P-hardware overcurrent",
+        "resettable": false
+      },
+      "Er10.1": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er10.1",
+        "fault_code_203f": "0X101",
+        "name": "N-hardware overcurrent",
+        "resettable": false
+      },
+      "Er10.2": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er10.2",
+        "fault_code_203f": "0X102",
+        "name": "U phase software overcurrent",
+        "resettable": false
+      },
+      "Er10.3": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er10.3",
+        "fault_code_203f": "0X103",
+        "name": "V phase software overcurrent",
+        "resettable": false
+      },
+      "Er10.4": {
+        "bus_fault_code_603f": "0X2330",
+        "class": "Class 1",
+        "code": "Er10.4",
+        "fault_code_203f": "0X104",
+        "name": "Output short circuited to ground",
+        "resettable": false
+      },
+      "Er10.5": {
+        "bus_fault_code_603f": "0X6100",
+        "class": "Class 1",
+        "code": "Er10.5",
+        "fault_code_203f": "0X105",
+        "name": "Current sampling failure",
+        "resettable": false
+      },
+      "Er10.6": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er10.6",
+        "fault_code_203f": "0X106",
+        "name": "Incorrect current parameter setting",
+        "resettable": false
+      },
+      "Er10.7": {
+        "bus_fault_code_603f": "0X6100",
+        "class": "Class 1",
+        "code": "Er10.7",
+        "fault_code_203f": "0X107",
+        "name": "UV current correction failure",
+        "resettable": false
+      },
+      "Er10.8": {
+        "bus_fault_code_603f": "0X6100",
+        "class": "Class 1",
+        "code": "Er10.8",
+        "fault_code_203f": "0X108",
+        "name": "Excessive current zero drift",
+        "resettable": false
+      },
+      "Er10.9": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er10.9",
+        "fault_code_203f": "0X109",
+        "name": "Current exception during enabling",
+        "resettable": false
+      },
+      "Er11.0": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 1",
+        "code": "Er11.0",
+        "fault_code_203f": "0X110",
+        "name": "Excessive motor speed upon servo drive power-on",
+        "resettable": false
+      },
+      "Er11.1": {
+        "bus_fault_code_603f": "0X2312",
+        "class": "Class 1",
+        "code": "Er11.1",
+        "fault_code_203f": "0X111",
+        "name": "Drive over-temperature",
+        "resettable": false
+      },
+      "Er20.1": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.1",
+        "fault_code_203f": "0X201",
+        "name": "Encoder internal fault",
+        "resettable": false
+      },
+      "Er20.2": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.2",
+        "fault_code_203f": "0X202",
+        "name": "Encoder reading/writing error",
+        "resettable": false
+      },
+      "Er20.3": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.3",
+        "fault_code_203f": "0X203",
+        "name": "Encoder data frame loss",
+        "resettable": false
+      },
+      "Er20.4": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.4",
+        "fault_code_203f": "0X204",
+        "name": "Excessive encoder incremental position",
+        "resettable": false
+      },
+      "Er20.5": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.5",
+        "fault_code_203f": "0X205",
+        "name": "Abnormal encoder data",
+        "resettable": false
+      },
+      "Er20.6": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.6",
+        "fault_code_203f": "0X206",
+        "name": "Mismatch of encoder type",
+        "resettable": false
+      },
+      "Er20.7": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.7",
+        "fault_code_203f": "0X207",
+        "name": "Encoder model not supported",
+        "resettable": false
+      },
+      "Er20.8": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.8",
+        "fault_code_203f": "0X208",
+        "name": "Encoder battery failure",
+        "resettable": false
+      },
+      "Er20.9": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er20.9",
+        "fault_code_203f": "0X209",
+        "name": "Encoder multi-turn error",
+        "resettable": false
+      },
+      "Er21.0": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 1",
+        "code": "Er21.0",
+        "fault_code_203f": "0X210",
+        "name": "Mismatch between encoder pulses per revolution and drive pulses per revolution",
+        "resettable": false
+      },
+      "Er31.0": {
+        "bus_fault_code_603f": "0X8220",
+        "class": "Class 1",
+        "code": "Er31.0",
+        "fault_code_203f": "0X310",
+        "name": "More than ten PDO mapping objects",
+        "resettable": false
+      },
+      "Er32.0": {
+        "bus_fault_code_603f": "0X6100",
+        "class": "Class 1",
+        "code": "Er32.0",
+        "fault_code_203f": "0X320",
+        "name": "EtherCAT peripheral error",
+        "resettable": false
+      },
+      "Er32.1": {
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 1",
+        "code": "Er32.1",
+        "fault_code_203f": "0X321",
+        "name": "ESI check error in FLASH",
+        "resettable": false
+      },
+      "Er32.2": {
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 1",
+        "code": "Er32.2",
+        "fault_code_203f": "0X322",
+        "name": "Failure to read data from EEPROM through bus",
+        "resettable": false
+      },
+      "Er32.3": {
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 1",
+        "code": "Er32.3",
+        "fault_code_203f": "0X323",
+        "name": "Failure of update to EEPROM through bus",
+        "resettable": false
+      },
+      "Er32.4": {
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 1",
+        "code": "Er32.4",
+        "fault_code_203f": "0X324",
+        "name": "Correctness of checksum in ESC configuration area",
+        "resettable": false
+      },
+      "Er32.5": {
+        "bus_fault_code_603f": "0X7600",
+        "class": "Class 1",
+        "code": "Er32.5",
+        "fault_code_203f": "0X325",
+        "name": "EtherCAT failed to obtain valid XML information",
+        "resettable": false
+      },
+      "Er40.0": {
+        "bus_fault_code_603f": "0X3230",
+        "class": "Class 1",
+        "code": "Er40.0",
+        "fault_code_203f": "0X400",
+        "name": "Drive overload",
+        "resettable": true
+      },
+      "Er41.0": {
+        "bus_fault_code_603f": "0X3230",
+        "class": "Class 1",
+        "code": "Er41.0",
+        "fault_code_203f": "0X410",
+        "name": "Motor overload",
+        "resettable": true
+      },
+      "Er41.1": {
+        "bus_fault_code_603f": "0X7121",
+        "class": "Class 1",
+        "code": "Er41.1",
+        "fault_code_203f": "0X411",
+        "name": "Motor over-temperature due to locked- rotor",
+        "resettable": true
+      },
+      "Er41.2": {
+        "bus_fault_code_603f": "0X4210",
+        "class": "Class 1",
+        "code": "Er41.2",
+        "fault_code_203f": "0X412",
+        "name": "Motor over-temperature",
+        "resettable": true
+      },
+      "Er42.1": {
+        "bus_fault_code_603f": "0X4210",
+        "class": "Class 1",
+        "code": "Er42.1",
+        "fault_code_203f": "0X421",
+        "name": "Discharge tube temperature too high",
+        "resettable": true
+      },
+      "Er42.2": {
+        "bus_fault_code_603f": "0X4210",
+        "class": "Class 1",
+        "code": "Er42.2",
+        "fault_code_203f": "0X422",
+        "name": "Heatsink temperature too high",
+        "resettable": true
+      },
+      "Er43.0": {
+        "bus_fault_code_603f": "0X3210",
+        "class": "Class 1",
+        "code": "Er43.0",
+        "fault_code_203f": "0X430",
+        "name": "Overvoltage",
+        "resettable": true
+      },
+      "Er43.1": {
+        "bus_fault_code_603f": "0X3220",
+        "class": "Class 1",
+        "code": "Er43.1",
+        "fault_code_203f": "0X431",
+        "name": "Undervoltage",
+        "resettable": true
+      },
+      "Er45.0": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 1",
+        "code": "Er45.0",
+        "fault_code_203f": "0X450",
+        "name": "S-ON enabling failure",
+        "resettable": true
+      },
+      "Er46.0": {
+        "bus_fault_code_603f": "0X8400",
+        "class": "Class 1",
+        "code": "Er46.0",
+        "fault_code_203f": "0X460",
+        "name": "Motor overspeed",
+        "resettable": true
+      },
+      "Er47.0": {
+        "bus_fault_code_603f": "0X8611",
+        "class": "Class 1",
+        "code": "Er47.0",
+        "fault_code_203f": "0X470",
+        "name": "Excessive position deviation",
+        "resettable": true
+      },
+      "Er47.1": {
+        "bus_fault_code_603f": "0X8611",
+        "class": "Class 1",
+        "code": "Er47.1",
+        "fault_code_203f": "0X471",
+        "name": "Position deviation overflow",
+        "resettable": true
+      },
+      "Er50.1": {
+        "bus_fault_code_603f": "0X6100",
+        "class": "Class 1",
+        "code": "Er50.1",
+        "fault_code_203f": "0X501",
+        "name": "D/Q current overflow",
+        "resettable": true
+      },
+      "Er51.0": {
+        "bus_fault_code_603f": "0X6310",
+        "class": "Class 1",
+        "code": "Er51.0",
+        "fault_code_203f": "0X510",
+        "name": "Offline inertia auto-tuning failure",
+        "resettable": true
+      },
+      "Er51.1": {
+        "bus_fault_code_603f": "0X6310",
+        "class": "Class 1",
+        "code": "Er51.1",
+        "fault_code_203f": "0X511",
+        "name": "Offline inertia parameter error",
+        "resettable": true
+      },
+      "Er52.0": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er52.0",
+        "fault_code_203f": "0X520",
+        "name": "Angle auto-tuning failure",
+        "resettable": true
+      },
+      "Er53.0": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er53.0",
+        "fault_code_203f": "0X530",
+        "name": "Motor parameter auto-tuning timeout",
+        "resettable": true
+      },
+      "Er53.1": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er53.1",
+        "fault_code_203f": "0X531",
+        "name": "Resistance parameter auto-tuning failure",
+        "resettable": true
+      },
+      "Er53.2": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er53.2",
+        "fault_code_203f": "0X532",
+        "name": "Inductance parameter auto-tuning failure",
+        "resettable": true
+      },
+      "Er53.3": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er53.3",
+        "fault_code_203f": "0X533",
+        "name": "Back EMF parameter auto-tuning failure",
+        "resettable": true
+      },
+      "Er54.0": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er54.0",
+        "fault_code_203f": "0X540",
+        "name": "Current loop auto-tuning failure",
+        "resettable": true
+      },
+      "Er55.0": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er55.0",
+        "fault_code_203f": "0X550",
+        "name": "Excessive vibration",
+        "resettable": true
+      },
+      "Er74.0": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er74.0",
+        "fault_code_203f": "0X740",
+        "name": "EtherCAT synchronization cycle setting error",
+        "resettable": true
+      },
+      "Er74.1": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 1",
+        "code": "Er74.1",
+        "fault_code_203f": "0X741",
+        "name": "No sync signal",
+        "resettable": true
+      },
+      "Er74.2": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 1",
+        "code": "Er74.2",
+        "fault_code_203f": "0X742",
+        "name": "Chip synchronization process uncompleted in OP",
+        "resettable": true
+      },
+      "Er80.0": {
+        "bus_fault_code_603f": "0X3120",
+        "class": "Class 1",
+        "code": "Er80.0",
+        "fault_code_203f": "0X800",
+        "name": "Control power undervoltage",
+        "resettable": true
+      },
+      "Er81.0": {
+        "bus_fault_code_603f": "0X3130",
+        "class": "Class 1",
+        "code": "Er81.0",
+        "fault_code_203f": "0X810",
+        "name": "Input phase loss 1",
+        "resettable": true
+      },
+      "Er81.1": {
+        "bus_fault_code_603f": "0X3130",
+        "class": "Class 1",
+        "code": "Er81.1",
+        "fault_code_203f": "0X811",
+        "name": "Input phase loss 2",
+        "resettable": true
+      },
+      "Er81.2": {
+        "bus_fault_code_603f": null,
+        "class": "Class 1",
+        "code": "Er81.2",
+        "fault_code_203f": "0X812",
+        "name": "Output phase loss (reserved)",
+        "resettable": true
+      },
+      "Er82.0": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er82.0",
+        "fault_code_203f": "0X820",
+        "name": "DI function allocation fault",
+        "resettable": true
+      },
+      "Er82.1": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er82.1",
+        "fault_code_203f": "0X821",
+        "name": "DO function allocation fault",
+        "resettable": true
+      },
+      "Er84.0": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er84.0",
+        "fault_code_203f": "0X840",
+        "name": "Electronic gear ratio setting error",
+        "resettable": true
+      },
+      "Er84.1": {
+        "bus_fault_code_603f": "0X6320",
+        "class": "Class 1",
+        "code": "Er84.1",
+        "fault_code_203f": "0X841",
+        "name": "Software limit setting error",
+        "resettable": true
+      },
+      "Er84.2": {
+        "bus_fault_code_603f": "0X7122",
+        "class": "Class 1",
+        "code": "Er84.2",
+        "fault_code_203f": "0X842",
+        "name": "Encoder resolution setting error",
+        "resettable": true
+      },
+      "Er84.3": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 2",
+        "code": "Er84.3",
+        "fault_code_203f": "0X843",
+        "name": "Home position setting error",
+        "resettable": true
+      },
+      "Er87.1": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 2",
+        "code": "Er87.1",
+        "fault_code_203f": "0X871",
+        "name": "One-time excessive position reference increment (One-time increment of the target position is over 5 times of the maximum speed)",
+        "resettable": true
+      },
+      "Er87.2": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 2",
+        "code": "Er87.2",
+        "fault_code_203f": "0X872",
+        "name": "Continuous excessive position reference increment (Increment of the target position exceeds the maximum speed for 3 consecutive times)",
+        "resettable": true
+      },
+      "Er87.3": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 2",
+        "code": "Er87.3",
+        "fault_code_203f": "0X873",
+        "name": "Overflow of 32-bit sign bit of the target position during limiting",
+        "resettable": true
+      },
+      "Er87.4": {
+        "bus_fault_code_603f": "0XFF00",
+        "class": "Class 2",
+        "code": "Er87.4",
+        "fault_code_203f": "0X874",
+        "name": "Target position exceeding maximum value of mechanical single-turn position in rotating mode",
+        "resettable": true
+      },
+      "ErA0.1": {
+        "bus_fault_code_603f": "0X7305",
+        "class": "Class 2",
+        "code": "ErA0.1",
+        "fault_code_203f": "0XA01",
+        "name": "Multi-turn overflow fault",
+        "resettable": true
+      },
+      "ErC1.0": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.0",
+        "fault_code_203f": "0XC10",
+        "name": "Excessive EtherCAT synchronization period error",
+        "resettable": true
+      },
+      "ErC1.1": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.1",
+        "fault_code_203f": "0XC11",
+        "name": "Synchronization loss",
+        "resettable": true
+      },
+      "ErC1.2": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.2",
+        "fault_code_203f": "0XC12",
+        "name": "Network status switchover error",
+        "resettable": true
+      },
+      "ErC1.4": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.4",
+        "fault_code_203f": "0XC14",
+        "name": "Network cable connection unreliable",
+        "resettable": true
+      },
+      "ErC1.5": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.5",
+        "fault_code_203f": "0XC15",
+        "name": "Data frame loss protection error",
+        "resettable": true
+      },
+      "ErC1.6": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.6",
+        "fault_code_203f": "0XC16",
+        "name": "Data frame forwarding error",
+        "resettable": true
+      },
+      "ErC1.7": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.7",
+        "fault_code_203f": "0XC17",
+        "name": "Data update timeout",
+        "resettable": true
+      },
+      "ErC1.8": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC1.8",
+        "fault_code_203f": "0XC18",
+        "name": "Watchdog expired",
+        "resettable": true
+      },
+      "ErC2.0": {
+        "bus_fault_code_603f": "0X8700",
+        "class": "Class 2",
+        "code": "ErC2.0",
+        "fault_code_203f": "0XC20",
+        "name": "SYNC signal loss",
+        "resettable": true
+      }
+    }
+  }
+}

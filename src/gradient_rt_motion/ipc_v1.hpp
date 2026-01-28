@@ -185,6 +185,29 @@ struct StatusHelloV1 {
 };
 static_assert(sizeof(StatusHelloV1) == 40, "StatusHelloV1 size must match spec");
 
+// Axis configuration snapshot (emitted on connect/start).
+//
+// This is intended for bring-up tools (e.g. jog CLI) so they can:
+// - interpret raw counts as q-units,
+// - display the active scaling per axis,
+// - avoid requiring duplicate CLI flags that must match RTCore.
+//
+// `counts_per_unit` is the derived scale used by RTCore:
+// - rotary: counts_per_unit = counts_per_rev * gear_ratio / (2π)  [counts / rad]
+// - linear: counts_per_unit = counts_per_rev * gear_ratio / lead_m_per_rev  [counts / m]
+struct StatusAxisConfigV1 {
+  uint32_t num_axes; // <= GRADIENT_MAX_AXES
+  uint32_t reserved0;
+
+  uint32_t counts_per_rev[GRADIENT_MAX_AXES];
+  double gear_ratio[GRADIENT_MAX_AXES];
+  int32_t sign[GRADIENT_MAX_AXES]; // +1 or -1
+  uint8_t axis_type[GRADIENT_MAX_AXES]; // enum AxisTypeV1
+  uint8_t reserved1[16];
+  double counts_per_unit[GRADIENT_MAX_AXES];
+};
+static_assert(sizeof(StatusAxisConfigV1) == 424, "StatusAxisConfigV1 size must match spec");
+
 // ----- Command payloads -----
 
 struct CmdArmV1 {
@@ -198,6 +221,13 @@ struct CmdAxisMaskV1 {
   uint32_t reserved;
 };
 static_assert(sizeof(CmdAxisMaskV1) == 8, "CmdAxisMaskV1 size must match spec");
+
+struct CmdFaultResetV1 {
+  // 0 means "all axes" (RTCore expands to (1<<num_axes)-1).
+  uint32_t axis_mask;
+  uint32_t reserved;
+};
+static_assert(sizeof(CmdFaultResetV1) == 8, "CmdFaultResetV1 size must match spec");
 
 struct CmdSetModeV1 {
   uint32_t axis_mask;
@@ -261,6 +291,7 @@ enum : uint16_t {
   MSG_CMD_IO_WRITE = 0x0110,
 
   MSG_STATUS_HELLO = 0x0201,
+  MSG_STATUS_AXIS_CONFIG = 0x0203,
   MSG_STATUS_SNAPSHOT = 0x0202,
   MSG_STATUS_IO_SNAPSHOT = 0x0210,
   MSG_EVENT = 0x02FF,
@@ -283,6 +314,13 @@ enum : uint32_t {
   BRAKE_APPLIED = 2,
   BRAKE_WAIT_RELEASE_DELAY = 3,
   BRAKE_WAIT_HOLD_DELAY = 4,
+};
+
+// Axis "unit" typing (v1).
+enum : uint8_t {
+  AXIS_TYPE_UNKNOWN = 0,
+  AXIS_TYPE_ROTARY = 1, // q is radians
+  AXIS_TYPE_LINEAR = 2, // q is meters
 };
 
 // AxisStatusV1.ds402_state values (v1).

@@ -57,11 +57,11 @@ constexpr uint16_t CW_QUICK_STOP = 0x000B;
 
 // Compute the next controlword for a desired "enable" trajectory.
 inline uint16_t controlword_for_enable(State st, bool want_enable, bool want_fault_reset) noexcept {
-  if (!want_enable) {
-    return CW_DISABLE_VOLTAGE;
-  }
   if (want_fault_reset && st == State::Fault) {
     return CW_FAULT_RESET;
+  }
+  if (!want_enable) {
+    return CW_DISABLE_VOLTAGE;
   }
 
   switch (st) {
