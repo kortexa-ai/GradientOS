@@ -702,7 +702,21 @@ def main() -> int:
     try:
         with RTCoreClient(args.socket) as c:
             if args.cmd == "status":
-                snap = c.read_status_snapshot(timeout_s=float(args.timeout))
+                # On initial connect, RTCore first emits HELLO/AXIS_CONFIG and then begins
+                # periodic STATUS_SNAPSHOT (typically within ~50-100ms). So "status" waits
+                # up to --timeout for the first snapshot.
+                timeout_s = float(args.timeout)
+                deadline = time.monotonic() + max(0.0, timeout_s)
+                snap: Optional[StatusSnapshot] = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    snap = c.read_status_snapshot(timeout_s=min(0.2, remaining))
+                    if snap is not None:
+                        break
+                    time.sleep(0.01)
+
                 if snap is None:
                     print("No status snapshot received (is RTCore running?)", file=sys.stderr)
                     return 2

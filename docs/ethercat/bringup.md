@@ -85,7 +85,7 @@ sudo cat /etc/ethercat.conf
 ```
 
 Expected:
-- `MASTER0_DEVICE="c8:3e:a7:14:1c:76"`
+- `MASTER0_DEVICE="c8:3e:a7:14:1c:75"`
 - `DEVICE_MODULES="generic"`
 
 After installation, verify:

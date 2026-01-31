@@ -1,5 +1,6 @@
 runcharts:
   - title: RTCore loop (Hz)
+    position: [[0, 0], [80, 6]]
     rate-ms: 500
     scale: 1
     items:
@@ -7,6 +8,7 @@ runcharts:
         sample: python3 scripts/sampler/rtcore_metrics.py rt_hz
 
   - title: RTCore wake jitter (us)
+    position: [[0, 6], [80, 6]]
     rate-ms: 500
     scale: 1
     items:
@@ -16,6 +18,7 @@ runcharts:
         sample: python3 scripts/sampler/rtcore_metrics.py rt_max_jitter_us
 
   - title: Timer jitter compare (CPU2 vs CPU0) (us)
+    position: [[0, 12], [80, 6]]
     rate-ms: 1000
     scale: 1
     items:
@@ -24,38 +27,9 @@ runcharts:
       - label: cpu0
         sample: python3 scripts/sampler/timer_jitter.py --cpu 0 --period-us 1000 --samples 200 --out max_us
 
-gauges:
-  - title: CPU0 usage (%)
-    rate-ms: 500
-    cur:
-      sample: python3 scripts/sampler/cpu_usage.py --cpu 0
-    max:
-      sample: echo 100
-    min:
-      sample: echo 0
-
-  - title: CPU2 usage (%)
-    rate-ms: 500
-    cur:
-      sample: python3 scripts/sampler/cpu_usage.py --cpu 2
-    max:
-      sample: echo 100
-    min:
-      sample: echo 0
-
 textboxes:
   - title: RTCore summary (/run/gradient-rt-motion/metrics.json)
+    position: [[0, 18], [80, 6]]
     rate-ms: 1000
     sample: python3 scripts/sampler/rtcore_metrics.py summary
     border: true
-
-  - title: RTCore threads (sched + CPU)
-    rate-ms: 2000
-    sample: bash -lc 'pid=$(pgrep -n gradient-rt-motion 2>/dev/null || true); if [ -z "$pid" ]; then echo "gradient-rt-motion not running"; else ps -T -p "$pid" -o tid,cls,rtprio,pri,psr,comm; fi'
-    border: true
-
-  - title: Isolation + routing sanity
-    rate-ms: 5000
-    sample: bash -lc 'echo "isolated: $(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo -)"; echo "irqaffinity: $(cat /proc/irq/default_smp_affinity_list 2>/dev/null || echo -)"; echo "routes:"; ip route | sed -n "1,4p"'
-    border: true
-
