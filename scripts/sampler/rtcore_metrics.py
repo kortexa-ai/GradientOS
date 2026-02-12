@@ -15,15 +15,23 @@ import sys
 from typing import Any
 
 
-def _load_metrics(path: str) -> dict[str, Any]:
+def _load_metrics(path: str) -> tuple[dict[str, Any], str | None]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
-    return {}
+            if not data:
+                return {}, "metrics JSON object is empty"
+            return data, None
+        return {}, "metrics file did not contain a JSON object"
+    except FileNotFoundError:
+        return {}, "metrics file does not exist"
+    except PermissionError:
+        return {}, "metrics file is not readable (permission denied)"
+    except json.JSONDecodeError:
+        return {}, "metrics file contains invalid JSON"
+    except Exception as exc:
+        return {}, f"failed to load metrics ({exc.__class__.__name__})"
 
 
 def _fnum(x: Any, default: float = 0.0) -> float:
@@ -71,7 +79,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    m = _load_metrics(str(args.path))
+    m, load_error = _load_metrics(str(args.path))
     metric = str(args.metric).strip()
     axis = int(args.axis)
 
@@ -137,6 +145,15 @@ def main() -> int:
         return 0
 
     if metric == "summary":
+        if not m:
+            # Keep summary mode user-readable so preflight failures are obvious.
+            print(f"RTCore metrics unavailable ({args.path})")
+            if load_error:
+                print(f"  reason={load_error}")
+            print("  expected producer=/usr/local/bin/gradient-rt-motion")
+            print("  hint=start RTCore and retry")
+            return 0
+
         # Multi-line, human-readable for Sampler textbox.
         num_axes = _inum(m.get("num_axes"), 0)
         cycle_ns = _inum(m.get("cycle_ns"), 0)

@@ -69,8 +69,15 @@ def main() -> int:
     args = ap.parse_args()
 
     cpu = int(args.cpu)
-    period_ns = int(args.period_us) * 1000
+    period_ns = max(1, int(args.period_us)) * 1000
     samples = max(1, int(args.samples))
+    cpu_count = os.cpu_count() or 0
+
+    if cpu < 0 or (cpu_count > 0 and cpu >= cpu_count):
+        # Keep chart output numeric while making invalid CPU selections explicit.
+        sys.stderr.write(f"timer_jitter: invalid --cpu {cpu}; detected cpus={cpu_count}\n")
+        sys.stdout.write("0\n")
+        return 0
 
     try:
         os.sched_setaffinity(0, {cpu})

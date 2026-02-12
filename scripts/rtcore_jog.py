@@ -7,7 +7,7 @@ the ABI in `src/gradient_rt_motion/ipc_v1.hpp`.
 
 Typical use:
   # In one terminal (root):
-  sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --max-rpm 100
+  sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
 
   # In another terminal (pi):
   ./scripts/rtcore_jog.py status
@@ -22,9 +22,12 @@ import array
 import json
 import mmap
 import os
+import re
 import select
+import shlex
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -135,6 +138,14 @@ class StatusSnapshot:
     cycle_jitter_ns: int
     topology_hash: int
     axes: list[AxisStatus]
+
+
+@dataclass
+class _ConsoleDiagState:
+    sample_count: int = 0
+    prev_overrun: Optional[int] = None
+    prev_lost_frames: Optional[int] = None
+    last_lost_frames: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -648,6 +659,113 @@ def _format_status_one_line(s: StatusSnapshot) -> str:
     return " | ".join(parts)
 
 
+def _try_int(value: object) -> Optional[int]:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _try_float(value: object) -> Optional[float]:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except Exception:
+        return None
+
+
+def _load_metrics(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _read_ethercat_lost_frames(cmd: str, timeout_s: float = 1.5) -> Optional[int]:
+    try:
+        proc = subprocess.run(
+            shlex.split(cmd),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=float(timeout_s),
+        )
+    except Exception:
+        return None
+    if int(proc.returncode) != 0:
+        return None
+    m = re.search(r"^\s*Lost frames:\s*(\d+)\s*$", proc.stdout, flags=re.MULTILINE)
+    if not m:
+        return None
+    return _try_int(m.group(1))
+
+
+def _fmt_delta(current: Optional[int], previous: Optional[int]) -> tuple[str, Optional[int]]:
+    if current is None or previous is None:
+        return "(n/a)", None
+    delta = int(current) - int(previous)
+    sign = "+" if delta >= 0 else ""
+    return f"({sign}{delta})", delta
+
+
+def _build_console_diag_suffix(
+    status: StatusSnapshot,
+    state: _ConsoleDiagState,
+    *,
+    metrics_path: str,
+    ethercat_cmd: str,
+    ethercat_every: int,
+) -> str:
+    metrics = _load_metrics(metrics_path)
+    overrun = _try_int(metrics.get("rt_overrun_count"))
+    rt_hz = _try_float(metrics.get("rt_hz"))
+    last_jitter_ns = _try_int(metrics.get("rt_last_jitter_ns"))
+    max_jitter_ns = _try_int(metrics.get("rt_max_abs_jitter_ns"))
+
+    every = max(1, int(ethercat_every))
+    if state.sample_count % every == 0 or state.last_lost_frames is None:
+        polled = _read_ethercat_lost_frames(ethercat_cmd)
+        if polled is not None:
+            state.last_lost_frames = int(polled)
+    lost_frames = state.last_lost_frames
+
+    overrun_delta_txt, overrun_delta = _fmt_delta(overrun, state.prev_overrun)
+    lost_delta_txt, lost_delta = _fmt_delta(lost_frames, state.prev_lost_frames)
+
+    if overrun is not None:
+        state.prev_overrun = int(overrun)
+    if lost_frames is not None:
+        state.prev_lost_frames = int(lost_frames)
+
+    alerts: list[str] = []
+    if overrun_delta is not None and overrun_delta > 0:
+        alerts.append(f"OVERRUN+{overrun_delta}")
+    if status.wkc_expected > 0 and status.wkc_actual != status.wkc_expected:
+        alerts.append("WKC_MISMATCH")
+    if lost_delta is not None and lost_delta > 0:
+        alerts.append(f"LOST+{lost_delta}")
+    alert_text = ",".join(alerts) if alerts else "-"
+
+    overrun_txt = "n/a" if overrun is None else str(int(overrun))
+    lost_txt = "n/a" if lost_frames is None else str(int(lost_frames))
+    hz_txt = "n/a" if rt_hz is None else f"{float(rt_hz):.1f}"
+
+    if last_jitter_ns is None or max_jitter_ns is None:
+        jitter_txt = "n/a/n/a"
+    else:
+        jitter_txt = f"{abs(int(last_jitter_ns))/1000.0:.1f}/{int(max_jitter_ns)/1000.0:.1f}"
+
+    state.sample_count += 1
+    return (
+        f"diag: ov={overrun_txt}{overrun_delta_txt} "
+        f"lost={lost_txt}{lost_delta_txt} "
+        f"rt_hz={hz_txt} j_us={jitter_txt} alerts={alert_text}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="RTCore jog/bring-up CLI")
     ap.add_argument("--socket", default="/run/gradient-rt-motion/ipc.sock", help="RTCore IPC socket path")
@@ -668,6 +786,40 @@ def main() -> int:
     sp.add_argument("--gear-ratio", type=float, default=1.0)
     sp.add_argument("--sign", type=int, choices=(-1, 1), default=1)
     sp.add_argument("--no-watch", action="store_true", help="Disable periodic status printing (type 'status' manually)")
+    sp.add_argument("--no-diag", action="store_true", help="Disable diagnostic suffix in watch output")
+    sp.add_argument("--diag-metrics-path", default="/run/gradient-rt-motion/metrics.json", help="Path to RTCore metrics.json")
+    sp.add_argument(
+        "--diag-ethercat-cmd",
+        default="sudo ethercat master",
+        help="Command used to read EtherCAT lost frames",
+    )
+    sp.add_argument(
+        "--diag-ethercat-every",
+        type=int,
+        default=2,
+        help="Poll EtherCAT lost frames every N printed status lines (default: 2)",
+    )
+
+    sp = sub.add_parser("test", help="Motion validation console (alias of console)")
+    sp.add_argument("--rate-hz", type=float, default=2.0)
+    sp.add_argument("--timeout", type=float, default=0.5)
+    sp.add_argument("--counts-per-rev", type=int, default=131072)
+    sp.add_argument("--gear-ratio", type=float, default=1.0)
+    sp.add_argument("--sign", type=int, choices=(-1, 1), default=1)
+    sp.add_argument("--no-watch", action="store_true", help="Disable periodic status printing (type 'status' manually)")
+    sp.add_argument("--no-diag", action="store_true", help="Disable diagnostic suffix in watch output")
+    sp.add_argument("--diag-metrics-path", default="/run/gradient-rt-motion/metrics.json", help="Path to RTCore metrics.json")
+    sp.add_argument(
+        "--diag-ethercat-cmd",
+        default="sudo ethercat master",
+        help="Command used to read EtherCAT lost frames",
+    )
+    sp.add_argument(
+        "--diag-ethercat-every",
+        type=int,
+        default=2,
+        help="Poll EtherCAT lost frames every N printed status lines (default: 2)",
+    )
 
     sp = sub.add_parser("arm", help="Arm RTCore and optionally set enable mask")
     sp.add_argument("--enable-mask", default=None, help="Axis enable bitmask (e.g. 0x1, 0x3)")
@@ -736,7 +888,7 @@ def main() -> int:
                     else:
                         time.sleep(min(0.05, period_s))
 
-            if args.cmd == "console":
+            if args.cmd in {"console", "test"}:
                 # Single RTCore client policy means: one connection must do both watch + commands.
                 try:
                     import readline  # type: ignore
@@ -746,6 +898,10 @@ def main() -> int:
                 prompt = "rtcore> "
                 watch_enabled = not bool(args.no_watch)
                 period_s = 1.0 / max(0.1, float(args.rate_hz))
+                diag_enabled = not bool(args.no_diag)
+                diag_metrics_path = str(args.diag_metrics_path)
+                diag_ethercat_cmd = str(args.diag_ethercat_cmd)
+                diag_ethercat_every = max(1, int(args.diag_ethercat_every))
 
                 fallback_cpu = _counts_per_rad(int(args.counts_per_rev), float(args.gear_ratio))
                 if fallback_cpu <= 0:
@@ -755,9 +911,12 @@ def main() -> int:
                 print_lock = threading.Lock()
                 stop_evt = threading.Event()
                 input_active = threading.Event()
+                diag_lock = threading.Lock()
+                diag_state = _ConsoleDiagState()
 
                 last_snap: Optional[StatusSnapshot] = None
                 last_print = 0.0
+                last_diag_line = "diag: disabled"
 
                 def safe_print_line(line: str) -> None:
                     # Print a line without wrecking the current input prompt.
@@ -785,7 +944,7 @@ def main() -> int:
                                 print(ln, flush=True)
 
                 def status_loop() -> None:
-                    nonlocal last_snap, last_print
+                    nonlocal last_snap, last_print, last_diag_line
                     while not stop_evt.is_set():
                         snap: Optional[StatusSnapshot] = None
                         with io_lock:
@@ -794,7 +953,18 @@ def main() -> int:
                             last_snap = snap
                             now = time.monotonic()
                             if watch_enabled and (now - last_print) >= period_s:
-                                safe_print_line(_format_status_one_line(snap))
+                                line = _format_status_one_line(snap)
+                                if diag_enabled:
+                                    with diag_lock:
+                                        last_diag_line = _build_console_diag_suffix(
+                                            snap,
+                                            diag_state,
+                                            metrics_path=diag_metrics_path,
+                                            ethercat_cmd=diag_ethercat_cmd,
+                                            ethercat_every=diag_ethercat_every,
+                                        )
+                                        line += f" | {last_diag_line}"
+                                safe_print_line(line)
                                 last_print = now
                         else:
                             time.sleep(0.02)
@@ -807,6 +977,8 @@ def main() -> int:
                         "  set AXIS Q | jog AXIS DELTA_Q | jogc AXIS DELTA_COUNTS",
                         "  reset [0xMASK] | config",
                         "  quit",
+                        f"  diagnostics: {'on' if diag_enabled else 'off'} "
+                        f"(use --no-diag to disable)",
                     ]
                 )
 
@@ -833,6 +1005,7 @@ def main() -> int:
                                 [
                                     "Commands: help, status, w [on|off], arm [0xMASK], disarm, enable 0xMASK, disable 0xMASK,",
                                     "          set AXIS Q, jog AXIS DELTA_Q, jogc AXIS DELTA_COUNTS, reset [0xMASK], config, quit",
+                                    "          watch lines include diagnostics by default (use --no-diag to disable)",
                                 ]
                             )
                             continue
@@ -873,6 +1046,16 @@ def main() -> int:
                                     f"err=0x{a.error_code:04x}{err_suffix} mode_disp={a.mode_display} torque_raw={a.torque_raw} "
                                     f"di=0x{a.di_bits:08x}"
                                 )
+                            if diag_enabled:
+                                with diag_lock:
+                                    last_diag_line = _build_console_diag_suffix(
+                                        snap,
+                                        diag_state,
+                                        metrics_path=diag_metrics_path,
+                                        ethercat_cmd=diag_ethercat_cmd,
+                                        ethercat_every=diag_ethercat_every,
+                                    )
+                                    lines.append(f"  {last_diag_line}")
                             safe_print_block(lines)
                             continue
 

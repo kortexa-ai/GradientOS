@@ -29,6 +29,12 @@ make -C src/gradient_rt_motion
 Run RTCore in one terminal (root):
 
 ```bash
+sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
+```
+
+If you have not installed to `/usr/local/bin` yet, use:
+
+```bash
 sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --max-rpm 100
 ```
 
@@ -40,16 +46,77 @@ sudo ethercat slaves
 
 ---
 
+### Combined workflow: jog while monitoring
+
+Use this terminal layout for bring-up sessions where you want live motion plus telemetry:
+
+Terminal A (root): RTCore
+
+```bash
+sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
+```
+
+Terminal B (pi): Sampler dashboard
+
+```bash
+cd ~/GradientOS
+./scripts/sampler/run_sampler.sh
+```
+
+Note: over SSH this launcher defaults to text mode (recommended for reliability). Use `--tui` to force full-screen Sampler.
+
+Terminal C (pi): jog console
+
+```bash
+cd ~/GradientOS
+python3 scripts/rtcore_jog.py console --rate-hz 2
+```
+
+Terminal D (optional): long-run delta watcher
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 600
+```
+
+Concurrency rules:
+- `rtcore_jog.py` uses the RTCore IPC socket and should be the only IPC client session.
+- Sampler and `rtcore_diag_watch.py` read `/run/gradient-rt-motion/metrics.json`, so they can run alongside jog.
+- Do not run the main controller and `rtcore_jog.py` at the same time.
+
+If Sampler is blank in an integrated IDE terminal, switch that one terminal to:
+
+```bash
+watch -n 0.5 'python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py summary'
+```
+
+---
+
 ### Recommended workflow: `console` (watch + commands in one session)
 
 Because RTCore is single-client, use the interactive console:
 
 ```bash
 python3 scripts/rtcore_jog.py console --rate-hz 2
+# equivalent alias for validation runs:
+python3 scripts/rtcore_jog.py test --rate-hz 2
 ```
 
 Note: the console reads RTCore’s `STATUS_AXIS_CONFIG` message on connect, so it can interpret counts as q-units
 without requiring you to pass `--counts-per-rev/--gear-ratio/--sign` flags.
+
+By default, console watch lines now include diagnostics from
+`/run/gradient-rt-motion/metrics.json` plus EtherCAT lost-frame polling:
+- overrun counter + delta
+- lost-frame counter + delta
+- `rt_hz` and jitter (`last/max`, us)
+- alert flags (`OVERRUN+N`, `WKC_MISMATCH`, `LOST+N`)
+
+Disable diagnostics if you want minimal output:
+
+```bash
+python3 scripts/rtcore_jog.py console --rate-hz 2 --no-diag
+```
 
 #### Console commands
 

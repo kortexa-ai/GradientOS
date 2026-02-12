@@ -1,24 +1,35 @@
 ## Sampler dashboard for RTOS/EtherCAT bring-up
 
-This folder contains a **Sampler** dashboard config and small helper scripts to live-monitor:
-- **RTCore loop rate + jitter** (from `/run/gradient-rt-motion/metrics.json`)
-- **Timer jitter** on an isolated RT CPU vs a non-RT CPU (user-space probe)
-- (Optional) **Per-core CPU usage**
-- (Optional) **RTCore thread placement** (CPU + RT priority) via `ps`
+This is the canonical guide for the sampler dashboard under `scripts/sampler/`.
+
+It monitors:
+- RTCore loop rate + jitter (from `/run/gradient-rt-motion/metrics.json`)
+- Timer jitter on isolated vs non-isolated CPUs (best-effort user-space probe)
+- RTCore summary text
 
 Sampler project: [`sqshq/sampler`](https://github.com/sqshq/sampler)
 
 ---
 
-### 1) Make sure RTCore is running
+### 1) Prerequisites
 
-RTCore writes a small metrics file here:
-- `/run/gradient-rt-motion/metrics.json`
+Runbook context (kernel/EtherCAT/RTCore bring-up) is in `setup.md`.
 
-Start RTCore (example):
+For sampler itself you need:
+- RTCore running and writing `/run/gradient-rt-motion/metrics.json`
+- `sampler` installed and on `PATH`
+- Python 3 available as `python3`
+
+Start RTCore (installed binary example):
 
 ```bash
-sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --max-rpm 100
+sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
+```
+
+Quick metrics sanity check:
+
+```bash
+python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py summary
 ```
 
 ---
@@ -27,7 +38,7 @@ sudo ./src/gradient_rt_motion/gradient-rt-motion --num-axes 2 --max-rpm 100
 
 On this RevPi image, `sampler` is not installed by default.
 
-Sampler upstream releases are commonly x86_64-only, so on **aarch64** you usually build from source:
+Sampler upstream releases are commonly x86_64-only, so on aarch64 you usually build from source:
 
 ```bash
 sudo apt-get update
@@ -44,21 +55,140 @@ sampler --help
 
 ---
 
-### 3) Run the dashboard
+### 3) Run the dashboard (recommended)
+
+Use the launcher script; it resolves repo paths, runs preflight checks, and exports the env vars used by the YAML config:
 
 ```bash
-TERM=xterm-256color sampler -c scripts/sampler/rtos_monitor.yml
+cd ~/GradientOS
+./scripts/sampler/run_sampler.sh
 ```
 
-Notes:
-- If the dashboard is **blank**, your terminal is probably too small. This config is laid out for **80 cols x 24 rows**
-  (try maximizing the terminal pane or reducing font size), then rerun.
-- Quit Sampler with **`q`** (or `Ctrl+C`). If your terminal gets messed up afterward, run: `reset`
-- If Sampler fails with a YAML parse error, it usually means a `sample:` command contains
-  an unquoted `:` followed by a space (YAML treats `: ` specially). This repo’s config avoids
-  that pattern; if you edit it, prefer `key=value` in echoed lines.
-- The timer jitter probes are **best-effort user-space**. They’re useful for comparing
-  *isolated RT CPUs vs non-isolated CPUs*, not for absolute certification-grade numbers.
-- If you want to change which CPUs are compared, edit `scripts/sampler/rtos_monitor.yml`
-  (defaults are CPU2 vs CPU0).
+Mode behavior:
+- Local terminal: defaults to Sampler TUI.
+- SSH terminal: defaults to text monitor (reliable).
+- Force mode with `--tui` or `--text`.
+
+You can also run it from another directory:
+
+```bash
+~/GradientOS/scripts/sampler/run_sampler.sh
+```
+
+---
+
+### 4) Recommended sequence with `rtcore_jog` + monitoring
+
+Use this when you want to move servos while watching monitoring in real time.
+
+Terminal A (root): start RTCore
+
+```bash
+sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
+```
+
+Terminal B (pi): start Sampler dashboard
+
+```bash
+cd ~/GradientOS
+./scripts/sampler/run_sampler.sh
+```
+
+Terminal C (pi): run jog console and move axes
+
+```bash
+cd ~/GradientOS
+python3 scripts/rtcore_jog.py console --rate-hz 2
+```
+
+Terminal D (optional): additional trend diagnostics
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 600
+```
+
+Important concurrency notes:
+- Sampler and `rtcore_diag_watch.py` read `/run/gradient-rt-motion/metrics.json` and do not consume RTCore's IPC client slot.
+- `rtcore_jog.py` is the IPC client; keep it as the only RTCore client session.
+- Do not run the main controller and `rtcore_jog.py` at the same time.
+
+---
+
+### 5) Notes for integrated terminals (Cursor/VS Code)
+
+- Best-effort support is provided.
+- If the dashboard is blank, verify terminal size is at least 80x24.
+- Some integrated terminals still fail with full-screen TUIs (`termbox` behavior).
+- If it fails, use the fallback commands below or run from an external terminal/SSH session.
+
+Quit Sampler with `q` (or `Ctrl+C`). If terminal state is garbled afterward, run `reset`.
+
+---
+
+### 6) SSH-specific troubleshooting
+
+If it works locally on the RevPi but shows a blank screen over SSH, check this first:
+
+- By default over SSH, launcher uses text mode:
+  - `ssh -tt <host> "cd ~/GradientOS && ./scripts/sampler/run_sampler.sh"`
+- To force the TUI over SSH:
+  - `ssh -tt <host> "cd ~/GradientOS && ./scripts/sampler/run_sampler.sh --tui"`
+- If the terminal type is problematic, try:
+
+```bash
+cd ~/GradientOS
+GRADIENT_SAMPLER_TERM=xterm ./scripts/sampler/run_sampler.sh --tui
+```
+
+- If TUI is still blank, use fallback text monitoring below.
+
+Known issue (tracked for later fix):
+- On some SSH terminal/client combinations, Sampler full-screen TUI still renders blank even with `--tui`.
+- Current workaround is to use `./scripts/sampler/run_sampler.sh` in default SSH text mode (or `--text` explicitly).
+- TODO: investigate and fix SSH TUI compatibility (terminal capability / renderer behavior).
+
+---
+
+### 7) Quick fallback when TUI fails
+
+Plain text polling:
+
+```bash
+watch -n 0.5 'python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py summary'
+```
+
+One-shot values:
+
+```bash
+python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py rt_hz
+python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py rt_max_jitter_us
+python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py summary
+```
+
+---
+
+### 8) Delta diagnostics watcher (terminal-friendly)
+
+For explicit trend detection (instead of charts):
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 600
+```
+
+This reports RT overruns, WKC mismatches, and EtherCAT lost-frame deltas with alert markers.
+
+Tips:
+- For a quick sanity check, use `--duration 30`.
+- If EtherCAT polling is unavailable in your shell context, use `--no-ethercat`.
+- Press `Ctrl+C` to stop early; a summary line is printed on exit.
+
+---
+
+### 9) CPU comparison defaults
+
+The default dashboard compares CPU2 (isolated RT CPU) vs CPU0 in `scripts/sampler/rtos_monitor.yml`.
+
+If your platform uses a different core layout, edit those CPU indices.
 

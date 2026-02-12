@@ -215,7 +215,13 @@ python3 scripts/rtcore_jog.py status
 ```bash
 cd ~/GradientOS
 python3 scripts/rtcore_jog.py console --rate-hz 2
+# alias (same behavior, useful for validation runs):
+python3 scripts/rtcore_jog.py test --rate-hz 2
 ```
+
+Notes:
+- Console watch output includes diagnostics by default (`ov` delta, WKC mismatch alerting, EtherCAT lost-frame deltas).
+- Use `--no-diag` if you want the old minimal status output.
 
 Inside the console:
 
@@ -238,40 +244,94 @@ Notes:
 
 RTCore already writes `/run/gradient-rt-motion/metrics.json`, so monitoring does **not** consume the single IPC client.
 
-### H1) Install Sampler (aarch64: build from source)
+Sampler instructions are maintained in one place:
+- `scripts/sampler/README.md` (canonical sampler guide)
 
-```bash
-sudo apt-get update
-sudo apt-get install -y golang libasound2-dev
-
-go env -w GOPATH="$HOME/go"
-# If you hit: "fatal error: alsa/asoundlib.h: No such file or directory"
-# rerun with an explicit include path (some images need this for CGO):
-CGO_CFLAGS='-I/usr/include' go install github.com/sqshq/sampler@latest
-sudo install -m 0755 "$HOME/go/bin/sampler" /usr/local/bin/sampler
-sampler --help
-```
-
-### H2) Run the dashboard
+Quick start:
 
 ```bash
 cd ~/GradientOS
-TERM=xterm-256color sampler -c scripts/sampler/rtos_monitor.yml
+./scripts/sampler/run_sampler.sh
 ```
 
 What to look for in the dashboard:
 - **RTCore loop Hz** stays ~1000
 - **RTCore wake jitter** stays bounded (watch max)
 - **Timer jitter compare**: CPU2 (isolated RT CPU) should generally look better than CPU0
-- If the dashboard is **blank**, your terminal is probably too small. Make it at least **80 cols x 24 rows**
-  (try maximizing the terminal pane or reducing font size), then rerun.
-- Quit Sampler with **`q`** (or `Ctrl+C`). If your terminal gets messed up afterward, run: `reset`
+- If the dashboard is blank in an IDE terminal, use the fallback commands from `scripts/sampler/README.md`
+  (or run from an external terminal/SSH session).
 
-### H3) No Sampler? Quick “poor man’s monitoring”
+### H1) No Sampler? Quick "poor man's monitoring"
 
 ```bash
 watch -n 0.5 'python3 ~/GradientOS/scripts/sampler/rtcore_metrics.py summary'
 ```
+
+### H2) Delta diagnostics watcher (overrun/WKC/lost-frame trends)
+
+This helper prints per-sample deltas and flags events that matter during soak:
+- `OVERRUN+N` when `rt_overrun_count` increases
+- `WKC_MISMATCH` when `wkc_actual != wkc_expected`
+- `LOST+N` when EtherCAT `Lost frames` increases
+
+Run for 10 minutes:
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 600
+```
+
+Quick 30-second check:
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 30
+```
+
+If `sudo ethercat master` is unavailable in your shell context, skip lost-frame polling:
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --no-ethercat --interval 1.0 --duration 60
+```
+
+### H3) Combined terminal sequence (monitor + jog + diagnostics)
+
+Use this exact order when you want to jog servos while watching telemetry:
+
+1) Terminal A (root): keep RTCore running
+
+```bash
+sudo /usr/local/bin/gradient-rt-motion --num-axes 2 --max-rpm 100
+```
+
+2) Terminal B (pi): start Sampler (or fallback watch if TUI fails)
+
+```bash
+cd ~/GradientOS
+./scripts/sampler/run_sampler.sh
+```
+
+Note: over SSH this launcher defaults to text monitoring; add `--tui` only if you want to force the full-screen dashboard.
+
+3) Terminal C (pi): run jog console
+
+```bash
+cd ~/GradientOS
+python3 scripts/rtcore_jog.py console --rate-hz 2
+```
+
+4) Terminal D (optional): run long soak diagnostics in parallel
+
+```bash
+cd ~/GradientOS
+python3 scripts/sampler/rtcore_diag_watch.py --interval 1.0 --duration 600
+```
+
+Rules while running:
+- `rtcore_jog.py` is the IPC client; keep only one jog/controller client connected.
+- Sampler + `rtcore_diag_watch.py` read metrics and can run alongside jog.
+- For safe stop: in console run `disarm`, then `quit`, then stop RTCore if needed.
 
 ---
 
