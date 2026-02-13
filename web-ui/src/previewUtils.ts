@@ -146,15 +146,15 @@ export function encodePointsForApi(points: Point3[]): any[] {
 export function transformToScenePoint(point: Point3): Point3 {
   return {
     x: point.x,
-    y: point.z,
-    z: -point.y,
+    y: point.y,
+    z: point.z,
   };
 }
 
 export function transformFromScenePoint(point: Point3): Point3 {
   return {
     x: point.x,
-    y: -point.z,
-    z: point.y,
+    y: point.y,
+    z: point.z,
   };
 }

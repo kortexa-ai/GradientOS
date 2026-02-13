@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Camera,
   CameraOff,
+  ChevronDown,
+  ChevronRight,
   Home,
   Moon,
   Octagon,
@@ -16,7 +18,12 @@ import {
   X,
 } from "lucide-react";
 import { resolveDefaultApiHost, resolveDefaultVisionHost } from "./useEndpoint";
-import { ArmVisualizer, type ArmVisualizerHandle } from "./ArmVisualizer";
+import {
+  ArmVisualizer,
+  type ArmVisualizerHandle,
+  type StepLoadStatus,
+  type StepTransform,
+} from "./ArmVisualizer";
 import { TelemetryCharts } from "./TelemetryCharts";
 import ControlPanel from "./ControlPanel";
 import {
@@ -58,27 +65,64 @@ type TelemetryEvent = {
 
 type PersistedSettings = {
   showBoundingBox: boolean;
+  collapseLiveCharts: boolean;
+  collapseStepImport: boolean;
+  collapseTrajectory: boolean;
+  collapseRobotControl: boolean;
 };
 
 const SETTINGS_STORAGE_KEY = "gradient-ui:settings";
+const DEFAULT_STEP_TRANSFORM: StepTransform = {
+  position: { x: 0, y: 0, z: 0 },
+  rotationDeg: { x: 0, y: 0, z: 0 },
+  scale: 1,
+};
 
 function loadPersistedSettings(): PersistedSettings {
+  const defaults: PersistedSettings = {
+    showBoundingBox: true,
+    collapseLiveCharts: false,
+    collapseStepImport: false,
+    collapseTrajectory: false,
+    collapseRobotControl: false,
+  };
   if (typeof window === "undefined") {
-    return { showBoundingBox: true };
+    return defaults;
   }
   try {
     const stored = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!stored) {
-      return { showBoundingBox: true };
+      return defaults;
     }
     const parsed = JSON.parse(stored);
-    if (typeof parsed?.showBoundingBox === "boolean") {
-      return { showBoundingBox: parsed.showBoundingBox };
+    if (parsed && typeof parsed === "object") {
+      return {
+        showBoundingBox:
+          typeof parsed.showBoundingBox === "boolean"
+            ? parsed.showBoundingBox
+            : defaults.showBoundingBox,
+        collapseLiveCharts:
+          typeof parsed.collapseLiveCharts === "boolean"
+            ? parsed.collapseLiveCharts
+            : defaults.collapseLiveCharts,
+        collapseStepImport:
+          typeof parsed.collapseStepImport === "boolean"
+            ? parsed.collapseStepImport
+            : defaults.collapseStepImport,
+        collapseTrajectory:
+          typeof parsed.collapseTrajectory === "boolean"
+            ? parsed.collapseTrajectory
+            : defaults.collapseTrajectory,
+        collapseRobotControl:
+          typeof parsed.collapseRobotControl === "boolean"
+            ? parsed.collapseRobotControl
+            : defaults.collapseRobotControl,
+      };
     }
   } catch {
     // ignore malformed storage
   }
-  return { showBoundingBox: true };
+  return defaults;
 }
 
 function persistSettings(settings: PersistedSettings) {
@@ -150,6 +194,189 @@ function TelemetryPanel({ latest }: { latest: TelemetryEvent | null }) {
           No telemetry yet. Connect to the API and start streaming.
         </p>
       )}
+    </div>
+  );
+}
+
+type CollapsibleOverlayPanelProps = {
+  title: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+  widthClassName?: string;
+};
+
+function CollapsibleOverlayPanel({
+  title,
+  collapsed,
+  onToggle,
+  children,
+  widthClassName = "w-full max-w-xs",
+}: CollapsibleOverlayPanelProps) {
+  return (
+    <div className={`pointer-events-auto ${widthClassName}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between rounded-lg border border-slate-700/60 bg-slate-900/80 px-3 py-2 text-left shadow-md shadow-slate-900/30 backdrop-blur transition hover:border-slate-500/70"
+      >
+        <span className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+          {title}
+        </span>
+        {collapsed ? (
+          <ChevronRight size={16} className="text-slate-300/80" />
+        ) : (
+          <ChevronDown size={16} className="text-slate-300/80" />
+        )}
+      </button>
+      {!collapsed && <div className="mt-2">{children}</div>}
+    </div>
+  );
+}
+
+type StepImportPanelProps = {
+  stepFileName: string | null;
+  stepStatus: StepLoadStatus;
+  transform: StepTransform;
+  onFileChange: (file: File | null) => void;
+  onTransformChange: (
+    group: "position" | "rotationDeg",
+    axis: "x" | "y" | "z",
+    value: number,
+  ) => void;
+  onScaleChange: (value: number) => void;
+  onResetTransform: () => void;
+  onClearFile: () => void;
+};
+
+function StepImportPanel({
+  stepFileName,
+  stepStatus,
+  transform,
+  onFileChange,
+  onTransformChange,
+  onScaleChange,
+  onResetTransform,
+  onClearFile,
+}: StepImportPanelProps) {
+  const statusTone =
+    stepStatus.state === "error"
+      ? "text-rose-300"
+      : stepStatus.state === "loaded"
+      ? "text-emerald-300"
+      : stepStatus.state === "loading"
+      ? "text-amber-200"
+      : "text-slate-300/80";
+  const parseOrKeep = (raw: string, fallback: number) => {
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  return (
+    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
+          STEP Import
+        </span>
+        <button
+          type="button"
+          onClick={onResetTransform}
+          className="rounded-lg border border-slate-600/60 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50"
+        >
+          Reset Pose
+        </button>
+      </div>
+      <div className="mb-3 flex items-center gap-2">
+        <label className="flex-1 cursor-pointer rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-center text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50">
+          Load .step/.stp
+          <input
+            type="file"
+            accept=".step,.stp,model/step"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              onFileChange(file);
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={onClearFile}
+          disabled={!stepFileName}
+          className={`rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50 ${
+            stepFileName ? "" : "cursor-not-allowed opacity-60"
+          }`}
+        >
+          Clear
+        </button>
+      </div>
+      <p className="truncate text-xs text-slate-300/80">
+        File:{" "}
+        <span className="font-semibold text-slate-100">
+          {stepFileName ?? "None"}
+        </span>
+      </p>
+      <p className="mt-1 text-xs text-cyan-200/80">
+        Frame: world (Z-up). +X red, +Y green, +Z blue.
+      </p>
+      <p className={`mt-1 text-xs ${statusTone}`}>{stepStatus.message}</p>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {(["x", "y", "z"] as const).map((axis) => (
+          <label
+            key={`pos-${axis}`}
+            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[11px] text-slate-300/90"
+          >
+            P{axis.toUpperCase()} (m)
+            <input
+              className="rounded bg-slate-900/70 px-2 py-1 text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+              type="number"
+              step="0.01"
+              value={transform.position[axis]}
+              onChange={(event) =>
+                onTransformChange(
+                  "position",
+                  axis,
+                  parseOrKeep(event.target.value, transform.position[axis]),
+                )
+              }
+            />
+          </label>
+        ))}
+        {(["x", "y", "z"] as const).map((axis) => (
+          <label
+            key={`rot-${axis}`}
+            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[11px] text-slate-300/90"
+          >
+            R{axis.toUpperCase()} (deg)
+            <input
+              className="rounded bg-slate-900/70 px-2 py-1 text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+              type="number"
+              step="1"
+              value={transform.rotationDeg[axis]}
+              onChange={(event) =>
+                onTransformChange(
+                  "rotationDeg",
+                  axis,
+                  parseOrKeep(event.target.value, transform.rotationDeg[axis]),
+                )
+              }
+            />
+          </label>
+        ))}
+        <label className="col-span-3 flex items-center justify-between rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-xs text-slate-300/90">
+          <span>Scale</span>
+          <input
+            className="w-24 rounded bg-slate-900/70 px-2 py-1 text-right text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+            type="number"
+            min="0.01"
+            step="0.1"
+            value={transform.scale}
+            onChange={(event) =>
+              onScaleChange(parseOrKeep(event.target.value, transform.scale))
+            }
+          />
+        </label>
+      </div>
     </div>
   );
 }
@@ -527,7 +754,19 @@ export default function App() {
   const [isHoming, setIsHoming] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isResting, setIsResting] = useState(false);
+  const [stepFile, setStepFile] = useState<File | null>(null);
+  const [stepTransform, setStepTransform] = useState<StepTransform>(
+    DEFAULT_STEP_TRANSFORM,
+  );
+  const [stepLoadStatus, setStepLoadStatus] = useState<StepLoadStatus>({
+    state: "idle",
+    message: "No STEP model loaded.",
+  });
   const showBoundingBox = settings.showBoundingBox;
+  const isLiveChartsCollapsed = settings.collapseLiveCharts;
+  const isStepImportCollapsed = settings.collapseStepImport;
+  const isTrajectoryCollapsed = settings.collapseTrajectory;
+  const isRobotControlCollapsed = settings.collapseRobotControl;
   const visualizerRef = useRef<ArmVisualizerHandle | null>(null);
   const normalizedApiHost = useMemo(() => normaliseApiHost(apiHost), [apiHost]);
   const normalisedVisionHost = useMemo(
@@ -710,6 +949,46 @@ export default function App() {
 
   const handleResetView = useCallback(() => {
     visualizerRef.current?.resetView();
+  }, []);
+
+  const handleStepFileChange = useCallback((file: File | null) => {
+    setStepFile(file);
+    if (file) {
+      setStepTransform(DEFAULT_STEP_TRANSFORM);
+    }
+  }, []);
+
+  const handleClearStepFile = useCallback(() => {
+    setStepFile(null);
+    setStepLoadStatus({ state: "idle", message: "No STEP model loaded." });
+  }, []);
+
+  const handleStepTransformChange = useCallback(
+    (
+      group: "position" | "rotationDeg",
+      axis: "x" | "y" | "z",
+      value: number,
+    ) => {
+      setStepTransform((current) => ({
+        ...current,
+        [group]: {
+          ...current[group],
+          [axis]: value,
+        },
+      }));
+    },
+    [],
+  );
+
+  const handleStepScaleChange = useCallback((value: number) => {
+    setStepTransform((current) => ({
+      ...current,
+      scale: Number.isFinite(value) ? Math.max(0.01, value) : current.scale,
+    }));
+  }, []);
+
+  const handleResetStepTransform = useCallback(() => {
+    setStepTransform(DEFAULT_STEP_TRANSFORM);
   }, []);
 
   const requestPlannerPreview = useCallback(
@@ -1157,6 +1436,9 @@ export default function App() {
           onPointSelected={handlePointSelected}
           pathPoints={visualPathPoints}
           waypoints={visualWaypoints}
+          stepFile={stepFile}
+          stepTransform={stepTransform}
+          onStepStatusChange={setStepLoadStatus}
         />
         <div className="pointer-events-auto absolute left-6 top-6 z-10 flex max-w-sm flex-col gap-2">
           {isVisionActive && !visionError && (
@@ -1175,7 +1457,16 @@ export default function App() {
               />
             </div>
           )}
-          <TelemetryCharts latest={latest} />
+          <CollapsibleOverlayPanel
+            title="Live Charts"
+            collapsed={isLiveChartsCollapsed}
+            onToggle={() =>
+              updateSettings({ collapseLiveCharts: !isLiveChartsCollapsed })
+            }
+            widthClassName="w-full max-w-xl"
+          >
+            <TelemetryCharts latest={latest} />
+          </CollapsibleOverlayPanel>
         </div>
         <div className="pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 transform">
           <AlertsPanel
@@ -1190,29 +1481,62 @@ export default function App() {
           />
         </div>
         <div className="pointer-events-none absolute right-6 top-6 z-10 flex flex-col gap-3">
-          <TrajectoryPanel
-            isPlanning={isPlanning}
-            isPlanLoading={isPlanLoading}
-            isRunning={isRunningPreview}
-            preview={previewPlan}
-            plannerPoints={plannerPoints}
-            savedTrajectories={savedTrajectories}
-            selectedTrajectory={selectedTrajectory}
-            isTrajectoryListLoading={isTrajectoryListLoading}
-            isLoadingSavedTrajectory={isLoadingSavedTrajectory}
-            onPlanToggle={handlePlanToggle}
-            onRun={handleRunPreview}
-            onClear={handleClearPreview}
-            onRefreshTrajectories={refreshTrajectoryList}
-            onSelectTrajectory={handleSelectTrajectory}
-            onLoadTrajectory={handleLoadTrajectory}
-            onUndoPoint={handleUndoPoint}
-          />
+          <CollapsibleOverlayPanel
+            title="STEP Import"
+            collapsed={isStepImportCollapsed}
+            onToggle={() =>
+              updateSettings({ collapseStepImport: !isStepImportCollapsed })
+            }
+          >
+            <StepImportPanel
+              stepFileName={stepFile?.name ?? null}
+              stepStatus={stepLoadStatus}
+              transform={stepTransform}
+              onFileChange={handleStepFileChange}
+              onTransformChange={handleStepTransformChange}
+              onScaleChange={handleStepScaleChange}
+              onResetTransform={handleResetStepTransform}
+              onClearFile={handleClearStepFile}
+            />
+          </CollapsibleOverlayPanel>
+          <CollapsibleOverlayPanel
+            title="Trajectory"
+            collapsed={isTrajectoryCollapsed}
+            onToggle={() =>
+              updateSettings({ collapseTrajectory: !isTrajectoryCollapsed })
+            }
+          >
+            <TrajectoryPanel
+              isPlanning={isPlanning}
+              isPlanLoading={isPlanLoading}
+              isRunning={isRunningPreview}
+              preview={previewPlan}
+              plannerPoints={plannerPoints}
+              savedTrajectories={savedTrajectories}
+              selectedTrajectory={selectedTrajectory}
+              isTrajectoryListLoading={isTrajectoryListLoading}
+              isLoadingSavedTrajectory={isLoadingSavedTrajectory}
+              onPlanToggle={handlePlanToggle}
+              onRun={handleRunPreview}
+              onClear={handleClearPreview}
+              onRefreshTrajectories={refreshTrajectoryList}
+              onSelectTrajectory={handleSelectTrajectory}
+              onLoadTrajectory={handleLoadTrajectory}
+              onUndoPoint={handleUndoPoint}
+            />
+          </CollapsibleOverlayPanel>
         </div>
         <div className="pointer-events-none absolute right-6 bottom-6 z-20">
-          <div className="pointer-events-auto">
+          <CollapsibleOverlayPanel
+            title="Robot Control"
+            collapsed={isRobotControlCollapsed}
+            onToggle={() =>
+              updateSettings({ collapseRobotControl: !isRobotControlCollapsed })
+            }
+            widthClassName="w-[360px]"
+          >
             <ControlPanel apiHost={normalizedApiHost} onError={(m) => setError(m)} />
-          </div>
+          </CollapsibleOverlayPanel>
         </div>
       </main>
       <SettingsDialog
