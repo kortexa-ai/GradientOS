@@ -20,6 +20,9 @@ export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 # Prefer the active virtualenv's Python if present to avoid re-syncing deps via uv
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   CONTROLLER_CMD=(python -m gradient_os.run_controller)
+elif [[ -x "${VENV_BIN}/python" ]]; then
+  # If a local .venv exists, prefer it over `uv run` (avoids network fetches).
+  CONTROLLER_CMD=("${VENV_BIN}/python" -m gradient_os.run_controller)
 elif command -v uv >/dev/null 2>&1; then
   CONTROLLER_CMD=(uv run gradient-controller)
 else

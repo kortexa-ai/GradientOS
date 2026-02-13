@@ -1,0 +1,14 @@
+[Unit]
+Description=Pin EtherCAT IRQs to RT CPUs
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=ethercat.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gradient-irq-affinity.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

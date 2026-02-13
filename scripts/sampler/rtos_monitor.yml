@@ -1,0 +1,35 @@
+runcharts:
+  - title: RTCore loop (Hz)
+    position: [[0, 0], [80, 6]]
+    rate-ms: 500
+    scale: 1
+    items:
+      - label: rtcore_hz
+        sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/rtcore_metrics.py rt_hz
+
+  - title: RTCore wake jitter (us)
+    position: [[0, 6], [80, 6]]
+    rate-ms: 500
+    scale: 1
+    items:
+      - label: last
+        sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/rtcore_metrics.py rt_last_jitter_us
+      - label: max
+        sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/rtcore_metrics.py rt_max_jitter_us
+
+  - title: Timer jitter compare (CPU2 vs CPU0) (us)
+    position: [[0, 12], [80, 6]]
+    rate-ms: 1000
+    scale: 1
+    items:
+      - label: cpu2
+        sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/timer_jitter.py --cpu 2 --period-us 1000 --samples 200 --out max_us
+      - label: cpu0
+        sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/timer_jitter.py --cpu 0 --period-us 1000 --samples 200 --out max_us
+
+textboxes:
+  - title: RTCore summary (/run/gradient-rt-motion/metrics.json)
+    position: [[0, 18], [80, 6]]
+    rate-ms: 1000
+    sample: ${GRADIENT_SAMPLER_PYTHON:-python3} ${GRADIENT_SAMPLER_REPO_ROOT:-$HOME/GradientOS}/scripts/sampler/rtcore_metrics.py summary
+    border: true

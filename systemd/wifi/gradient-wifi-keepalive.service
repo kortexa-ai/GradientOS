@@ -1,0 +1,14 @@
+[Unit]
+Description=Gradient Wi-Fi keepalive (auto-reconnect)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/gradient-wifi-keepalive.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

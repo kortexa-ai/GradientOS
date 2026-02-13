@@ -30,5 +30,34 @@ installing, removing, and managing the units.
   Override environment variables inside the unit if you host the controller on a
   different machine.
 
+- `rt-motion/` – runs the **RTCore** (`gradient-rt-motion`) daemon that will own
+  EtherCAT + the 1kHz cyclic loop (RTOS/EtherCAT architecture work). Use:
+  ```bash
+  cd systemd/rt-motion
+  ./install.sh
+  ./status.sh
+  ./restart.sh
+  ./stop.sh
+  ./uninstall.sh
+  ```
+  Note: the unit is wired to `Requires=ethercat.service` (IgH master). Until
+  IgH is installed/configured on the host, this service will not start.
+
+- `ethercat-host/` – host-level EtherCAT prerequisites (NIC renaming, unmanaged
+  `ethercat0`, NIC tuning + IRQ pinning templates). Use:
+  ```bash
+  cd systemd/ethercat-host
+  ./install.sh
+  ```
+  This installs templates into `/etc` and enables the tuning units. A reboot is
+  required for NIC renaming (`eth0/eth1` → `uplink0/ethercat0`).
+
+- `wifi/` – optional Wi‑Fi keepalive (auto-reconnect). Useful on flaky networks
+  during bring-up (does not touch the EtherCAT NIC). Use:
+  ```bash
+  cd systemd/wifi
+  ./install.sh
+  ```
+
 After editing any service file, remember to re-run `sudo systemctl daemon-reload`
 before restarting the unit.

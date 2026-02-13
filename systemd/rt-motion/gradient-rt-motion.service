@@ -1,0 +1,44 @@
+[Unit]
+Description=Gradient RT Motion (RTCore)
+Requires=ethercat.service
+After=ethercat.service
+
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# RTCore owns EtherCAT + RT scheduling; run as root on the appliance.
+User=root
+# Allow the non-root controller (runs as user/group `pi`) to connect to the IPC
+# socket at `/run/gradient-rt-motion/ipc.sock` (0660). This keeps EtherCAT+RT
+# privileges in RTCore while keeping the Python layer unprivileged.
+Group=pi
+
+ExecStart=/usr/local/bin/gradient-rt-motion
+
+# RT scheduling + memory locking (actual thread policy is set in RTCore).
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+# Thread-level pinning is handled inside RTCore:
+# - cyclic thread → CPU2-CPU3
+# - helper thread → CPU0-CPU1
+
+RuntimeDirectory=gradient-rt-motion
+RuntimeDirectoryMode=0770
+
+Restart=always
+RestartSec=2
+
+TimeoutStopSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,13 @@
+[Unit]
+Description=Set CPU governor to performance (RT tuning)
+After=systemd-udevd.service
+Before=ethercat.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gradient-cpu-performance.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+
