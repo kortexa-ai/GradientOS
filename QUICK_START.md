@@ -1,5 +1,13 @@
 # Quick start
 
+### Agent workflow pointers
+
+To keep implementation quality and session continuity high, maintain these repo-local files:
+
+- `DEVLOG.md` - chronological engineering timeline (what changed, validation, risks).
+- `AGENT_SCRATCHPAD.md` - persistent execution memory (mistakes, preferences, guardrails).
+- `.cursor/skills/` - local skills and reference templates used during implementation.
+
 ### Initial setup
 
 Run the setup script and select what modules you want to install.
@@ -9,11 +17,13 @@ Run the setup script and select what modules you want to install.
 ```
 
 This will install the required system packages and create a virtual environment.
-It targets Python 3.14 (preferred). If 3.14 is unavailable on your system, the setup
-will fall back to 3.11 automatically. You can force-create the venv with 3.14:
+It targets Python 3.12 (preferred) for broad wheel compatibility.
+If 3.12 is unavailable, setup falls back to 3.11, then 3.14.
+Use a single repo-local virtualenv at `.venv` (the same one used by `start.sh`).
+You can force-create the venv with 3.12:
 
 ```bash
-uv venv .venv --python python3.14
+uv venv .venv --python python3.12
 source ./.venv/bin/activate
 uv pip install -e .[core]
 ```
@@ -71,12 +81,28 @@ You can also activate manually if you want to run other scripts or tests
 
 # Run the control UI (will be superseded by the web ui soon)
 # to control the robot arm
-uv run gradient-ui
+gradient-ui
 
 # Run the web ui
 ./run-web.sh
 
 ```
+
+On Windows PowerShell, use the `.ps1` launcher variants (same behavior):
+
+```powershell
+# From repository root
+.\.venv\Scripts\Activate.ps1
+
+# Terminal 1: controller in simulator mode
+.\run-sim.ps1
+
+# Terminal 2: API service
+.\run-api.ps1
+```
+
+If you want to invoke the existing bash launchers directly on Windows,
+run them through a bash shell (`bash ./run-sim.sh` / `bash ./run-api.sh`) or use WSL/Git Bash.
 
 The web UI should be available at http://localhost:8000
 

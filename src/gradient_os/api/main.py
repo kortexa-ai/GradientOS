@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import datetime
 import json
 import logging
 import os
@@ -18,6 +21,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 import numpy as np
 
+from ..cad.topology_service import (
+    CADTopologyService,
+    TopologyDependencyError,
+    TopologyModelNotFoundError,
+)
+
 try:
     from ..arm_controller import utils as controller_utils
     from ..arm_controller import command_api as controller_command_api
@@ -27,6 +36,9 @@ except ImportError:
 
 _REST_POSE_RAD = [0.0, -1.4, 1.5, 0.0, 0.0, 0.0]
 _REST_POSE_COMMAND = ",".join(str(value) for value in _REST_POSE_RAD)
+_ALLOWED_WELD_TYPES = {"fillet", "butt", "lap", "tack/spot", "custom"}
+_PROJECT_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_WELD_PROGRAM_DIR = os.path.join(_PROJECT_ROOT_DIR, "recorded_trajectories", "weld_programs")
 
 
 def _default_controller_port() -> int:
@@ -94,6 +106,88 @@ def _resolve_cors_origins() -> list[str]:
         return ["*"]
     origins = [item.strip() for item in raw.split(",")]
     return [origin for origin in origins if origin]
+
+
+def _normalize_weld_type(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if not value:
+        return "fillet"
+    if value == "spot":
+        value = "tack/spot"
+    if value not in _ALLOWED_WELD_TYPES:
+        allowed = ", ".join(sorted(_ALLOWED_WELD_TYPES))
+        raise HTTPException(status_code=400, detail=f"Invalid weld_type '{value}'. Allowed: {allowed}")
+    return value
+
+
+def _decode_base64_step_payload(payload: dict[str, Any]) -> tuple[str, bytes]:
+    filename_raw = payload.get("filename")
+    filename = str(filename_raw).strip() if isinstance(filename_raw, str) else ""
+    if not filename:
+        filename = "uploaded.step"
+
+    encoded = payload.get("step_base64")
+    if not isinstance(encoded, str) or not encoded.strip():
+        encoded = payload.get("step_data_base64")
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise HTTPException(status_code=400, detail="Field 'step_base64' is required.")
+
+    try:
+        raw_bytes = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 STEP payload: {exc}") from exc
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Decoded STEP payload is empty.")
+    return filename, raw_bytes
+
+
+def _ensure_weld_program_dir() -> None:
+    os.makedirs(_WELD_PROGRAM_DIR, exist_ok=True)
+
+
+def _sanitize_weld_program_name(raw: Any) -> str:
+    if not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="Field 'name' must be a string.")
+    trimmed = raw.strip()
+    if not trimmed:
+        raise HTTPException(status_code=400, detail="Field 'name' is required.")
+    safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in trimmed)
+    safe = safe.strip("_")
+    if not safe:
+        raise HTTPException(status_code=400, detail="Field 'name' must contain letters or numbers.")
+    return safe[:128]
+
+
+def _coerce_step_transform(raw: Any) -> dict[str, Any]:
+    default = {
+        "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "rotationDeg": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "scale": 1.0,
+    }
+    if not isinstance(raw, dict):
+        return default
+
+    def _axis_triplet(value: Any) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {"x": 0.0, "y": 0.0, "z": 0.0}
+        out = {}
+        for axis in ("x", "y", "z"):
+            try:
+                out[axis] = float(value.get(axis, 0.0))
+            except Exception:
+                out[axis] = 0.0
+        return out
+
+    try:
+        scale = max(1e-4, float(raw.get("scale", 1.0)))
+    except Exception:
+        scale = 1.0
+
+    return {
+        "position": _axis_triplet(raw.get("position")),
+        "rotationDeg": _axis_triplet(raw.get("rotationDeg")),
+        "scale": scale,
+    }
 
 
 class _TelemetryProtocol(asyncio.DatagramProtocol):
@@ -242,6 +336,7 @@ class TelemetryHub:
 
 
 telemetry_hub = TelemetryHub()
+topology_service = CADTopologyService()
 logger = logging.getLogger("uvicorn.error")
 _latest_plan_lock = asyncio.Lock()
 _latest_plan: dict[str, Any] | None = None
@@ -572,6 +667,189 @@ def create_app() -> FastAPI:
 
         return EventSourceResponse(event_generator(), ping=15)
 
+    @api.post("/cad/topology/load-step", summary="Load STEP topology from exact CAD edges")
+    async def cad_topology_load_step(payload: dict[str, Any]):
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body required.")
+        filename, step_bytes = _decode_base64_step_payload(payload)
+        sample_count = payload.get("sample_count", 64)
+        try:
+            sample_count_int = int(sample_count)
+        except Exception:
+            raise HTTPException(status_code=400, detail="sample_count must be an integer")
+
+        def _load():
+            return topology_service.load_step(
+                filename=filename,
+                step_bytes=step_bytes,
+                sample_count=sample_count_int,
+            )
+
+        try:
+            return await run_in_threadpool(_load)
+        except TopologyDependencyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Topology extraction failed: {exc}") from exc
+
+    @api.get("/cad/topology/{model_id}", summary="Fetch topology edges for a loaded STEP model")
+    async def cad_topology_detail(model_id: str):
+        try:
+            return topology_service.get_model(model_id)
+        except TopologyModelNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Unknown topology model '{model_id}'.")
+
+    @api.post("/weld-program/save", summary="Save weld program with embedded STEP payload")
+    async def weld_program_save(payload: dict[str, Any]):
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body required.")
+
+        safe_name = _sanitize_weld_program_name(payload.get("name"))
+        step_payload = payload.get("step")
+        if not isinstance(step_payload, dict):
+            raise HTTPException(status_code=400, detail="Field 'step' is required and must be an object.")
+        step_filename, step_bytes = _decode_base64_step_payload(step_payload)
+        step_base64 = base64.b64encode(step_bytes).decode("ascii")
+        step_transform = _coerce_step_transform(step_payload.get("transform"))
+
+        weld_draft_raw = payload.get("weld_draft")
+        if not isinstance(weld_draft_raw, dict):
+            raise HTTPException(status_code=400, detail="Field 'weld_draft' is required and must be an object.")
+
+        weld_type = _normalize_weld_type(
+            weld_draft_raw.get("weldType", weld_draft_raw.get("weld_type", "fillet"))
+        )
+        segments: list[dict[str, Any]] = []
+        raw_segments = weld_draft_raw.get("segments")
+        if isinstance(raw_segments, list):
+            seen_edge_ids: set[str] = set()
+            for raw_segment in raw_segments:
+                if not isinstance(raw_segment, dict):
+                    continue
+                edge_id = str(
+                    raw_segment.get("edgeId", raw_segment.get("edge_id", ""))
+                ).strip()
+                if not edge_id or edge_id in seen_edge_ids:
+                    continue
+                try:
+                    start_s = float(raw_segment.get("startS", raw_segment.get("start_s", 0.0)))
+                except (TypeError, ValueError):
+                    start_s = 0.0
+                try:
+                    end_s = float(raw_segment.get("endS", raw_segment.get("end_s", 1.0)))
+                except (TypeError, ValueError):
+                    end_s = 1.0
+                start_s = max(0.0, min(1.0, start_s))
+                end_s = max(0.0, min(1.0, end_s))
+                segments.append(
+                    {
+                        "edgeId": edge_id,
+                        "startS": start_s,
+                        "endS": end_s,
+                    }
+                )
+                seen_edge_ids.add(edge_id)
+
+        legacy_edge_id = str(weld_draft_raw.get("edgeId", weld_draft_raw.get("edge_id", ""))).strip()
+        try:
+            legacy_start_s = float(weld_draft_raw.get("startS", weld_draft_raw.get("start_s", 0.0)))
+        except (TypeError, ValueError):
+            legacy_start_s = 0.0
+        try:
+            legacy_end_s = float(weld_draft_raw.get("endS", weld_draft_raw.get("end_s", 1.0)))
+        except (TypeError, ValueError):
+            legacy_end_s = 1.0
+        legacy_start_s = max(0.0, min(1.0, legacy_start_s))
+        legacy_end_s = max(0.0, min(1.0, legacy_end_s))
+        if not segments and legacy_edge_id:
+            segments.append(
+                {
+                    "edgeId": legacy_edge_id,
+                    "startS": legacy_start_s,
+                    "endS": legacy_end_s,
+                }
+            )
+
+        requested_active_edge_id = str(
+            weld_draft_raw.get(
+                "activeSegmentEdgeId",
+                weld_draft_raw.get("active_segment_edge_id", legacy_edge_id),
+            )
+        ).strip()
+        active_segment_edge_id = (
+            requested_active_edge_id
+            if requested_active_edge_id and any(seg["edgeId"] == requested_active_edge_id for seg in segments)
+            else (segments[0]["edgeId"] if segments else "")
+        )
+        active_segment = next(
+            (seg for seg in segments if seg["edgeId"] == active_segment_edge_id),
+            segments[0] if segments else None,
+        )
+        weld_draft = {
+            "modelId": str(weld_draft_raw.get("modelId", weld_draft_raw.get("model_id", ""))).strip(),
+            "edgeId": active_segment["edgeId"] if active_segment else legacy_edge_id,
+            "weldType": weld_type,
+            "weldName": str(weld_draft_raw.get("weldName", weld_draft_raw.get("weld_name", f"{weld_type} weld"))).strip() or f"{weld_type} weld",
+            "startS": active_segment["startS"] if active_segment else legacy_start_s,
+            "endS": active_segment["endS"] if active_segment else legacy_end_s,
+            "segments": segments,
+            "activeSegmentEdgeId": active_segment_edge_id or None,
+        }
+
+        editable_waypoints = [
+            {"x": x, "y": y, "z": z}
+            for (x, y, z) in _coerce_waypoint_list(payload.get("editable_waypoints"))
+        ]
+
+        planned_trajectory = payload.get("planned_trajectory")
+        if planned_trajectory is not None and not isinstance(planned_trajectory, dict):
+            raise HTTPException(status_code=400, detail="planned_trajectory must be an object or null.")
+
+        record: dict[str, Any] = {
+            "name": safe_name,
+            "saved_at": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "step": {
+                "filename": step_filename,
+                "step_base64": step_base64,
+                "transform": step_transform,
+            },
+            "weld_draft": weld_draft,
+            "editable_waypoints": editable_waypoints,
+            "planned_trajectory": planned_trajectory,
+        }
+
+        _ensure_weld_program_dir()
+        path = os.path.join(_WELD_PROGRAM_DIR, f"{safe_name}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+        return {"status": "ok", "name": safe_name}
+
+    @api.get("/weld-program/list", summary="List saved weld programs")
+    async def weld_program_list():
+        _ensure_weld_program_dir()
+        names: list[str] = []
+        for filename in os.listdir(_WELD_PROGRAM_DIR):
+            if not filename.lower().endswith(".json"):
+                continue
+            names.append(filename[:-5])
+        names.sort()
+        return {"programs": names}
+
+    @api.get("/weld-program/{name}", summary="Load a saved weld program")
+    async def weld_program_detail(name: str):
+        safe_name = _sanitize_weld_program_name(name)
+        path = os.path.join(_WELD_PROGRAM_DIR, f"{safe_name}.json")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Weld program '{safe_name}' not found.")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to load weld program: {exc}") from exc
+        return payload
+
     @api.post("/trajectory/plan", summary="Begin recording a new trajectory")
     async def trajectory_plan():
         await run_in_threadpool(
@@ -621,6 +899,106 @@ def create_app() -> FastAPI:
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=502, detail=f"Planner payload decode failure: {exc}") from exc
         return payload_dict
+
+    @api.post("/trajectory/plan-weld", summary="Plan a weld trajectory from selected CAD edge segment")
+    async def trajectory_plan_weld(payload: dict[str, Any]):
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body required.")
+        if controller_command_api is None:
+            raise HTTPException(status_code=500, detail="Arm controller command API unavailable")
+
+        model_id = payload.get("model_id")
+        edge_id = payload.get("edge_id")
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise HTTPException(status_code=400, detail="Field 'model_id' is required.")
+        if not isinstance(edge_id, str) or not edge_id.strip():
+            raise HTTPException(status_code=400, detail="Field 'edge_id' is required.")
+
+        try:
+            start_s = float(payload.get("start_s", 0.0))
+            end_s = float(payload.get("end_s", 1.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail="start_s and end_s must be numbers in [0, 1].")
+        sample_count_raw = payload.get("sample_count", 40)
+        try:
+            sample_count = max(2, int(sample_count_raw))
+        except Exception:
+            raise HTTPException(status_code=400, detail="sample_count must be an integer.")
+
+        weld_type = _normalize_weld_type(payload.get("weld_type", "fillet"))
+        weld_name_raw = payload.get("weld_name")
+        weld_name = str(weld_name_raw).strip() if isinstance(weld_name_raw, str) else ""
+        if not weld_name:
+            weld_name = f"{weld_type} weld"
+
+        waypoints_override = _coerce_waypoint_list(payload.get("waypoints_override"))
+        preview_name_raw = payload.get("preview_name")
+        preview_name = (
+            str(preview_name_raw).strip()
+            if isinstance(preview_name_raw, str) and preview_name_raw.strip()
+            else getattr(controller_command_api, "WELD_PREVIEW_NAME", "__weld_preview__")
+        )
+
+        weld_options = payload.get("options")
+        if weld_options is None:
+            weld_options = {}
+        elif not isinstance(weld_options, dict):
+            raise HTTPException(status_code=400, detail="options must be an object.")
+
+        if waypoints_override:
+            weld_points = [list(point) for point in waypoints_override]
+            sampled_start = max(0.0, min(1.0, start_s))
+            sampled_end = max(0.0, min(1.0, end_s))
+        else:
+            try:
+                sampled = topology_service.sample_edge_segment(
+                    model_id=model_id.strip(),
+                    edge_id=edge_id.strip(),
+                    start_s=start_s,
+                    end_s=end_s,
+                    sample_count=sample_count,
+                )
+            except TopologyModelNotFoundError:
+                raise HTTPException(status_code=404, detail=f"Unknown topology model '{model_id}'.")
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            weld_points = [[float(p[0]), float(p[1]), float(p[2])] for p in sampled]
+            sampled_start = max(0.0, min(1.0, start_s))
+            sampled_end = max(0.0, min(1.0, end_s))
+
+        weld_metadata = {
+            "type": weld_type,
+            "name": weld_name,
+            "model_id": model_id.strip(),
+            "edge_id": edge_id.strip(),
+            "start_s": sampled_start,
+            "end_s": sampled_end,
+            "options": weld_options,
+        }
+
+        def _plan():
+            return controller_command_api.plan_preview_trajectory_points(
+                weld_points,
+                preview_name=preview_name,
+                weld_metadata=weld_metadata,
+            )
+
+        try:
+            result = await run_in_threadpool(_plan)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=f"Weld planning failed: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Weld planning failed unexpectedly: {exc}") from exc
+
+        result["source"] = {
+            "mode": "waypoints_override" if waypoints_override else "edge_segment",
+            "sample_count": len(weld_points),
+        }
+        return result
 
     @api.get("/trajectory/detail/{name}", summary="Fetch the definition of a recorded trajectory")
     async def trajectory_detail(name: str):

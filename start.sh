@@ -10,8 +10,18 @@ fi
 
 echo 'NOTE: start.sh is intended for manual/legacy setups.'
 echo 'If you ran ./setup.sh, activation + install are already handled.'
-# Activate the virtual environment
-source .venv/bin/activate
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_ACTIVATE="${REPO_ROOT}/.venv/bin/activate"
+
+if [[ ! -f "${VENV_ACTIVATE}" ]]; then
+  echo "Missing ${VENV_ACTIVATE}"
+  echo "Create the single repo virtualenv with ./setup.sh (or uv venv .venv --python python3.12)."
+  return 1
+fi
+
+# Activate the single repo virtual environment
+source "${VENV_ACTIVATE}"
 
 cat <<'BANNER'
 >>> GradientOS environment bootstrap

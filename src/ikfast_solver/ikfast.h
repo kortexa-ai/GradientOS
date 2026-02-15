@@ -41,8 +41,10 @@
 
 #pragma once
 
-/// should be the same as ikfast.__version__
-#define IKFAST_VERSION 61
+/// Must match the generated solver source (`ikfast_solver.cpp`) compile assert.
+/// If IKFast is regenerated, keep this value in sync to avoid build-time errors.
+/// This is a compatibility/version marker only (no kinematic behavior change).
+#define IKFAST_VERSION 0x10000049
 
 namespace ikfast
 {

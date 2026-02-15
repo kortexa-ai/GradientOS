@@ -2,15 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Camera,
   CameraOff,
+  Crosshair,
   ChevronDown,
   ChevronRight,
+  FolderOpen,
+  Flame,
   Home,
+  Minus,
   Moon,
   Octagon,
   Play,
   Plug,
+  Plus,
   RefreshCcw,
   Route,
+  Save,
   Settings,
   Trash2,
   Unplug,
@@ -22,17 +28,23 @@ import {
   ArmVisualizer,
   type ArmVisualizerHandle,
   type StepLoadStatus,
+  type TopologyEdgeOverlay,
   type StepTransform,
 } from "./ArmVisualizer";
 import { TelemetryCharts } from "./TelemetryCharts";
 import ControlPanel from "./ControlPanel";
 import {
+  buildProgramTree,
   encodePointsForApi,
   previewFromPlannerPayload,
   previewFromTrajectoryDetail,
+  type ProgramNode,
   type Point3,
   type PreviewPlan,
 } from "./previewUtils";
+import { SidebarRail, type SidebarItem } from "./components/SidebarRail";
+import { SidebarDrawer } from "./components/SidebarDrawer";
+import { ProgramFeatureTree } from "./components/ProgramFeatureTree";
 
 type Alert = {
   level: "error" | "warning" | "info";
@@ -61,6 +73,8 @@ type TelemetryEvent = {
   gripper?: number;
   servos?: Record<string, ServoSample>;
   alerts?: Alert[];
+  weld_active?: boolean;
+  weld_type?: string;
 };
 
 type PersistedSettings = {
@@ -68,8 +82,78 @@ type PersistedSettings = {
   collapseLiveCharts: boolean;
   collapseStepImport: boolean;
   collapseTrajectory: boolean;
+  collapseWeld: boolean;
   collapseRobotControl: boolean;
+  activePanel: SidebarPanelId | null;
+  showProgramTree: boolean;
+  expandedProgramTreeNodeIds: string[];
+  selectedProgramNodeId: string | null;
 };
+
+type SidebarPanelId = "step" | "trajectory" | "weld" | "telemetry";
+
+type TopologyModel = {
+  model_id: string;
+  filename?: string;
+  fingerprint?: string;
+  edges: Array<{
+    id: string;
+    part_id?: string;
+    samples: Array<[number, number, number] | { x: number; y: number; z: number }>;
+  }>;
+};
+
+type WeldSegmentDraft = {
+  edgeId: string;
+  startS: number;
+  endS: number;
+};
+
+type WeldDraft = {
+  modelId: string;
+  weldType: string;
+  weldName: string;
+  segments: WeldSegmentDraft[];
+  activeSegmentEdgeId: string | null;
+};
+
+type WeldProgramRecord = {
+  name: string;
+  saved_at?: string;
+  step: {
+    filename: string;
+    step_base64: string;
+    transform: StepTransform;
+  };
+  weld_draft?: {
+    modelId?: string;
+    model_id?: string;
+    edgeId?: string;
+    edge_id?: string;
+    weldType?: string;
+    weld_type?: string;
+    weldName?: string;
+    weld_name?: string;
+    startS?: number;
+    start_s?: number;
+    endS?: number;
+    end_s?: number;
+    segments?: Array<{
+      edgeId?: string;
+      edge_id?: string;
+      startS?: number;
+      start_s?: number;
+      endS?: number;
+      end_s?: number;
+    }>;
+    activeSegmentEdgeId?: string | null;
+    active_segment_edge_id?: string | null;
+  };
+  editable_waypoints: Point3[];
+  planned_trajectory?: PreviewPlan | null;
+};
+
+const WELD_TYPE_OPTIONS = ["fillet", "butt", "lap", "tack/spot", "custom"] as const;
 
 const SETTINGS_STORAGE_KEY = "gradient-ui:settings";
 const DEFAULT_STEP_TRANSFORM: StepTransform = {
@@ -84,7 +168,12 @@ function loadPersistedSettings(): PersistedSettings {
     collapseLiveCharts: false,
     collapseStepImport: false,
     collapseTrajectory: false,
+    collapseWeld: false,
     collapseRobotControl: false,
+    activePanel: "step",
+    showProgramTree: true,
+    expandedProgramTreeNodeIds: ["program_root", "setup_primary", "op_motion", "op_weld"],
+    selectedProgramNodeId: null,
   };
   if (typeof window === "undefined") {
     return defaults;
@@ -113,10 +202,35 @@ function loadPersistedSettings(): PersistedSettings {
           typeof parsed.collapseTrajectory === "boolean"
             ? parsed.collapseTrajectory
             : defaults.collapseTrajectory,
+        collapseWeld:
+          typeof parsed.collapseWeld === "boolean"
+            ? parsed.collapseWeld
+            : defaults.collapseWeld,
         collapseRobotControl:
           typeof parsed.collapseRobotControl === "boolean"
             ? parsed.collapseRobotControl
             : defaults.collapseRobotControl,
+        activePanel:
+          parsed.activePanel === "step" ||
+          parsed.activePanel === "trajectory" ||
+          parsed.activePanel === "weld" ||
+          parsed.activePanel === "telemetry" ||
+          parsed.activePanel === null
+            ? parsed.activePanel
+            : defaults.activePanel,
+        showProgramTree:
+          typeof parsed.showProgramTree === "boolean"
+            ? parsed.showProgramTree
+            : defaults.showProgramTree,
+        expandedProgramTreeNodeIds: Array.isArray(parsed.expandedProgramTreeNodeIds)
+          ? parsed.expandedProgramTreeNodeIds
+              .map((entry: unknown) => (typeof entry === "string" ? entry.trim() : ""))
+              .filter((entry: string) => entry.length > 0)
+          : defaults.expandedProgramTreeNodeIds,
+        selectedProgramNodeId:
+          typeof parsed.selectedProgramNodeId === "string"
+            ? parsed.selectedProgramNodeId
+            : defaults.selectedProgramNodeId,
       };
     }
   } catch {
@@ -153,6 +267,313 @@ function normaliseVisionHost(input: string): string {
     return resolveDefaultVisionHost();
   }
   return trimmed.replace(/\/+$/, "");
+}
+
+function toTopologyPoint(value: unknown): Point3 | null {
+  if (Array.isArray(value) && value.length >= 3) {
+    const x = Number(value[0]);
+    const y = Number(value[1]);
+    const z = Number(value[2]);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      return { x, y, z };
+    }
+  } else if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const x = Number(obj.x);
+    const y = Number(obj.y);
+    const z = Number(obj.z);
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      return { x, y, z };
+    }
+  }
+  return null;
+}
+
+function toTopologyEdgeOverlay(model: TopologyModel | null): TopologyEdgeOverlay[] {
+  if (!model || !Array.isArray(model.edges)) {
+    return [];
+  }
+  return model.edges
+    .map((edge) => {
+      const points = Array.isArray(edge.samples)
+        ? edge.samples
+            .map((sample) => toTopologyPoint(sample))
+            .filter((p): p is Point3 => p !== null)
+        : [];
+      return {
+        id: edge.id,
+        partId: edge.part_id,
+        points,
+      } as TopologyEdgeOverlay;
+    })
+    .filter((edge) => edge.points.length >= 2);
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return window.btoa(binary);
+}
+
+function base64ToFile(base64: string, filename: string, mimeType = "application/step"): File {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new File([bytes], filename, { type: mimeType });
+}
+
+function samplePointOnPolyline(points: Point3[], s: number): Point3 | null {
+  if (!Array.isArray(points) || points.length === 0) {
+    return null;
+  }
+  if (points.length === 1) {
+    return points[0];
+  }
+  const clamped = Math.max(0, Math.min(1, s));
+  const cumulative: number[] = [0];
+  for (let i = 1; i < points.length; i += 1) {
+    const a = points[i - 1];
+    const b = points[i];
+    cumulative.push(
+      cumulative[i - 1] +
+        Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z),
+    );
+  }
+  const total = cumulative[cumulative.length - 1];
+  if (total <= 1e-9) {
+    return points[0];
+  }
+  const target = clamped * total;
+  let hi = 1;
+  while (hi < cumulative.length && cumulative[hi] < target) {
+    hi += 1;
+  }
+  const lo = Math.max(0, hi - 1);
+  const l0 = cumulative[lo];
+  const l1 = cumulative[Math.min(hi, cumulative.length - 1)];
+  if (Math.abs(l1 - l0) <= 1e-9) {
+    return points[Math.min(hi, points.length - 1)];
+  }
+  const t = (target - l0) / (l1 - l0);
+  const p0 = points[lo];
+  const p1 = points[Math.min(hi, points.length - 1)];
+  return {
+    x: p0.x + (p1.x - p0.x) * t,
+    y: p0.y + (p1.y - p0.y) * t,
+    z: p0.z + (p1.z - p0.z) * t,
+  };
+}
+
+function sampleSegmentOnPolyline(
+  points: Point3[],
+  startS: number,
+  endS: number,
+  sampleCount = 24,
+): Point3[] {
+  const a = Math.max(0, Math.min(1, startS));
+  const b = Math.max(0, Math.min(1, endS));
+  const s0 = Math.min(a, b);
+  const s1 = Math.max(a, b);
+  const count = Math.max(2, sampleCount);
+  const out: Point3[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const t = i / (count - 1);
+    const point = samplePointOnPolyline(points, s0 + (s1 - s0) * t);
+    if (point) {
+      out.push(point);
+    }
+  }
+  return out;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function polylineLength(points: Point3[]): number {
+  if (!Array.isArray(points) || points.length < 2) {
+    return 0;
+  }
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += Math.hypot(
+      points[i].x - points[i - 1].x,
+      points[i].y - points[i - 1].y,
+      points[i].z - points[i - 1].z,
+    );
+  }
+  return total;
+}
+
+function segmentBoundsS(segment: WeldSegmentDraft): { startS: number; endS: number } {
+  const start = clamp01(segment.startS);
+  const end = clamp01(segment.endS);
+  return {
+    startS: Math.min(start, end),
+    endS: Math.max(start, end),
+  };
+}
+
+function mmFromSegmentS(segment: WeldSegmentDraft, edgeLengthM: number): {
+  startMm: number;
+  endMm: number;
+} {
+  const { startS, endS } = segmentBoundsS(segment);
+  const lengthM = Math.max(0, Number.isFinite(edgeLengthM) ? edgeLengthM : 0);
+  return {
+    startMm: startS * lengthM * 1000,
+    endMm: endS * lengthM * 1000,
+  };
+}
+
+function normalizeWeldSegments(
+  rawSegments: unknown,
+  validEdgeIds?: Set<string>,
+): WeldSegmentDraft[] {
+  if (!Array.isArray(rawSegments)) {
+    return [];
+  }
+  const unique = new Set<string>();
+  const out: WeldSegmentDraft[] = [];
+  rawSegments.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+    const data = entry as Record<string, unknown>;
+    const edgeId = String(data.edgeId ?? data.edge_id ?? "").trim();
+    if (!edgeId || unique.has(edgeId)) {
+      return;
+    }
+    if (validEdgeIds && !validEdgeIds.has(edgeId)) {
+      return;
+    }
+    out.push({
+      edgeId,
+      startS: clamp01(Number(data.startS ?? data.start_s ?? 0)),
+      endS: clamp01(Number(data.endS ?? data.end_s ?? 1)),
+    });
+    unique.add(edgeId);
+  });
+  return out;
+}
+
+function normalizeWeldDraftRecord(
+  raw: WeldProgramRecord["weld_draft"] | null | undefined,
+  fallbackModelId: string,
+  validEdgeIds?: Set<string>,
+): WeldDraft | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const modelId = String(raw.modelId ?? raw.model_id ?? fallbackModelId).trim() || fallbackModelId;
+  const weldType = String(raw.weldType ?? raw.weld_type ?? "fillet").trim() || "fillet";
+  const weldName = String(raw.weldName ?? raw.weld_name ?? `${weldType} weld`).trim() || `${weldType} weld`;
+  const segments = normalizeWeldSegments(raw.segments, validEdgeIds);
+  if (segments.length === 0) {
+    const edgeId = String(raw.edgeId ?? raw.edge_id ?? "").trim();
+    if (
+      edgeId &&
+      (!validEdgeIds || validEdgeIds.has(edgeId))
+    ) {
+      segments.push({
+        edgeId,
+        startS: clamp01(Number(raw.startS ?? raw.start_s ?? 0)),
+        endS: clamp01(Number(raw.endS ?? raw.end_s ?? 1)),
+      });
+    }
+  }
+  if (segments.length === 0) {
+    return null;
+  }
+  const requestedActive = String(
+    raw.activeSegmentEdgeId ?? raw.active_segment_edge_id ?? "",
+  ).trim();
+  const activeSegmentEdgeId =
+    requestedActive && segments.some((segment) => segment.edgeId === requestedActive)
+      ? requestedActive
+      : segments[0].edgeId;
+  return {
+    modelId,
+    weldType,
+    weldName,
+    segments,
+    activeSegmentEdgeId,
+  };
+}
+
+function buildWeldPreviewPoints(
+  draft: WeldDraft,
+  topologyEdgeById: Map<string, TopologyEdgeOverlay>,
+): Point3[] {
+  const out: Point3[] = [];
+  draft.segments.forEach((segment) => {
+    const edge = topologyEdgeById.get(segment.edgeId);
+    if (!edge || edge.points.length < 2) {
+      return;
+    }
+    const points = sampleSegmentOnPolyline(
+      edge.points,
+      segment.startS,
+      segment.endS,
+      24,
+    );
+    if (points.length === 0) {
+      return;
+    }
+    if (out.length > 0) {
+      const prev = out[out.length - 1];
+      const first = points[0];
+      if (Math.hypot(prev.x - first.x, prev.y - first.y, prev.z - first.z) < 1e-6) {
+        points.shift();
+      }
+    }
+    out.push(...points);
+  });
+  return out;
+}
+
+function indexProgramNodes(root: ProgramNode | null): Map<string, ProgramNode> {
+  const byId = new Map<string, ProgramNode>();
+  if (!root) {
+    return byId;
+  }
+  const stack: ProgramNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    byId.set(node.id, node);
+    for (let i = node.children.length - 1; i >= 0; i -= 1) {
+      stack.push(node.children[i]);
+    }
+  }
+  return byId;
+}
+
+function findWeldProgramNodeIdByEdge(
+  nodeById: Map<string, ProgramNode>,
+  edgeId: string | null | undefined,
+): string | null {
+  if (!edgeId) {
+    return null;
+  }
+  for (const [nodeId, node] of nodeById.entries()) {
+    if (node.type !== "weldSegment") {
+      continue;
+    }
+    if (node.focus?.weldSegmentEdgeId === edgeId) {
+      return nodeId;
+    }
+  }
+  return null;
 }
 
 function TelemetryPanel({ latest }: { latest: TelemetryEvent | null }) {
@@ -575,6 +996,388 @@ function TrajectoryPanel({
   );
 }
 
+type WeldPanelProps = {
+  isConnected: boolean;
+  isTopologyLoading: boolean;
+  topologyModelId: string | null;
+  topologyEdgeCount: number;
+  activeEdgeId: string | null;
+  selectedEdges: Array<{
+    edgeId: string;
+    startMm: number;
+    endMm: number;
+    lengthMm: number;
+  }>;
+  weldSelectionMode: boolean;
+  draft: WeldDraft | null;
+  isPlanningWeld: boolean;
+  isRunning: boolean;
+  weldActive: boolean;
+  editableWaypoints: Point3[];
+  onToggleSelection: () => void;
+  onSelectEdge: (edgeId: string) => void;
+  onRemoveEdge: (edgeId: string) => void;
+  onPlanFromEdge: () => void;
+  onRun: () => void;
+  onSetWeldType: (value: string) => void;
+  onSetWeldName: (value: string) => void;
+  onSetStartS: (value: number) => void;
+  onSetEndS: (value: number) => void;
+  onWaypointChange: (index: number, axis: "x" | "y" | "z", value: number) => void;
+  onAddWaypoint: () => void;
+  onRemoveWaypoint: (index: number) => void;
+  onApplyWaypointReplan: () => void;
+  weldProgramName: string;
+  onWeldProgramNameChange: (value: string) => void;
+  onSaveProgram: () => void;
+  isSavingProgram: boolean;
+  savedPrograms: string[];
+  selectedProgram: string;
+  onSelectedProgramChange: (value: string) => void;
+  onLoadProgram: () => void;
+  isLoadingProgram: boolean;
+  isProgramListLoading: boolean;
+  onRefreshPrograms: () => void;
+};
+
+function WeldPanel({
+  isConnected,
+  isTopologyLoading,
+  topologyModelId,
+  topologyEdgeCount,
+  activeEdgeId,
+  selectedEdges,
+  weldSelectionMode,
+  draft,
+  isPlanningWeld,
+  isRunning,
+  weldActive,
+  editableWaypoints,
+  onToggleSelection,
+  onSelectEdge,
+  onRemoveEdge,
+  onPlanFromEdge,
+  onRun,
+  onSetWeldType,
+  onSetWeldName,
+  onSetStartS,
+  onSetEndS,
+  onWaypointChange,
+  onAddWaypoint,
+  onRemoveWaypoint,
+  onApplyWaypointReplan,
+  weldProgramName,
+  onWeldProgramNameChange,
+  onSaveProgram,
+  isSavingProgram,
+  savedPrograms,
+  selectedProgram,
+  onSelectedProgramChange,
+  onLoadProgram,
+  isLoadingProgram,
+  isProgramListLoading,
+  onRefreshPrograms,
+}: WeldPanelProps) {
+  const activeSegment = draft?.segments.find(
+    (segment) => segment.edgeId === draft.activeSegmentEdgeId,
+  );
+  const activeRow = selectedEdges.find((row) => row.edgeId === activeEdgeId) ?? null;
+  const canPlanFromEdge = Boolean(
+    topologyModelId &&
+      draft &&
+      draft.segments.length > 0 &&
+      !isPlanningWeld &&
+      !isRunning,
+  );
+  const canWaypointReplan = editableWaypoints.length > 1 && !isPlanningWeld && !isRunning;
+
+  return (
+    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-orange-200/80">
+          Weld Planning
+        </span>
+        {weldActive ? (
+          <span className="inline-flex items-center gap-1 rounded-full border border-orange-400/40 bg-orange-500/20 px-2 py-0.5 text-[11px] font-semibold text-orange-100">
+            <Flame size={12} /> Weld ON
+          </span>
+        ) : null}
+      </div>
+      <div className="space-y-2 text-xs text-slate-200/90">
+        <div className="rounded border border-slate-700/50 bg-slate-950/50 px-2 py-2">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-slate-300">Topology Model</span>
+            <span className="font-semibold text-slate-100">
+              {topologyModelId ? topologyModelId.slice(0, 12) : "none"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Edges</span>
+            <span>{topologyEdgeCount}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleSelection}
+            disabled={!topologyModelId || isTopologyLoading || !isConnected}
+            className={`mt-2 inline-flex w-full items-center justify-center gap-1 rounded border px-2 py-1 text-xs font-semibold transition ${
+              weldSelectionMode
+                ? "border-cyan-400/50 bg-cyan-500/20 text-cyan-100"
+                : "border-slate-600/60 bg-slate-900/60 text-slate-200 hover:border-slate-400"
+            } ${(!topologyModelId || isTopologyLoading || !isConnected) ? "opacity-60" : ""}`}
+          >
+            <Crosshair size={14} />
+            {weldSelectionMode ? "Edge Select Enabled" : "Enable Edge Select"}
+          </button>
+          <div className="mt-2 rounded border border-slate-700/50 bg-slate-950/40 p-1">
+            <div className="mb-1 text-[11px] text-slate-400">
+              Selected Edges ({selectedEdges.length})
+            </div>
+            {selectedEdges.length > 0 ? (
+              <div className="max-h-28 space-y-1 overflow-y-auto pr-1">
+                {selectedEdges.map((segment) => {
+                  const isActive = segment.edgeId === activeEdgeId;
+                  return (
+                    <div
+                      key={`selected-edge-${segment.edgeId}`}
+                      className={`flex items-center gap-1 rounded border px-1.5 py-1 ${
+                        isActive
+                          ? "border-cyan-400/60 bg-cyan-500/15"
+                          : "border-slate-700/60 bg-slate-900/40"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="flex-1 text-left text-[11px] text-slate-200"
+                        onClick={() => onSelectEdge(segment.edgeId)}
+                        title={segment.edgeId}
+                      >
+                        <div className="truncate">{segment.edgeId}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {segment.startMm.toFixed(1)} - {segment.endMm.toFixed(1)} /{" "}
+                          {segment.lengthMm.toFixed(1)} mm
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded border border-slate-600/70 bg-slate-900/70 px-1 text-[10px] text-slate-200 hover:border-slate-400"
+                        onClick={() => onRemoveEdge(segment.edgeId)}
+                        aria-label={`Remove ${segment.edgeId}`}
+                      >
+                        x
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-[11px] text-slate-500">No edges selected yet.</div>
+            )}
+          </div>
+        </div>
+
+        <label className="block text-slate-300">
+          Weld Type
+          <select
+            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+            value={draft?.weldType ?? "fillet"}
+            onChange={(event) => onSetWeldType(event.target.value)}
+            disabled={!draft}
+          >
+            {WELD_TYPE_OPTIONS.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="block text-slate-300">
+          Weld Name
+          <input
+            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+            value={draft?.weldName ?? ""}
+            onChange={(event) => onSetWeldName(event.target.value)}
+            disabled={!draft}
+          />
+        </label>
+
+        <div className="rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
+          <div className="mb-1 text-slate-300">Edge Segment</div>
+          <div className="text-[11px] text-slate-400">
+            edge: <span className="text-slate-200">{activeEdgeId ?? "none selected"}</span>
+          </div>
+          <label className="mt-2 block text-slate-300">
+            Start: {activeRow ? `${activeRow.startMm.toFixed(1)} mm` : "0.0 mm"}
+            <input
+              className="mt-1 w-full"
+              type="range"
+              min={0}
+              max={1}
+              step={0.001}
+              value={activeSegment?.startS ?? 0}
+              disabled={!activeSegment}
+              onChange={(event) => onSetStartS(Number(event.target.value))}
+            />
+          </label>
+          <label className="mt-1 block text-slate-300">
+            End: {activeRow ? `${activeRow.endMm.toFixed(1)} mm` : "0.0 mm"}
+            <input
+              className="mt-1 w-full"
+              type="range"
+              min={0}
+              max={1}
+              step={0.001}
+              value={activeSegment?.endS ?? 1}
+              disabled={!activeSegment}
+              onChange={(event) => onSetEndS(Number(event.target.value))}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={onPlanFromEdge}
+            disabled={!canPlanFromEdge}
+            className={`mt-2 w-full rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
+              !canPlanFromEdge ? "opacity-60" : ""
+            }`}
+          >
+            {isPlanningWeld
+              ? "Planning..."
+              : selectedEdges.length > 1
+                ? "Plan Weld From Selected Edges"
+                : "Plan Weld From Edge"}
+          </button>
+        </div>
+
+        <div className="rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
+          <div className="mb-1 flex items-center justify-between text-slate-300">
+            <span>Editable Waypoints ({editableWaypoints.length})</span>
+            <button
+              type="button"
+              onClick={onAddWaypoint}
+              disabled={!draft || isPlanningWeld || isRunning}
+              className={`rounded border border-slate-600/60 bg-slate-900/60 p-1 text-slate-100 ${(!draft || isPlanningWeld || isRunning) ? "opacity-60" : ""}`}
+              aria-label="Add waypoint"
+            >
+              <Plus size={12} />
+            </button>
+          </div>
+          <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+            {editableWaypoints.map((point, index) => (
+              <div key={`weld-wp-${index}`} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1">
+                {(["x", "y", "z"] as const).map((axis) => (
+                  <input
+                    key={`${index}-${axis}`}
+                    className="rounded border border-slate-600/60 bg-slate-950/70 px-1 py-0.5 text-[11px] text-slate-100"
+                    type="number"
+                    step="0.001"
+                    value={Number(point[axis].toFixed(4))}
+                    onChange={(event) =>
+                      onWaypointChange(index, axis, Number(event.target.value))
+                    }
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => onRemoveWaypoint(index)}
+                  disabled={editableWaypoints.length <= 2}
+                  className={`rounded border border-slate-600/60 bg-slate-900/60 p-1 text-slate-100 ${
+                    editableWaypoints.length <= 2 ? "opacity-60" : ""
+                  }`}
+                  aria-label={`Remove waypoint ${index + 1}`}
+                >
+                  <Minus size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={onApplyWaypointReplan}
+            disabled={!canWaypointReplan}
+            className={`mt-2 w-full rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
+              !canWaypointReplan ? "opacity-60" : ""
+            }`}
+          >
+            Apply Waypoint Edits
+          </button>
+        </div>
+      </div>
+      <div className="mt-3 rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
+        <div className="mb-1 text-xs font-semibold text-slate-300">Weld Program</div>
+        <label className="block text-slate-300">
+          Program Name
+          <input
+            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+            value={weldProgramName}
+            onChange={(event) => onWeldProgramNameChange(event.target.value)}
+            placeholder="my_weld_program"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={onSaveProgram}
+          disabled={!draft || isSavingProgram || !weldProgramName.trim()}
+          className={`mt-2 inline-flex w-full items-center justify-center gap-2 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
+            (!draft || isSavingProgram || !weldProgramName.trim()) ? "opacity-60" : ""
+          }`}
+        >
+          <Save size={14} />
+          {isSavingProgram ? "Saving..." : "Save Program"}
+        </button>
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-[11px] text-slate-400">Saved Programs</span>
+          <button
+            type="button"
+            onClick={onRefreshPrograms}
+            className={`rounded border border-slate-600/60 bg-slate-900/60 px-1.5 py-0.5 text-[10px] text-slate-200 ${isProgramListLoading ? "opacity-60" : ""}`}
+            disabled={isProgramListLoading}
+          >
+            {isProgramListLoading ? "..." : "Refresh"}
+          </button>
+        </div>
+        {savedPrograms.length > 0 ? (
+          <div className="mt-1 flex items-center gap-2">
+            <select
+              className="flex-1 rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+              value={selectedProgram}
+              onChange={(event) => onSelectedProgramChange(event.target.value)}
+            >
+              {savedPrograms.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={onLoadProgram}
+              disabled={!selectedProgram || isLoadingProgram}
+              className={`inline-flex items-center gap-1 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 ${
+                (!selectedProgram || isLoadingProgram) ? "opacity-60" : ""
+              }`}
+            >
+              <FolderOpen size={14} />
+              {isLoadingProgram ? "Loading..." : "Load"}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-1 text-[11px] text-slate-400">No saved weld programs.</div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onRun}
+        disabled={!draft || isRunning || isPlanningWeld}
+        className={`mt-3 inline-flex w-full items-center justify-center gap-2 rounded border border-orange-400/40 bg-orange-500/20 px-3 py-2 text-sm font-semibold text-orange-100 transition hover:bg-orange-500/30 ${
+          (!draft || isRunning || isPlanningWeld) ? "opacity-60" : ""
+        }`}
+      >
+        <Play size={14} /> Run Weld Preview
+      </button>
+    </div>
+  );
+}
+
 type SettingsDialogProps = {
   isOpen: boolean;
   apiHost: string;
@@ -762,11 +1565,29 @@ export default function App() {
     state: "idle",
     message: "No STEP model loaded.",
   });
+  const [topologyModel, setTopologyModel] = useState<TopologyModel | null>(null);
+  const [isTopologyLoading, setIsTopologyLoading] = useState(false);
+  const [weldSelectionMode, setWeldSelectionMode] = useState(false);
+  const [weldDraft, setWeldDraft] = useState<WeldDraft | null>(null);
+  const [isPlanningWeld, setIsPlanningWeld] = useState(false);
+  const [weldEditableWaypoints, setWeldEditableWaypoints] = useState<Point3[]>([]);
+  const [weldProgramName, setWeldProgramName] = useState("weld_program");
+  const [savedWeldPrograms, setSavedWeldPrograms] = useState<string[]>([]);
+  const [selectedWeldProgram, setSelectedWeldProgram] = useState("");
+  const [isWeldProgramListLoading, setIsWeldProgramListLoading] = useState(false);
+  const [isSavingWeldProgram, setIsSavingWeldProgram] = useState(false);
+  const [isLoadingWeldProgram, setIsLoadingWeldProgram] = useState(false);
+  const [pendingWeldProgramRestore, setPendingWeldProgramRestore] = useState<{
+    weldDraft: WeldDraft;
+    editableWaypoints: Point3[];
+    previewPlan: PreviewPlan | null;
+  } | null>(null);
   const showBoundingBox = settings.showBoundingBox;
-  const isLiveChartsCollapsed = settings.collapseLiveCharts;
-  const isStepImportCollapsed = settings.collapseStepImport;
-  const isTrajectoryCollapsed = settings.collapseTrajectory;
+  const activePanel = settings.activePanel;
+  const showProgramTree = settings.showProgramTree;
   const isRobotControlCollapsed = settings.collapseRobotControl;
+  const expandedProgramTreeNodeIds = settings.expandedProgramTreeNodeIds;
+  const selectedProgramNodeId = settings.selectedProgramNodeId;
   const visualizerRef = useRef<ArmVisualizerHandle | null>(null);
   const normalizedApiHost = useMemo(() => normaliseApiHost(apiHost), [apiHost]);
   const normalisedVisionHost = useMemo(
@@ -794,6 +1615,142 @@ export default function App() {
     previewPlan?.pathPoints && previewPlan.pathPoints.length > 0
       ? previewPlan.pathPoints
       : visualWaypoints;
+  const topologyOverlays = useMemo(
+    () => toTopologyEdgeOverlay(topologyModel),
+    [topologyModel],
+  );
+  const topologyEdgeById = useMemo(
+    () => new Map(topologyOverlays.map((edge) => [edge.id, edge])),
+    [topologyOverlays],
+  );
+  const weldActive = Boolean(latest?.weld_active);
+  const weldIndicatorPoint = useMemo(() => {
+    if (!weldActive) {
+      return null;
+    }
+    if (visualPathPoints.length > 0) {
+      return visualPathPoints[visualPathPoints.length - 1];
+    }
+    if (visualWaypoints.length > 0) {
+      return visualWaypoints[visualWaypoints.length - 1];
+    }
+    return null;
+  }, [weldActive, visualPathPoints, visualWaypoints]);
+  const activeWeldSegment = useMemo(
+    () =>
+      weldDraft
+        ? weldDraft.segments.find(
+            (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
+          ) ?? null
+        : null,
+    [weldDraft],
+  );
+  const selectedTopologyEdge = useMemo(
+    () => (activeWeldSegment ? topologyEdgeById.get(activeWeldSegment.edgeId) ?? null : null),
+    [activeWeldSegment, topologyEdgeById],
+  );
+  const selectedTopologyEdgeIds = useMemo(
+    () => (weldDraft ? weldDraft.segments.map((segment) => segment.edgeId) : []),
+    [weldDraft],
+  );
+  const weldStartPoint = useMemo(
+    () =>
+      selectedTopologyEdge && activeWeldSegment
+        ? samplePointOnPolyline(selectedTopologyEdge.points, activeWeldSegment.startS)
+        : null,
+    [selectedTopologyEdge, activeWeldSegment],
+  );
+  const weldStopPoint = useMemo(
+    () =>
+      selectedTopologyEdge && activeWeldSegment
+        ? samplePointOnPolyline(selectedTopologyEdge.points, activeWeldSegment.endS)
+        : null,
+    [selectedTopologyEdge, activeWeldSegment],
+  );
+  const weldSegmentPoints = useMemo(
+    () =>
+      selectedTopologyEdge && activeWeldSegment
+        ? sampleSegmentOnPolyline(
+            selectedTopologyEdge.points,
+            activeWeldSegment.startS,
+            activeWeldSegment.endS,
+            28,
+          )
+        : [],
+    [selectedTopologyEdge, activeWeldSegment],
+  );
+  const weldSelectedEdgeRows = useMemo(
+    () =>
+      weldDraft
+        ? weldDraft.segments.map((segment) => {
+            const edge = topologyEdgeById.get(segment.edgeId);
+            const lengthM = edge ? polylineLength(edge.points) : 0;
+            const mm = mmFromSegmentS(segment, lengthM);
+            return {
+              edgeId: segment.edgeId,
+              startMm: mm.startMm,
+              endMm: mm.endMm,
+              lengthMm: lengthM * 1000,
+            };
+          })
+        : [],
+    [weldDraft, topologyEdgeById],
+  );
+  const programTreeRoot = useMemo(
+    () =>
+      buildProgramTree({
+        plan: previewPlan,
+        weldSegments: weldDraft?.segments ?? [],
+        weldType: weldDraft?.weldType,
+      }),
+    [previewPlan, weldDraft],
+  );
+  const programNodeById = useMemo(
+    () => indexProgramNodes(programTreeRoot),
+    [programTreeRoot],
+  );
+  const selectedProgramNode = useMemo(
+    () =>
+      selectedProgramNodeId
+        ? (programNodeById.get(selectedProgramNodeId) ?? null)
+        : null,
+    [selectedProgramNodeId, programNodeById],
+  );
+  const selectedProgramPathRange = selectedProgramNode?.focus?.pathRange ?? null;
+  const selectedProgramWaypointIndices = selectedProgramNode?.focus?.waypointIndices ?? [];
+  const selectedNodeFocusPoints = useMemo(() => {
+    const node = selectedProgramNode;
+    if (!node) {
+      return [];
+    }
+    const out: Point3[] = [];
+    const focus = node.focus;
+    if (focus?.pathRange && visualPathPoints.length > 0) {
+      const start = Math.max(0, Math.min(visualPathPoints.length - 1, focus.pathRange.start));
+      const end = Math.max(start, Math.min(visualPathPoints.length - 1, focus.pathRange.end));
+      out.push(...visualPathPoints.slice(start, end + 1));
+    }
+    if (Array.isArray(focus?.waypointIndices) && focus.waypointIndices.length > 0) {
+      focus.waypointIndices.forEach((index) => {
+        if (index >= 0 && index < visualWaypoints.length) {
+          out.push(visualWaypoints[index]);
+        }
+      });
+    }
+    if (out.length === 0 && node.type === "program") {
+      return visualPathPoints.length > 0 ? visualPathPoints : visualWaypoints;
+    }
+    return out;
+  }, [selectedProgramNode, visualPathPoints, visualWaypoints]);
+  const sidebarItems = useMemo<SidebarItem[]>(
+    () => [
+      { id: "step", label: "STEP Import", icon: <FolderOpen size={17} />, shortcut: "1" },
+      { id: "trajectory", label: "Trajectory", icon: <Route size={17} />, shortcut: "2" },
+      { id: "weld", label: "Weld", icon: <Flame size={17} />, shortcut: "3" },
+      { id: "telemetry", label: "Live Charts", icon: <Camera size={17} />, shortcut: "4" },
+    ],
+    [],
+  );
   const toggleButtonClasses = useMemo(
     () =>
       isConnected
@@ -828,6 +1785,18 @@ export default function App() {
     setSelectedTrajectory("");
     setIsLoadingSavedTrajectory(false);
     setIsHoming(false);
+    setTopologyModel(null);
+    setIsTopologyLoading(false);
+    setWeldSelectionMode(false);
+    setWeldDraft(null);
+    setIsPlanningWeld(false);
+    setWeldEditableWaypoints([]);
+    setSavedWeldPrograms([]);
+    setSelectedWeldProgram("");
+    setIsWeldProgramListLoading(false);
+    setIsSavingWeldProgram(false);
+    setIsLoadingWeldProgram(false);
+    setPendingWeldProgramRestore(null);
   }, []);
 
   const handleMessage = useCallback((payload: string) => {
@@ -835,6 +1804,8 @@ export default function App() {
     let gripper: number | undefined;
     let servos: Record<string, ServoSample> | undefined;
     let parsedAlerts: Alert[] | undefined;
+    let weldActiveValue: boolean | undefined;
+    let weldTypeValue: string | undefined;
 
     try {
       const parsed = JSON.parse(payload);
@@ -873,6 +1844,12 @@ export default function App() {
         if (Array.isArray(maybeObj.alerts)) {
           parsedAlerts = maybeObj.alerts as Alert[];
         }
+        if (typeof maybeObj.weld_active === "boolean") {
+          weldActiveValue = maybeObj.weld_active;
+        }
+        if (typeof maybeObj.weld_type === "string" && maybeObj.weld_type.trim()) {
+          weldTypeValue = maybeObj.weld_type.trim();
+        }
       }
     } catch {
       // fall back to raw payload only
@@ -885,6 +1862,8 @@ export default function App() {
       gripper,
       servos,
       alerts: parsedAlerts,
+      weld_active: weldActiveValue,
+      weld_type: weldTypeValue,
     };
     setLatest(next);
     // Merge alerts into state (keep last 20)
@@ -953,6 +1932,11 @@ export default function App() {
 
   const handleStepFileChange = useCallback((file: File | null) => {
     setStepFile(file);
+    setTopologyModel(null);
+    setWeldSelectionMode(false);
+    setWeldDraft(null);
+    setWeldEditableWaypoints([]);
+    setPendingWeldProgramRestore(null);
     if (file) {
       setStepTransform(DEFAULT_STEP_TRANSFORM);
     }
@@ -961,6 +1945,11 @@ export default function App() {
   const handleClearStepFile = useCallback(() => {
     setStepFile(null);
     setStepLoadStatus({ state: "idle", message: "No STEP model loaded." });
+    setTopologyModel(null);
+    setWeldSelectionMode(false);
+    setWeldDraft(null);
+    setWeldEditableWaypoints([]);
+    setPendingWeldProgramRestore(null);
   }, []);
 
   const handleStepTransformChange = useCallback(
@@ -990,6 +1979,133 @@ export default function App() {
   const handleResetStepTransform = useCallback(() => {
     setStepTransform(DEFAULT_STEP_TRANSFORM);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!stepFile) {
+        setTopologyModel(null);
+        setWeldDraft(null);
+        setWeldEditableWaypoints([]);
+        setPendingWeldProgramRestore(null);
+        return;
+      }
+      setIsTopologyLoading(true);
+      try {
+        const encoded = await fileToBase64(stepFile);
+        const response = await fetch(`${normalizedApiHost}/cad/topology/load-step`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: stepFile.name,
+            step_base64: encoded,
+            sample_count: 64,
+          }),
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || `Topology request failed (${response.status})`);
+        }
+        const data = (await response.json()) as TopologyModel;
+        if (cancelled) {
+          return;
+        }
+        setTopologyModel(data);
+        const validEdgeIds = new Set(
+          Array.isArray(data.edges) ? data.edges.map((edge) => edge.id) : [],
+        );
+        if (pendingWeldProgramRestore) {
+          const restored = pendingWeldProgramRestore.weldDraft;
+          const fallbackEdgeId =
+            Array.isArray(data.edges) && data.edges.length > 0 ? data.edges[0]?.id : "";
+          const restoredSegments = restored.segments
+            .filter((segment) => validEdgeIds.has(segment.edgeId))
+            .map((segment) => ({
+              edgeId: segment.edgeId,
+              startS: clamp01(segment.startS),
+              endS: clamp01(segment.endS),
+            }));
+          if (restoredSegments.length === 0 && fallbackEdgeId) {
+            restoredSegments.push({ edgeId: fallbackEdgeId, startS: 0, endS: 1 });
+          }
+          const restoredActive =
+            restored.activeSegmentEdgeId &&
+            restoredSegments.some((segment) => segment.edgeId === restored.activeSegmentEdgeId)
+              ? restored.activeSegmentEdgeId
+              : restoredSegments[0]?.edgeId ?? null;
+          setWeldDraft(
+            restoredSegments.length > 0
+              ? {
+                  ...restored,
+                  modelId: data.model_id,
+                  segments: restoredSegments,
+                  activeSegmentEdgeId: restoredActive,
+                }
+              : null,
+          );
+          setWeldEditableWaypoints(pendingWeldProgramRestore.editableWaypoints);
+          if (pendingWeldProgramRestore.previewPlan) {
+            setPreviewPlan(pendingWeldProgramRestore.previewPlan);
+            setPlannerPoints(pendingWeldProgramRestore.previewPlan.waypoints);
+          }
+          setPendingWeldProgramRestore(null);
+          return;
+        }
+        const firstEdgeId =
+          Array.isArray(data.edges) && data.edges.length > 0 ? data.edges[0]?.id : null;
+        if (firstEdgeId) {
+          setWeldDraft((prev) => {
+            const filteredSegments =
+              prev?.segments
+                ?.filter((segment) => validEdgeIds.has(segment.edgeId))
+                .map((segment) => ({
+                  edgeId: segment.edgeId,
+                  startS: clamp01(segment.startS),
+                  endS: clamp01(segment.endS),
+                })) ?? [];
+            const nextSegments =
+              filteredSegments.length > 0
+                ? filteredSegments
+                : [{ edgeId: firstEdgeId, startS: 0, endS: 1 }];
+            const activeSegmentEdgeId =
+              prev?.activeSegmentEdgeId &&
+              nextSegments.some((segment) => segment.edgeId === prev.activeSegmentEdgeId)
+                ? prev.activeSegmentEdgeId
+                : (nextSegments[0]?.edgeId ?? null);
+            if (!activeSegmentEdgeId) {
+              return null;
+            }
+            return {
+              modelId: data.model_id,
+              weldType: prev?.weldType ?? "fillet",
+              weldName: prev?.weldName ?? "fillet weld",
+              segments: nextSegments,
+              activeSegmentEdgeId,
+            };
+          });
+        } else {
+          setWeldDraft(null);
+        }
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        setTopologyModel(null);
+        setWeldDraft(null);
+        setWeldEditableWaypoints([]);
+        setPendingWeldProgramRestore(null);
+        setError(`Failed to load CAD topology: ${(err as Error).message}`);
+      } finally {
+        if (!cancelled) {
+          setIsTopologyLoading(false);
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [stepFile, normalizedApiHost, pendingWeldProgramRestore]);
 
   const requestPlannerPreview = useCallback(
     async (points: Point3[]) => {
@@ -1093,8 +2209,243 @@ export default function App() {
     setError(null);
     setPreviewPlan(null);
     setPlannerPoints([]);
+    setWeldEditableWaypoints([]);
     setIsPlanning(false);
   }, []);
+
+  const requestWeldPreview = useCallback(
+    async (draft: WeldDraft, waypointsOverride?: Point3[]) => {
+      const primarySegment = draft.segments[0];
+      if (!primarySegment) {
+        setError("Select at least one edge before planning a weld.");
+        return;
+      }
+      const computedOverride =
+        Array.isArray(waypointsOverride) && waypointsOverride.length > 1
+          ? waypointsOverride
+          : buildWeldPreviewPoints(draft, topologyEdgeById);
+      if (computedOverride.length < 2) {
+        setError("Selected edge segments do not produce enough points to plan a weld.");
+        return;
+      }
+      setIsPlanningWeld(true);
+      setError(null);
+      try {
+        const response = await fetch(`${normalizedApiHost}/trajectory/plan-weld`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model_id: draft.modelId,
+            edge_id: primarySegment.edgeId,
+            start_s: clamp01(primarySegment.startS),
+            end_s: clamp01(primarySegment.endS),
+            weld_type: draft.weldType,
+            weld_name: draft.weldName,
+            sample_count: 48,
+            waypoints_override: encodePointsForApi(computedOverride),
+          }),
+        });
+        if (!response.ok) {
+          const message = await response.text();
+          throw new Error(message || `Weld planning failed (${response.status})`);
+        }
+        const data = await response.json();
+        const { plan, waypoints } = previewFromPlannerPayload(data);
+        setPreviewPlan(plan);
+        setPlannerPoints(waypoints);
+        setWeldEditableWaypoints(waypoints);
+        setIsPlanning(false);
+      } catch (err) {
+        setError(`Failed to plan weld: ${(err as Error).message}`);
+      } finally {
+        setIsPlanningWeld(false);
+      }
+    },
+    [normalizedApiHost, topologyEdgeById],
+  );
+
+  const handleTopologyEdgeSelected = useCallback(
+    (edgeId: string) => {
+      setWeldDraft((current) => {
+        const modelId = topologyModel?.model_id ?? current?.modelId ?? "";
+        const weldType = current?.weldType ?? "fillet";
+        const existingSegments = current?.segments ?? [];
+        const alreadySelected = existingSegments.some((segment) => segment.edgeId === edgeId);
+        return {
+          modelId,
+          weldType,
+          weldName: current?.weldName ?? `${weldType} weld`,
+          segments: alreadySelected
+            ? existingSegments
+            : [...existingSegments, { edgeId, startS: 0, endS: 1 }],
+          activeSegmentEdgeId: edgeId,
+        };
+      });
+    },
+    [topologyModel],
+  );
+
+  const handlePlanWeldFromEdge = useCallback(async () => {
+    if (!weldDraft) {
+      return;
+    }
+    await requestWeldPreview(weldDraft);
+  }, [requestWeldPreview, weldDraft]);
+
+  const handleApplyWeldWaypointEdits = useCallback(async () => {
+    if (!weldDraft || weldEditableWaypoints.length < 2) {
+      return;
+    }
+    await requestWeldPreview(weldDraft, weldEditableWaypoints);
+  }, [requestWeldPreview, weldDraft, weldEditableWaypoints]);
+
+  const refreshWeldProgramList = useCallback(async () => {
+    setIsWeldProgramListLoading(true);
+    try {
+      const response = await fetch(`${normalizedApiHost}/weld-program/list`);
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Weld program list failed (${response.status})`);
+      }
+      const payload = (await response.json()) as { programs?: unknown };
+      const names = Array.isArray(payload.programs)
+        ? payload.programs
+            .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+            .filter((entry): entry is string => entry.length > 0)
+        : [];
+      setSavedWeldPrograms(names);
+      setSelectedWeldProgram((current) =>
+        current && names.includes(current) ? current : names[0] ?? "",
+      );
+    } catch (err) {
+      setError(`Failed to load weld programs: ${(err as Error).message}`);
+      setSavedWeldPrograms([]);
+      setSelectedWeldProgram("");
+    } finally {
+      setIsWeldProgramListLoading(false);
+    }
+  }, [normalizedApiHost]);
+
+  const handleSaveWeldProgram = useCallback(async () => {
+    if (!weldDraft || !stepFile) {
+      setError("Load a STEP model and select an edge before saving a weld program.");
+      return;
+    }
+    const programName = weldProgramName.trim();
+    if (!programName) {
+      setError("Program name is required.");
+      return;
+    }
+    setIsSavingWeldProgram(true);
+    setError(null);
+    try {
+      const stepBase64 = await fileToBase64(stepFile);
+      const response = await fetch(`${normalizedApiHost}/weld-program/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: programName,
+          step: {
+            filename: stepFile.name,
+            step_base64: stepBase64,
+            transform: stepTransform,
+          },
+          weld_draft: {
+            modelId: weldDraft.modelId,
+            weldType: weldDraft.weldType,
+            weldName: weldDraft.weldName,
+            segments: weldDraft.segments.map((segment) => ({
+              edgeId: segment.edgeId,
+              startS: clamp01(segment.startS),
+              endS: clamp01(segment.endS),
+            })),
+            activeSegmentEdgeId: weldDraft.activeSegmentEdgeId,
+            // legacy single-segment fields kept for backward compatibility
+            edgeId:
+              weldDraft.segments.find(
+                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
+              )?.edgeId ?? weldDraft.segments[0]?.edgeId ?? "",
+            startS:
+              weldDraft.segments.find(
+                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
+              )?.startS ?? weldDraft.segments[0]?.startS ?? 0,
+            endS:
+              weldDraft.segments.find(
+                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
+              )?.endS ?? weldDraft.segments[0]?.endS ?? 1,
+          },
+          editable_waypoints: weldEditableWaypoints,
+          planned_trajectory: previewPlan,
+        }),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Save weld program failed (${response.status})`);
+      }
+      await refreshWeldProgramList();
+      setSelectedWeldProgram(programName);
+    } catch (err) {
+      setError(`Failed to save weld program: ${(err as Error).message}`);
+    } finally {
+      setIsSavingWeldProgram(false);
+    }
+  }, [
+    weldDraft,
+    stepFile,
+    weldProgramName,
+    normalizedApiHost,
+    stepTransform,
+    weldEditableWaypoints,
+    previewPlan,
+    refreshWeldProgramList,
+  ]);
+
+  const handleLoadWeldProgram = useCallback(async () => {
+    if (!selectedWeldProgram.trim() || isLoadingWeldProgram) {
+      return;
+    }
+    setIsLoadingWeldProgram(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${normalizedApiHost}/weld-program/${encodeURIComponent(selectedWeldProgram.trim())}`,
+      );
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Load weld program failed (${response.status})`);
+      }
+      const program = (await response.json()) as WeldProgramRecord;
+      if (!program?.step?.step_base64 || !program?.step?.filename) {
+        throw new Error("Saved program is missing STEP payload.");
+      }
+
+      const stepFileFromProgram = base64ToFile(
+        program.step.step_base64,
+        program.step.filename,
+      );
+      const restoredDraft = normalizeWeldDraftRecord(
+        program.weld_draft,
+        "",
+      );
+      if (!restoredDraft) {
+        throw new Error("Saved program weld draft is invalid.");
+      }
+      setPendingWeldProgramRestore({
+        weldDraft: restoredDraft,
+        editableWaypoints: Array.isArray(program.editable_waypoints)
+          ? program.editable_waypoints
+          : [],
+        previewPlan: program.planned_trajectory ?? null,
+      });
+      setStepFile(stepFileFromProgram);
+      setStepTransform(program.step.transform ?? DEFAULT_STEP_TRANSFORM);
+      setWeldProgramName(program.name);
+    } catch (err) {
+      setError(`Failed to load weld program: ${(err as Error).message}`);
+    } finally {
+      setIsLoadingWeldProgram(false);
+    }
+  }, [isLoadingWeldProgram, normalizedApiHost, selectedWeldProgram]);
 
   const refreshTrajectoryList = useCallback(async () => {
     if (trajectoryRefreshInFlight.current) {
@@ -1156,6 +2507,40 @@ export default function App() {
       );
       setPreviewPlan(plan);
       setPlannerPoints(plan.waypoints);
+      setWeldEditableWaypoints(plan.waypoints);
+      if (data?.trajectory?.weld && typeof data.trajectory.weld === "object") {
+        const weld = data.trajectory.weld as Record<string, unknown>;
+        const weldType =
+          typeof weld.type === "string" && weld.type.trim() ? weld.type.trim() : "fillet";
+        const modelId =
+          typeof weld.model_id === "string" && weld.model_id.trim() ? weld.model_id.trim() : "";
+        const edgeId =
+          typeof weld.edge_id === "string" && weld.edge_id.trim() ? weld.edge_id.trim() : "";
+        const segments =
+          edgeId.length > 0
+            ? [
+                {
+                  edgeId,
+                  startS: typeof weld.start_s === "number" ? clamp01(weld.start_s) : 0,
+                  endS: typeof weld.end_s === "number" ? clamp01(weld.end_s) : 1,
+                },
+              ]
+            : [];
+        setWeldDraft(
+          segments.length > 0
+            ? {
+                modelId,
+                weldType,
+                weldName:
+                  typeof weld.name === "string" && weld.name.trim()
+                    ? weld.name.trim()
+                    : `${weldType} weld`,
+                segments,
+                activeSegmentEdgeId: segments[0].edgeId,
+              }
+            : null,
+        );
+      }
       setIsPlanning(false);
     } catch (err) {
       setError(`Failed to load trajectory: ${(err as Error).message}`);
@@ -1250,7 +2635,8 @@ export default function App() {
       return;
     }
     refreshTrajectoryList();
-  }, [isConnected, refreshTrajectoryList]);
+    refreshWeldProgramList();
+  }, [isConnected, refreshTrajectoryList, refreshWeldProgramList]);
 
   useEffect(() => {
     return () => {
@@ -1299,6 +2685,132 @@ export default function App() {
     persistSettings(settings);
   }, [settings]);
 
+  useEffect(() => {
+    if (!selectedProgramNodeId) {
+      return;
+    }
+    if (programNodeById.has(selectedProgramNodeId)) {
+      return;
+    }
+    updateSettings({ selectedProgramNodeId: null });
+  }, [selectedProgramNodeId, programNodeById, updateSettings]);
+
+  useEffect(() => {
+    if (!selectedProgramNodeId) {
+      return;
+    }
+    const segmentEdgeId = selectedProgramNode?.focus?.weldSegmentEdgeId;
+    if (!segmentEdgeId) {
+      return;
+    }
+    setWeldDraft((current) => {
+      if (!current || current.activeSegmentEdgeId === segmentEdgeId) {
+        return current;
+      }
+      if (!current.segments.some((segment) => segment.edgeId === segmentEdgeId)) {
+        return current;
+      }
+      return {
+        ...current,
+        activeSegmentEdgeId: segmentEdgeId,
+      };
+    });
+  }, [selectedProgramNodeId, selectedProgramNode]);
+
+  useEffect(() => {
+    const activeEdgeId = weldDraft?.activeSegmentEdgeId ?? null;
+    if (!activeEdgeId) {
+      return;
+    }
+    const selectedNodeType = selectedProgramNode?.type ?? null;
+    if (selectedNodeType && selectedNodeType !== "weldSegment" && activePanel !== "weld") {
+      return;
+    }
+    const matchingNodeId = findWeldProgramNodeIdByEdge(programNodeById, activeEdgeId);
+    if (!matchingNodeId || matchingNodeId === selectedProgramNodeId) {
+      return;
+    }
+    updateSettings({ selectedProgramNodeId: matchingNodeId });
+  }, [
+    weldDraft?.activeSegmentEdgeId,
+    selectedProgramNode,
+    selectedProgramNodeId,
+    programNodeById,
+    activePanel,
+    updateSettings,
+  ]);
+
+  useEffect(() => {
+    if (!selectedProgramNodeId || selectedNodeFocusPoints.length === 0) {
+      return;
+    }
+    visualizerRef.current?.focusOnPoints(selectedNodeFocusPoints);
+  }, [selectedProgramNodeId, selectedNodeFocusPoints]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase() ?? "";
+      const editable =
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        Boolean(target?.isContentEditable);
+      if (editable || event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const panelByKey: Record<string, SidebarPanelId> = {
+        "1": "step",
+        "2": "trajectory",
+        "3": "weld",
+        "4": "telemetry",
+      };
+      if (panelByKey[key]) {
+        const nextPanel = panelByKey[key];
+        updateSettings({ activePanel: activePanel === nextPanel ? null : nextPanel });
+        event.preventDefault();
+        return;
+      }
+      if (key === "t") {
+        updateSettings({ showProgramTree: !showProgramTree });
+        event.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activePanel, showProgramTree, updateSettings]);
+
+  const handleSelectSidebarPanel = useCallback(
+    (panelId: string) => {
+      const panel = panelId as SidebarPanelId;
+      updateSettings({ activePanel: activePanel === panel ? null : panel });
+    },
+    [activePanel, updateSettings],
+  );
+  const handleToggleProgramTreeNode = useCallback(
+    (nodeId: string) => {
+      const exists = expandedProgramTreeNodeIds.includes(nodeId);
+      updateSettings({
+        expandedProgramTreeNodeIds: exists
+          ? expandedProgramTreeNodeIds.filter((id) => id !== nodeId)
+          : [...expandedProgramTreeNodeIds, nodeId],
+      });
+    },
+    [expandedProgramTreeNodeIds, updateSettings],
+  );
+  const handleSelectProgramTreeNode = useCallback(
+    (nodeId: string) => {
+      const node = programNodeById.get(nodeId);
+      const nextPanel = node?.focus?.openPanel;
+      updateSettings({
+        selectedProgramNodeId: nodeId,
+        activePanel: nextPanel ?? activePanel,
+      });
+    },
+    [programNodeById, updateSettings, activePanel],
+  );
+
   const streamingLabel = useMemo(
     () => (isConnected ? "Streaming" : "Disconnected"),
     [isConnected],
@@ -1306,22 +2818,207 @@ export default function App() {
   const headerAlert = [error, visionError].filter(Boolean).join(" • ");
   const hasHeaderAlert = headerAlert.length > 0;
   const alertTone = error ? "rose" : "amber";
+  const activeDrawerContent = activePanel === "step"
+    ? (
+        <StepImportPanel
+          stepFileName={stepFile?.name ?? null}
+          stepStatus={stepLoadStatus}
+          transform={stepTransform}
+          onFileChange={handleStepFileChange}
+          onTransformChange={handleStepTransformChange}
+          onScaleChange={handleStepScaleChange}
+          onResetTransform={handleResetStepTransform}
+          onClearFile={handleClearStepFile}
+        />
+      )
+    : activePanel === "trajectory"
+      ? (
+          <TrajectoryPanel
+            isPlanning={isPlanning}
+            isPlanLoading={isPlanLoading}
+            isRunning={isRunningPreview}
+            preview={previewPlan}
+            plannerPoints={plannerPoints}
+            savedTrajectories={savedTrajectories}
+            selectedTrajectory={selectedTrajectory}
+            isTrajectoryListLoading={isTrajectoryListLoading}
+            isLoadingSavedTrajectory={isLoadingSavedTrajectory}
+            onPlanToggle={handlePlanToggle}
+            onRun={handleRunPreview}
+            onClear={handleClearPreview}
+            onRefreshTrajectories={refreshTrajectoryList}
+            onSelectTrajectory={handleSelectTrajectory}
+            onLoadTrajectory={handleLoadTrajectory}
+            onUndoPoint={handleUndoPoint}
+          />
+        )
+      : activePanel === "weld"
+        ? (
+            <WeldPanel
+              isConnected={isConnected}
+              isTopologyLoading={isTopologyLoading}
+              topologyModelId={topologyModel?.model_id ?? null}
+              topologyEdgeCount={topologyModel?.edges?.length ?? 0}
+              activeEdgeId={activeWeldSegment?.edgeId ?? null}
+              selectedEdges={weldSelectedEdgeRows}
+              weldSelectionMode={weldSelectionMode}
+              draft={weldDraft}
+              isPlanningWeld={isPlanningWeld}
+              isRunning={isRunningPreview}
+              weldActive={weldActive}
+              editableWaypoints={weldEditableWaypoints}
+              onToggleSelection={() => setWeldSelectionMode((value) => !value)}
+              onSelectEdge={(edgeId) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        activeSegmentEdgeId: edgeId,
+                      }
+                    : current,
+                )
+              }
+              onRemoveEdge={(edgeId) =>
+                setWeldDraft((current) => {
+                  if (!current) {
+                    return current;
+                  }
+                  const nextSegments = current.segments.filter(
+                    (segment) => segment.edgeId !== edgeId,
+                  );
+                  if (nextSegments.length === 0) {
+                    return null;
+                  }
+                  const nextActive = nextSegments.some(
+                    (segment) => segment.edgeId === current.activeSegmentEdgeId,
+                  )
+                    ? current.activeSegmentEdgeId
+                    : (nextSegments[0]?.edgeId ?? null);
+                  if (!nextActive) {
+                    return null;
+                  }
+                  return {
+                    ...current,
+                    segments: nextSegments,
+                    activeSegmentEdgeId: nextActive,
+                  };
+                })
+              }
+              onPlanFromEdge={handlePlanWeldFromEdge}
+              onRun={handleRunPreview}
+              onSetWeldType={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        weldType: value,
+                        weldName:
+                          current.weldName && current.weldName.trim().length > 0
+                            ? current.weldName
+                            : `${value} weld`,
+                      }
+                    : current,
+                )
+              }
+              onSetWeldName={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        weldName: value,
+                      }
+                    : current,
+                )
+              }
+              onSetStartS={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        segments: current.segments.map((segment) =>
+                          segment.edgeId === current.activeSegmentEdgeId
+                            ? { ...segment, startS: clamp01(value) }
+                            : segment,
+                        ),
+                      }
+                    : current,
+                )
+              }
+              onSetEndS={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        segments: current.segments.map((segment) =>
+                          segment.edgeId === current.activeSegmentEdgeId
+                            ? { ...segment, endS: clamp01(value) }
+                            : segment,
+                        ),
+                      }
+                    : current,
+                )
+              }
+              onWaypointChange={(index, axis, value) =>
+                setWeldEditableWaypoints((current) =>
+                  current.map((point, pointIndex) =>
+                    pointIndex === index
+                      ? {
+                          ...point,
+                          [axis]: Number.isFinite(value) ? value : point[axis],
+                        }
+                      : point,
+                  ),
+                )
+              }
+              onAddWaypoint={() =>
+                setWeldEditableWaypoints((current) => {
+                  if (current.length === 0) {
+                    return [{ x: 0, y: 0, z: 0 }, { x: 0.02, y: 0, z: 0 }];
+                  }
+                  const last = current[current.length - 1];
+                  return [...current, { ...last }];
+                })
+              }
+              onRemoveWaypoint={(index) =>
+                setWeldEditableWaypoints((current) =>
+                  current.length <= 2
+                    ? current
+                    : current.filter((_, pointIndex) => pointIndex !== index),
+                )
+              }
+              onApplyWaypointReplan={handleApplyWeldWaypointEdits}
+              weldProgramName={weldProgramName}
+              onWeldProgramNameChange={setWeldProgramName}
+              onSaveProgram={handleSaveWeldProgram}
+              isSavingProgram={isSavingWeldProgram}
+              savedPrograms={savedWeldPrograms}
+              selectedProgram={selectedWeldProgram}
+              onSelectedProgramChange={setSelectedWeldProgram}
+              onLoadProgram={handleLoadWeldProgram}
+              isLoadingProgram={isLoadingWeldProgram}
+              isProgramListLoading={isWeldProgramListLoading}
+              onRefreshPrograms={refreshWeldProgramList}
+            />
+          )
+        : activePanel === "telemetry"
+          ? <TelemetryCharts latest={latest} />
+        : null;
 
   return (
     <div className="flex min-h-screen flex-col bg-gradient-to-b from-slate-900/80 via-slate-950 to-black text-slate-100">
-      <header className="relative flex flex-col gap-4 border-b border-slate-800/40 bg-slate-950/60 px-6 py-6 shadow-inner shadow-slate-900/40 backdrop-blur">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <header className="relative flex flex-col gap-2 border-b border-slate-800/40 bg-slate-950/60 px-6 py-2.5 shadow-inner shadow-slate-900/40 backdrop-blur">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col shrink-0">
-            <div className="flex justify-end text-2xl font-semibold tracking-tight text-cyan-300 sm:text-3xl w-full">
+            <div className="flex justify-end text-lg font-semibold tracking-tight text-cyan-300 sm:text-xl w-full leading-tight">
               Control Center
             </div>
-            <div className="flex justify-end text-md tracking-tight text-cyan-300 sm:text-md w-full">
+            <div className="flex justify-end text-xs tracking-tight text-cyan-300/90 sm:text-sm w-full leading-tight">
               Gradient Robotics
             </div>
           </div>
-          <div className="flex min-w-0 flex-1 items-center sm:px-4">
+          <div className="flex min-w-0 flex-1 items-center sm:px-3">
             <div
-              className={`flex h-10 w-full items-center overflow-hidden rounded-lg border px-3 text-xs sm:text-sm ${
+              className={`flex h-7 w-full items-center overflow-hidden rounded-lg border px-2 text-[11px] sm:text-xs ${
                 hasHeaderAlert
                   ? alertTone === "rose"
                     ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
@@ -1336,16 +3033,16 @@ export default function App() {
               {hasHeaderAlert && <span className="w-full truncate">{headerAlert}</span>}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <span
-              className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
                 isConnected
                   ? "bg-emerald-500/15 text-emerald-200 ring-1 ring-inset ring-emerald-400/30"
                   : "bg-rose-500/10 text-rose-200 ring-1 ring-inset ring-rose-400/20"
               }`}
             >
               <span
-                className={`h-2 w-2 rounded-full ${
+                className={`h-1.5 w-1.5 rounded-full ${
                   isConnected ? "bg-emerald-400" : "bg-rose-400"
                 }`}
               />
@@ -1358,43 +3055,43 @@ export default function App() {
               aria-label={isConnected ? "Disconnect from robot" : "Connect to robot"}
             >
               {isConnected ? (
-                <Unplug size={18} strokeWidth={2} />
+                <Unplug size={16} strokeWidth={2} />
               ) : (
-                <Plug size={18} strokeWidth={2} />
+                <Plug size={16} strokeWidth={2} />
               )}
             </button>
             <button
               type="button"
               onClick={handleHome}
               disabled={!isConnected || isHoming}
-              className={`rounded-full border border-slate-600/60 bg-slate-900/60 p-2 text-slate-300 transition hover:border-slate-400 hover:text-slate-100 ${
+              className={`rounded-full border border-slate-600/60 bg-slate-900/60 p-1.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100 ${
                 (!isConnected || isHoming) ? "opacity-60 cursor-not-allowed" : ""
               }`}
               aria-label="Move arm to home position"
             >
-              <Home size={18} strokeWidth={2} />
+              <Home size={16} strokeWidth={2} />
             </button>
             <button
               type="button"
               onClick={handleRest}
               disabled={!isConnected || isResting}
-              className={`rounded-full border border-slate-600/60 bg-slate-900/60 p-2 text-slate-300 transition hover:border-slate-400 hover:text-slate-100 ${
+              className={`rounded-full border border-slate-600/60 bg-slate-900/60 p-1.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100 ${
                 (!isConnected || isResting) ? "opacity-60 cursor-not-allowed" : ""
               }`}
               aria-label="Move arm to rest pose"
             >
-              <Moon size={18} strokeWidth={2} />
+              <Moon size={16} strokeWidth={2} />
             </button>
             <button
               type="button"
               onClick={issueStop}
               disabled={isStopping}
-              className={`rounded-full bg-gradient-to-r from-rose-600 to-rose-700 p-2 text-white shadow-md shadow-rose-500/40 transition ${
+              className={`rounded-full bg-gradient-to-r from-rose-600 to-rose-700 p-1.5 text-white shadow-md shadow-rose-500/40 transition ${
                 isStopping ? "cursor-wait opacity-60" : "hover:brightness-110"
               }`}
               aria-label="Send emergency stop"
             >
-              <Octagon size={18} strokeWidth={2.5} />
+              <Octagon size={16} strokeWidth={2.5} />
             </button>
             <button
               type="button"
@@ -1403,26 +3100,39 @@ export default function App() {
               aria-label={isVisionActive ? "Disable camera overlay" : "Enable camera overlay"}
             >
               {isVisionActive ? (
-                <Camera size={18} strokeWidth={2} />
+                <Camera size={16} strokeWidth={2} />
               ) : (
-                <CameraOff size={18} strokeWidth={2} />
+                <CameraOff size={16} strokeWidth={2} />
               )}
             </button>
             <button
               type="button"
               onClick={handleResetView}
-              className="rounded-full border border-slate-600/60 bg-slate-900/60 p-2 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+              className="rounded-full border border-slate-600/60 bg-slate-900/60 p-1.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
               aria-label="Reset arm view"
             >
-              <RefreshCcw size={18} strokeWidth={2} />
+              <RefreshCcw size={16} strokeWidth={2} />
+            </button>
+            <button
+              type="button"
+              onClick={() => updateSettings({ showProgramTree: !showProgramTree })}
+              className={`rounded-full border bg-slate-900/60 p-1.5 transition ${
+                showProgramTree
+                  ? "border-cyan-400/60 text-cyan-100"
+                  : "border-slate-600/60 text-slate-300 hover:border-slate-400 hover:text-slate-100"
+              }`}
+              aria-label="Toggle program tree"
+              title="Toggle program tree (T)"
+            >
+              <Route size={16} strokeWidth={2} />
             </button>
             <button
               type="button"
               onClick={() => setIsSettingsOpen(true)}
-              className="rounded-full border border-slate-600/60 bg-slate-900/60 p-2 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
+              className="rounded-full border border-slate-600/60 bg-slate-900/60 p-1.5 text-slate-300 transition hover:border-slate-400 hover:text-slate-100"
               aria-label="Open settings"
             >
-              <Settings size={18} strokeWidth={2} />
+              <Settings size={16} strokeWidth={2} />
             </button>
           </div>
         </div>
@@ -1434,40 +3144,45 @@ export default function App() {
           showBoundingBox={showBoundingBox}
           selectionMode={isPlanning && !isPlanLoading}
           onPointSelected={handlePointSelected}
+          weldSelectionMode={weldSelectionMode}
+          topologyEdges={topologyOverlays}
+          selectedTopologyEdgeId={activeWeldSegment?.edgeId ?? null}
+          selectedTopologyEdgeIds={selectedTopologyEdgeIds}
+          onTopologyEdgeSelected={handleTopologyEdgeSelected}
+          weldActive={weldActive}
+          weldIndicatorPoint={weldIndicatorPoint}
+          weldStartPoint={weldStartPoint}
+          weldStopPoint={weldStopPoint}
+          weldSegmentPoints={weldSegmentPoints}
           pathPoints={visualPathPoints}
           waypoints={visualWaypoints}
+          highlightPathRange={selectedProgramPathRange}
+          highlightWaypointIndices={selectedProgramWaypointIndices}
           stepFile={stepFile}
           stepTransform={stepTransform}
           onStepStatusChange={setStepLoadStatus}
         />
-        <div className="pointer-events-auto absolute left-6 top-6 z-10 flex max-w-sm flex-col gap-2">
-          {isVisionActive && !visionError && (
-            <div className="overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/80 shadow-lg shadow-slate-950/40 backdrop-blur">
-              <img
-                src={visionStreamUrl}
-                alt="Gradient Vision stream"
-                className="block max-h-64 w-full object-cover"
-                onLoad={() => setVisionError(null)}
-                onError={() => {
-                  setVisionError(
-                    "Unable to load the vision stream. Ensure Gradient Vision is running and accessible.",
-                  );
-                  setIsVisionActive(false);
-                }}
-              />
-            </div>
-          )}
-          <CollapsibleOverlayPanel
-            title="Live Charts"
-            collapsed={isLiveChartsCollapsed}
-            onToggle={() =>
-              updateSettings({ collapseLiveCharts: !isLiveChartsCollapsed })
-            }
-            widthClassName="w-full max-w-xl"
+        <SidebarRail
+          items={sidebarItems}
+          activeItemId={activePanel}
+          onSelect={handleSelectSidebarPanel}
+        />
+        {activePanel && activeDrawerContent ? (
+          <SidebarDrawer
+            onClose={() => updateSettings({ activePanel: null })}
           >
-            <TelemetryCharts latest={latest} />
-          </CollapsibleOverlayPanel>
-        </div>
+            {activeDrawerContent}
+          </SidebarDrawer>
+        ) : null}
+        {showProgramTree ? (
+          <ProgramFeatureTree
+            root={programTreeRoot}
+            expandedNodeIds={expandedProgramTreeNodeIds}
+            selectedNodeId={selectedProgramNodeId}
+            onToggleExpand={handleToggleProgramTreeNode}
+            onSelectNode={handleSelectProgramTreeNode}
+          />
+        ) : null}
         <div className="pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 transform">
           <AlertsPanel
             alerts={alerts}
@@ -1480,64 +3195,50 @@ export default function App() {
             }
           />
         </div>
-        <div className="pointer-events-none absolute right-6 top-6 z-10 flex flex-col gap-3">
-          <CollapsibleOverlayPanel
-            title="STEP Import"
-            collapsed={isStepImportCollapsed}
-            onToggle={() =>
-              updateSettings({ collapseStepImport: !isStepImportCollapsed })
-            }
-          >
-            <StepImportPanel
-              stepFileName={stepFile?.name ?? null}
-              stepStatus={stepLoadStatus}
-              transform={stepTransform}
-              onFileChange={handleStepFileChange}
-              onTransformChange={handleStepTransformChange}
-              onScaleChange={handleStepScaleChange}
-              onResetTransform={handleResetStepTransform}
-              onClearFile={handleClearStepFile}
+        {isVisionActive && !visionError ? (
+          <div className="pointer-events-auto absolute bottom-6 left-24 z-20 w-72 overflow-hidden rounded-xl border border-slate-700/60 bg-slate-950/85 shadow-lg shadow-slate-950/40 backdrop-blur">
+            <img
+              src={visionStreamUrl}
+              alt="Gradient Vision stream"
+              className="block max-h-56 w-full object-cover"
+              onLoad={() => setVisionError(null)}
+              onError={() => {
+                setVisionError(
+                  "Unable to load the vision stream. Ensure Gradient Vision is running and accessible.",
+                );
+                setIsVisionActive(false);
+              }}
             />
-          </CollapsibleOverlayPanel>
-          <CollapsibleOverlayPanel
-            title="Trajectory"
-            collapsed={isTrajectoryCollapsed}
-            onToggle={() =>
-              updateSettings({ collapseTrajectory: !isTrajectoryCollapsed })
-            }
-          >
-            <TrajectoryPanel
-              isPlanning={isPlanning}
-              isPlanLoading={isPlanLoading}
-              isRunning={isRunningPreview}
-              preview={previewPlan}
-              plannerPoints={plannerPoints}
-              savedTrajectories={savedTrajectories}
-              selectedTrajectory={selectedTrajectory}
-              isTrajectoryListLoading={isTrajectoryListLoading}
-              isLoadingSavedTrajectory={isLoadingSavedTrajectory}
-              onPlanToggle={handlePlanToggle}
-              onRun={handleRunPreview}
-              onClear={handleClearPreview}
-              onRefreshTrajectories={refreshTrajectoryList}
-              onSelectTrajectory={handleSelectTrajectory}
-              onLoadTrajectory={handleLoadTrajectory}
-              onUndoPoint={handleUndoPoint}
-            />
-          </CollapsibleOverlayPanel>
-        </div>
-        <div className="pointer-events-none absolute right-6 bottom-6 z-20">
-          <CollapsibleOverlayPanel
-            title="Robot Control"
-            collapsed={isRobotControlCollapsed}
-            onToggle={() =>
-              updateSettings({ collapseRobotControl: !isRobotControlCollapsed })
-            }
-            widthClassName="w-[360px]"
-          >
+          </div>
+        ) : null}
+        {isRobotControlCollapsed ? (
+          <div className="pointer-events-auto absolute bottom-6 right-6 z-20 w-[340px] max-w-[calc(100vw-2rem)]">
+            <button
+              type="button"
+              onClick={() => updateSettings({ collapseRobotControl: false })}
+              className="flex w-full items-center justify-between rounded-lg border border-slate-700/60 bg-slate-900/80 px-3 py-2 text-left shadow-md shadow-slate-900/30 backdrop-blur transition hover:border-slate-500/70"
+              aria-label="Show robot control panel"
+            >
+              <span className="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-200/80">
+                Robot Control
+              </span>
+              <ChevronRight size={16} className="text-slate-300/80" />
+            </button>
+          </div>
+        ) : (
+          <div className="pointer-events-auto absolute bottom-6 right-6 z-20 w-[340px] max-w-[calc(100vw-2rem)]">
+            <button
+              type="button"
+              onClick={() => updateSettings({ collapseRobotControl: true })}
+              className="absolute right-3 top-3 z-10 rounded-lg border border-slate-700/70 bg-slate-900/70 p-1 text-slate-300 transition hover:border-slate-500 hover:text-slate-100"
+              aria-label="Hide robot control panel"
+              title="Hide robot control panel"
+            >
+              <ChevronDown size={14} />
+            </button>
             <ControlPanel apiHost={normalizedApiHost} onError={(m) => setError(m)} />
-          </CollapsibleOverlayPanel>
-        </div>
+          </div>
+        )}
       </main>
       <SettingsDialog
         isOpen={isSettingsOpen}

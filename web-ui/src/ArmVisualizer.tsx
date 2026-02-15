@@ -16,8 +16,20 @@ type ArmVisualizerProps = {
   showBoundingBox: boolean;
   selectionMode: boolean;
   onPointSelected?: (point: { x: number; y: number; z: number }) => void;
+  weldSelectionMode?: boolean;
+  topologyEdges?: TopologyEdgeOverlay[];
+  selectedTopologyEdgeId?: string | null;
+  selectedTopologyEdgeIds?: string[];
+  onTopologyEdgeSelected?: (edgeId: string) => void;
+  weldActive?: boolean;
+  weldIndicatorPoint?: Point3 | null;
+  weldStartPoint?: Point3 | null;
+  weldStopPoint?: Point3 | null;
+  weldSegmentPoints?: Point3[];
   pathPoints?: Point3[];
   waypoints?: Point3[];
+  highlightPathRange?: { start: number; end: number } | null;
+  highlightWaypointIndices?: number[];
   stepFile?: File | null;
   stepTransform?: StepTransform;
   onStepStatusChange?: (status: StepLoadStatus) => void;
@@ -54,6 +66,11 @@ const DEFAULT_STEP_TRANSFORM: StepTransform = {
   rotationDeg: { x: 0, y: 0, z: 0 },
   scale: 1,
 };
+const TOPOLOGY_EDGE_DEFAULT_COLOR = 0x22d3ee;
+const TOPOLOGY_EDGE_HOVER_COLOR = 0xfacc15;
+const TOPOLOGY_EDGE_SELECTED_COLOR = 0x22c55e;
+const TOPOLOGY_EDGE_PICK_RADIUS_M = 0.0005; // 0.5 mm
+const TOPOLOGY_EDGE_SELECTED_RADIUS_M = 0.0006;
 
 type OcctImporter = {
   ReadStepFile?: (
@@ -84,6 +101,12 @@ export type StepTransform = {
 export type StepLoadStatus = {
   state: "idle" | "loading" | "loaded" | "error";
   message: string;
+};
+
+export type TopologyEdgeOverlay = {
+  id: string;
+  partId?: string;
+  points: Point3[];
 };
 
 async function loadOcctImporter(): Promise<OcctImporter> {
@@ -302,8 +325,33 @@ function applyStepTransform(root: THREE.Group, transform?: StepTransform) {
   root.scale.setScalar(safeScale);
 }
 
+function createEdgeOverlayMesh(
+  points: Point3[],
+  color: number,
+  radius: number,
+): THREE.Mesh | null {
+  if (!Array.isArray(points) || points.length < 2) {
+    return null;
+  }
+  const vectors = points.map((point) => new THREE.Vector3(point.x, point.y, point.z));
+  const curve = new THREE.CatmullRomCurve3(vectors, false, "centripetal");
+  const tubularSegments = Math.max(24, points.length * 4);
+  const geometry = new THREE.TubeGeometry(curve, tubularSegments, radius, 10, false);
+  const material = new THREE.MeshBasicMaterial({
+    color,
+    transparent: true,
+    opacity: 0.95,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 24;
+  return mesh;
+}
+
 export type ArmVisualizerHandle = {
   resetView: () => void;
+  focusOnPoints: (points: Point3[]) => void;
 };
 
 export const ArmVisualizer = forwardRef(function ArmVisualizer(
@@ -312,8 +360,20 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
     showBoundingBox,
     selectionMode,
     onPointSelected,
+    weldSelectionMode = false,
+    topologyEdges,
+    selectedTopologyEdgeId,
+    selectedTopologyEdgeIds,
+    onTopologyEdgeSelected,
+    weldActive = false,
+    weldIndicatorPoint,
+    weldStartPoint,
+    weldStopPoint,
+    weldSegmentPoints,
     pathPoints,
     waypoints,
+    highlightPathRange,
+    highlightWaypointIndices,
     stepFile,
     stepTransform,
     onStepStatusChange,
@@ -340,9 +400,26 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
   const setBoundsVisibilityRef = useRef<((visible: boolean) => void) | null>(null);
   const showBoundingBoxRef = useRef(showBoundingBox);
   const selectionModeRef = useRef(selectionMode);
+  const weldSelectionModeRef = useRef(weldSelectionMode);
+  const selectedTopologyEdgeIdRef = useRef<string | null>(selectedTopologyEdgeId ?? null);
+  const selectedTopologyEdgeIdsRef = useRef<Set<string>>(
+    new Set(selectedTopologyEdgeIds ?? []),
+  );
+  const hoveredTopologyEdgeIdRef = useRef<string | null>(null);
   const onPointSelectedRef = useRef(onPointSelected);
+  const onTopologyEdgeSelectedRef = useRef(onTopologyEdgeSelected);
   const previewGroupRef = useRef<THREE.Group | null>(null);
   const stepRootRef = useRef<THREE.Group | null>(null);
+  const topologyEdgesGroupRef = useRef<THREE.Group | null>(null);
+  const topologyEdgeObjectsRef = useRef<THREE.Line[]>([]);
+  const topologyEdgePickObjectsRef = useRef<THREE.Mesh[]>([]);
+  const topologyEdgePointsByIdRef = useRef<Map<string, Point3[]>>(new Map());
+  const topologyEdgeLinesByIdRef = useRef<Map<string, THREE.Line>>(new Map());
+  const topologyHoverOverlayRef = useRef<THREE.Mesh | null>(null);
+  const topologySelectionOverlayRef = useRef<THREE.Mesh | null>(null);
+  const refreshTopologyEdgeVisualsRef = useRef<(() => void) | null>(null);
+  const weldEndpointsGroupRef = useRef<THREE.Group | null>(null);
+  const weldIndicatorRef = useRef<THREE.Group | null>(null);
   const onStepStatusChangeRef = useRef(onStepStatusChange);
   const raycasterRef = useRef(new THREE.Raycaster());
   const pointerRef = useRef(new THREE.Vector2());
@@ -433,7 +510,7 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
     orientationCamera.lookAt(0, 0, 0);
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (!selectionModeRef.current || !event.shiftKey || event.button !== 0) {
+      if (event.button !== 0) {
         return;
       }
       const camera = cameraRef.current;
@@ -445,6 +522,25 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
+      if (weldSelectionModeRef.current) {
+        const hit = raycaster.intersectObjects(topologyEdgePickObjectsRef.current, true)[0];
+        if (hit && hit.object) {
+          const edgeId = (hit.object.userData?.edgeId as string | undefined) ?? "";
+          if (edgeId) {
+            event.preventDefault();
+            hoveredTopologyEdgeIdRef.current = edgeId;
+            refreshTopologyEdgeVisualsRef.current?.();
+            const callback = onTopologyEdgeSelectedRef.current;
+            if (callback) {
+              callback(edgeId);
+            }
+            return;
+          }
+        }
+      }
+      if (!selectionModeRef.current || !event.shiftKey) {
+        return;
+      }
       const intersection = new THREE.Vector3();
       if (raycaster.ray.intersectPlane(groundPlane, intersection)) {
         const callback = onPointSelectedRef.current;
@@ -455,6 +551,38 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
             z: Math.max(intersection.z, 0),
           });
         }
+      }
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!weldSelectionModeRef.current) {
+        if (hoveredTopologyEdgeIdRef.current !== null) {
+          hoveredTopologyEdgeIdRef.current = null;
+          refreshTopologyEdgeVisualsRef.current?.();
+        }
+        return;
+      }
+      const camera = cameraRef.current;
+      if (!camera) {
+        return;
+      }
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObjects(topologyEdgePickObjectsRef.current, true)[0];
+      const nextHovered =
+        hit && hit.object ? ((hit.object.userData?.edgeId as string | undefined) ?? null) : null;
+      if (hoveredTopologyEdgeIdRef.current !== nextHovered) {
+        hoveredTopologyEdgeIdRef.current = nextHovered;
+        refreshTopologyEdgeVisualsRef.current?.();
+      }
+    };
+
+    const handlePointerLeave = () => {
+      if (hoveredTopologyEdgeIdRef.current !== null) {
+        hoveredTopologyEdgeIdRef.current = null;
+        refreshTopologyEdgeVisualsRef.current?.();
       }
     };
 
@@ -905,10 +1033,14 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
     animate();
 
     renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
+    renderer.domElement.addEventListener("pointerleave", handlePointerLeave);
     window.addEventListener("resize", handleResize);
 
     return () => {
       renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
+      renderer.domElement.removeEventListener("pointerleave", handlePointerLeave);
       window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(animationFrameId);
       controls.dispose();
@@ -938,6 +1070,30 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
         disposeObject3D(stepRoot);
         scene.remove(stepRoot);
         stepRootRef.current = null;
+      }
+      const topologyGroup = topologyEdgesGroupRef.current;
+      if (topologyGroup) {
+        disposeObject3D(topologyGroup);
+        scene.remove(topologyGroup);
+        topologyEdgesGroupRef.current = null;
+      }
+      topologyEdgeObjectsRef.current = [];
+      topologyEdgePickObjectsRef.current = [];
+      topologyEdgePointsByIdRef.current.clear();
+      topologyEdgeLinesByIdRef.current.clear();
+      refreshTopologyEdgeVisualsRef.current = null;
+      hoveredTopologyEdgeIdRef.current = null;
+      const weldIndicator = weldIndicatorRef.current;
+      if (weldIndicator) {
+        disposeObject3D(weldIndicator);
+        scene.remove(weldIndicator);
+        weldIndicatorRef.current = null;
+      }
+      const weldEndpointsGroup = weldEndpointsGroupRef.current;
+      if (weldEndpointsGroup) {
+        disposeObject3D(weldEndpointsGroup);
+        scene.remove(weldEndpointsGroup);
+        weldEndpointsGroupRef.current = null;
       }
       boundingMarkersRef.current.forEach((marker) => {
         scene.remove(marker);
@@ -1002,6 +1158,51 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
         camera.updateProjectionMatrix();
         controls.update();
       },
+      focusOnPoints: (points: Point3[]) => {
+        const camera = cameraRef.current;
+        const controls = controlsRef.current;
+        if (!camera || !controls || !Array.isArray(points) || points.length === 0) {
+          return;
+        }
+        const finitePoints = points.filter(
+          (point) =>
+            Number.isFinite(point.x) &&
+            Number.isFinite(point.y) &&
+            Number.isFinite(point.z),
+        );
+        if (finitePoints.length === 0) {
+          return;
+        }
+        const bounds = new THREE.Box3();
+        finitePoints.forEach((point) => {
+          bounds.expandByPoint(new THREE.Vector3(point.x, point.y, point.z));
+        });
+        if (
+          !Number.isFinite(bounds.min.x) ||
+          !Number.isFinite(bounds.min.y) ||
+          !Number.isFinite(bounds.min.z) ||
+          !Number.isFinite(bounds.max.x) ||
+          !Number.isFinite(bounds.max.y) ||
+          !Number.isFinite(bounds.max.z)
+        ) {
+          return;
+        }
+        const center = bounds.getCenter(new THREE.Vector3());
+        const size = bounds.getSize(new THREE.Vector3());
+        const radius = Math.max(size.length() * 0.5, 0.05);
+        const direction = camera.position.clone().sub(controls.target);
+        if (direction.lengthSq() < 1e-8) {
+          direction.copy(defaultCameraOffset.current);
+        }
+        direction.normalize();
+        const distance = Math.max(radius * 2.8, 0.4);
+        controls.target.copy(center);
+        camera.position.copy(center).add(direction.multiplyScalar(distance));
+        camera.near = 0.01;
+        camera.far = Math.max(10, distance * 20);
+        camera.updateProjectionMatrix();
+        controls.update();
+      },
     }),
     [],
   );
@@ -1011,8 +1212,30 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
   }, [selectionMode]);
 
   useEffect(() => {
+    weldSelectionModeRef.current = weldSelectionMode;
+    if (!weldSelectionMode) {
+      hoveredTopologyEdgeIdRef.current = null;
+    }
+    refreshTopologyEdgeVisualsRef.current?.();
+  }, [weldSelectionMode]);
+
+  useEffect(() => {
+    selectedTopologyEdgeIdRef.current = selectedTopologyEdgeId ?? null;
+    refreshTopologyEdgeVisualsRef.current?.();
+  }, [selectedTopologyEdgeId]);
+
+  useEffect(() => {
+    selectedTopologyEdgeIdsRef.current = new Set(selectedTopologyEdgeIds ?? []);
+    refreshTopologyEdgeVisualsRef.current?.();
+  }, [selectedTopologyEdgeIds]);
+
+  useEffect(() => {
     onPointSelectedRef.current = onPointSelected;
   }, [onPointSelected]);
+
+  useEffect(() => {
+    onTopologyEdgeSelectedRef.current = onTopologyEdgeSelected;
+  }, [onTopologyEdgeSelected]);
 
   useEffect(() => {
     onStepStatusChangeRef.current = onStepStatusChange;
@@ -1128,6 +1351,335 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
   }, [stepTransform]);
 
   useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) {
+      return;
+    }
+
+    const existingGroup = topologyEdgesGroupRef.current;
+    if (existingGroup) {
+      scene.remove(existingGroup);
+      disposeObject3D(existingGroup);
+      topologyEdgesGroupRef.current = null;
+      topologyEdgeObjectsRef.current = [];
+      topologyEdgePickObjectsRef.current = [];
+      topologyEdgePointsByIdRef.current.clear();
+      topologyEdgeLinesByIdRef.current.clear();
+      if (topologyHoverOverlayRef.current) {
+        topologyHoverOverlayRef.current = null;
+      }
+      if (topologySelectionOverlayRef.current) {
+        topologySelectionOverlayRef.current = null;
+      }
+    }
+
+    if (!Array.isArray(topologyEdges) || topologyEdges.length === 0) {
+      return;
+    }
+
+    const allPoints = topologyEdges.flatMap((edge) => edge.points ?? []);
+    if (allPoints.length === 0) {
+      return;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let minZ = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let maxZ = Number.NEGATIVE_INFINITY;
+    allPoints.forEach((p) => {
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      minZ = Math.min(minZ, p.z);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+      maxZ = Math.max(maxZ, p.z);
+    });
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const root = new THREE.Group();
+    root.name = "topology-edge-root";
+    const topologyModelGroup = new THREE.Group();
+    topologyModelGroup.name = "topology-edge-model";
+    topologyModelGroup.position.set(-centerX, -centerY, -minZ);
+    root.add(topologyModelGroup);
+    applyStepTransform(root, stepTransform);
+    root.userData.topologyOffset = { x: centerX, y: centerY, z: minZ };
+
+    const lineObjects: THREE.Line[] = [];
+    const edgePickObjects: THREE.Mesh[] = [];
+    const edgePointsById = new Map<string, Point3[]>();
+    const edgeLinesById = new Map<string, THREE.Line>();
+    topologyEdges.forEach((edge) => {
+      const points = Array.isArray(edge.points) ? edge.points : [];
+      if (points.length < 2) {
+        return;
+      }
+      const geometry = new THREE.BufferGeometry().setFromPoints(
+        points.map((p) => new THREE.Vector3(p.x, p.y, p.z)),
+      );
+      const material = new THREE.LineBasicMaterial({
+        color: TOPOLOGY_EDGE_DEFAULT_COLOR,
+        transparent: true,
+        opacity: 0.7,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const line = new THREE.Line(geometry, material);
+      line.renderOrder = 11;
+      line.userData.edgeId = edge.id;
+      topologyModelGroup.add(line);
+      const pickMesh = createEdgeOverlayMesh(
+        points,
+        TOPOLOGY_EDGE_DEFAULT_COLOR,
+        TOPOLOGY_EDGE_PICK_RADIUS_M,
+      );
+      if (pickMesh) {
+        const pickMaterial = pickMesh.material as THREE.MeshBasicMaterial;
+        pickMaterial.opacity = 0;
+        pickMaterial.transparent = true;
+        pickMaterial.depthTest = false;
+        pickMaterial.depthWrite = false;
+        pickMesh.renderOrder = 10;
+        pickMesh.userData.edgeId = edge.id;
+        topologyModelGroup.add(pickMesh);
+        edgePickObjects.push(pickMesh);
+      }
+      lineObjects.push(line);
+      edgePointsById.set(edge.id, points);
+      edgeLinesById.set(edge.id, line);
+    });
+
+    const refreshVisuals = () => {
+      const activeSelectedId = selectedTopologyEdgeIdRef.current;
+      const selectedIds = selectedTopologyEdgeIdsRef.current;
+      const hoveredId = hoveredTopologyEdgeIdRef.current;
+
+      edgeLinesById.forEach((line, edgeId) => {
+        const material = line.material as THREE.LineBasicMaterial;
+        if (edgeId === activeSelectedId) {
+          material.color.setHex(TOPOLOGY_EDGE_SELECTED_COLOR);
+          material.opacity = 1.0;
+          line.renderOrder = 18;
+        } else if (selectedIds.has(edgeId)) {
+          material.color.setHex(TOPOLOGY_EDGE_SELECTED_COLOR);
+          material.opacity = 0.9;
+          line.renderOrder = 16;
+        } else if (edgeId === hoveredId && weldSelectionModeRef.current) {
+          material.color.setHex(TOPOLOGY_EDGE_HOVER_COLOR);
+          material.opacity = 1.0;
+          line.renderOrder = 17;
+        } else {
+          material.color.setHex(TOPOLOGY_EDGE_DEFAULT_COLOR);
+          material.opacity = 0.65;
+          line.renderOrder = 11;
+        }
+      });
+
+      if (topologyHoverOverlayRef.current) {
+        topologyModelGroup.remove(topologyHoverOverlayRef.current);
+        disposeObject3D(topologyHoverOverlayRef.current);
+        topologyHoverOverlayRef.current = null;
+      }
+      if (
+        weldSelectionModeRef.current &&
+        hoveredId &&
+        !selectedIds.has(hoveredId) &&
+        edgePointsById.has(hoveredId)
+      ) {
+        const mesh = createEdgeOverlayMesh(
+          edgePointsById.get(hoveredId)!,
+          TOPOLOGY_EDGE_HOVER_COLOR,
+          TOPOLOGY_EDGE_PICK_RADIUS_M,
+        );
+        if (mesh) {
+          topologyModelGroup.add(mesh);
+          topologyHoverOverlayRef.current = mesh;
+        }
+      }
+
+      if (topologySelectionOverlayRef.current) {
+        topologyModelGroup.remove(topologySelectionOverlayRef.current);
+        disposeObject3D(topologySelectionOverlayRef.current);
+        topologySelectionOverlayRef.current = null;
+      }
+      if (activeSelectedId && edgePointsById.has(activeSelectedId)) {
+        const mesh = createEdgeOverlayMesh(
+          edgePointsById.get(activeSelectedId)!,
+          TOPOLOGY_EDGE_SELECTED_COLOR,
+          TOPOLOGY_EDGE_SELECTED_RADIUS_M,
+        );
+        if (mesh) {
+          topologyModelGroup.add(mesh);
+          topologySelectionOverlayRef.current = mesh;
+        }
+      }
+    };
+
+    scene.add(root);
+    topologyEdgesGroupRef.current = root;
+    topologyEdgeObjectsRef.current = lineObjects;
+    topologyEdgePickObjectsRef.current = edgePickObjects;
+    topologyEdgePointsByIdRef.current = edgePointsById;
+    topologyEdgeLinesByIdRef.current = edgeLinesById;
+    refreshTopologyEdgeVisualsRef.current = refreshVisuals;
+    refreshVisuals();
+
+    return () => {
+      scene.remove(root);
+      disposeObject3D(root);
+      if (topologyEdgesGroupRef.current === root) {
+        topologyEdgesGroupRef.current = null;
+      }
+      topologyEdgeObjectsRef.current = [];
+      topologyEdgePickObjectsRef.current = [];
+      topologyEdgePointsByIdRef.current.clear();
+      topologyEdgeLinesByIdRef.current.clear();
+      if (refreshTopologyEdgeVisualsRef.current === refreshVisuals) {
+        refreshTopologyEdgeVisualsRef.current = null;
+      }
+      topologyHoverOverlayRef.current = null;
+      topologySelectionOverlayRef.current = null;
+    };
+  }, [topologyEdges, stepTransform]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) {
+      return;
+    }
+    const existing = weldIndicatorRef.current;
+    if (existing) {
+      scene.remove(existing);
+      disposeObject3D(existing);
+      weldIndicatorRef.current = null;
+    }
+    if (!weldActive || !weldIndicatorPoint) {
+      return;
+    }
+
+    const group = new THREE.Group();
+    const glow = new THREE.Mesh(
+      new THREE.SphereGeometry(0.012, 16, 16),
+      new THREE.MeshBasicMaterial({
+        color: 0xfb923c,
+        transparent: true,
+        opacity: 0.85,
+      }),
+    );
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.005, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfef3c7 }),
+    );
+    group.add(glow);
+    group.add(core);
+    group.position.set(weldIndicatorPoint.x, weldIndicatorPoint.y, weldIndicatorPoint.z);
+    scene.add(group);
+    weldIndicatorRef.current = group;
+
+    return () => {
+      scene.remove(group);
+      disposeObject3D(group);
+      if (weldIndicatorRef.current === group) {
+        weldIndicatorRef.current = null;
+      }
+    };
+  }, [weldActive, weldIndicatorPoint]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) {
+      return;
+    }
+
+    const existing = weldEndpointsGroupRef.current;
+    if (existing) {
+      if (topologyEdgesGroupRef.current) {
+        topologyEdgesGroupRef.current.remove(existing);
+      } else {
+        scene.remove(existing);
+      }
+      disposeObject3D(existing);
+      weldEndpointsGroupRef.current = null;
+    }
+
+    if (!weldStartPoint || !weldStopPoint) {
+      return;
+    }
+
+    const parent = topologyEdgesGroupRef.current ?? scene;
+    const group = new THREE.Group();
+    group.name = "weld-start-stop-markers";
+
+    const topologyOffset = topologyEdgesGroupRef.current?.userData?.topologyOffset as
+      | { x: number; y: number; z: number }
+      | undefined;
+    const toLocal = (point: Point3): THREE.Vector3 => {
+      if (!topologyOffset) {
+        return new THREE.Vector3(point.x, point.y, point.z);
+      }
+      return new THREE.Vector3(
+        point.x - topologyOffset.x,
+        point.y - topologyOffset.y,
+        point.z - topologyOffset.z,
+      );
+    };
+
+    const startMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0075, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x22c55e, depthWrite: false }),
+    );
+    const stopMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0075, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xef4444, depthWrite: false }),
+    );
+    startMarker.position.copy(toLocal(weldStartPoint));
+    stopMarker.position.copy(toLocal(weldStopPoint));
+    startMarker.renderOrder = 30;
+    stopMarker.renderOrder = 30;
+    group.add(startMarker);
+    group.add(stopMarker);
+
+    const segmentSource =
+      Array.isArray(weldSegmentPoints) && weldSegmentPoints.length >= 2
+        ? weldSegmentPoints
+        : [weldStartPoint, weldStopPoint];
+    if (segmentSource.length >= 2) {
+      const segmentGeometry = new THREE.BufferGeometry().setFromPoints(
+        segmentSource.map((point) => toLocal(point)),
+      );
+      const segmentLine = new THREE.Line(
+        segmentGeometry,
+        new THREE.LineBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: 0.9,
+          depthWrite: false,
+        }),
+      );
+      segmentLine.renderOrder = 29;
+      group.add(segmentLine);
+    }
+
+    parent.add(group);
+    weldEndpointsGroupRef.current = group;
+
+    return () => {
+      if (parent === scene) {
+        scene.remove(group);
+      } else {
+        (parent as THREE.Group).remove(group);
+      }
+      disposeObject3D(group);
+      if (weldEndpointsGroupRef.current === group) {
+        weldEndpointsGroupRef.current = null;
+      }
+    };
+  }, [weldStartPoint, weldStopPoint, weldSegmentPoints, topologyEdges, stepTransform]);
+
+  useEffect(() => {
     if (!joints || joints.length === 0) {
       return;
     }
@@ -1206,21 +1758,61 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
 
     if (pathList.length >= 2) {
       const geometry = new THREE.BufferGeometry().setFromPoints(pathList);
-      const material = new THREE.LineBasicMaterial({ color: 0xfacc15 });
+      const material = new THREE.LineBasicMaterial({
+        color: 0xfacc15,
+        transparent: true,
+        opacity: 0.7,
+      });
       const line = new THREE.Line(geometry, material);
       group.add(line);
+
+      if (highlightPathRange) {
+        const start = Math.max(
+          0,
+          Math.min(pathList.length - 1, Math.floor(highlightPathRange.start)),
+        );
+        const end = Math.max(
+          start,
+          Math.min(pathList.length - 1, Math.ceil(highlightPathRange.end)),
+        );
+        const highlightedPoints = pathList.slice(start, end + 1);
+        if (highlightedPoints.length >= 2) {
+          const highlightGeometry = new THREE.BufferGeometry().setFromPoints(highlightedPoints);
+          const highlightLine = new THREE.Line(
+            highlightGeometry,
+            new THREE.LineBasicMaterial({
+              color: 0xf97316,
+              transparent: true,
+              opacity: 0.95,
+            }),
+          );
+          highlightLine.renderOrder = 41;
+          group.add(highlightLine);
+        }
+      }
     }
 
     const markerSource =
       waypointList.length > 0 ? waypointList : pathList.length > 0 ? pathList : [];
+    const highlightedWaypoints = new Set(
+      Array.isArray(highlightWaypointIndices)
+        ? highlightWaypointIndices.filter((value) => Number.isInteger(value))
+        : [],
+    );
 
     markerSource.forEach((point, index) => {
+      const isHighlighted = highlightedWaypoints.has(index);
       const marker = new THREE.Mesh(
         new THREE.SphereGeometry(0.008, 12, 12),
         new THREE.MeshBasicMaterial({
-          color: index === markerSource.length - 1 ? 0xfacc15 : 0xfef08a,
+          color: isHighlighted
+            ? 0xf97316
+            : index === markerSource.length - 1
+              ? 0xfacc15
+              : 0xfef08a,
         }),
       );
+      marker.renderOrder = isHighlighted ? 42 : 40;
       marker.position.copy(point);
       group.add(marker);
     });
@@ -1235,14 +1827,14 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
         previewGroupRef.current = null;
       }
     };
-  }, [pathPoints, waypoints]);
+  }, [pathPoints, waypoints, highlightPathRange, highlightWaypointIndices]);
 
   useEffect(() => {
     const canvas = containerRef.current?.querySelector("canvas");
     if (canvas) {
-      canvas.style.cursor = selectionMode ? "crosshair" : "";
+      canvas.style.cursor = selectionMode || weldSelectionMode ? "crosshair" : "";
     }
-  }, [selectionMode]);
+  }, [selectionMode, weldSelectionMode]);
 
   return <div ref={containerRef} className="absolute inset-0" />;
 });

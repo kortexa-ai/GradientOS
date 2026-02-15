@@ -298,6 +298,10 @@ Examples:
                     msg: dict[str, object] = {"t": time.time(), "joints": [float(x) for x in q]}
                     if g is not None:
                         msg["gripper"] = float(g)
+                    msg["weld_active"] = bool(utils.trajectory_state.get("weld_active", False))
+                    weld_type = utils.trajectory_state.get("current_weld_type")
+                    if isinstance(weld_type, str) and weld_type:
+                        msg["weld_type"] = weld_type
                     
                     # --- Servo telemetry (voltage/temp/current/torque + alarms) ---
                     now = time.time()

@@ -1,4 +1,6 @@
 import json
+import base64
+import tempfile
 import pytest
 
 pytest.importorskip("httpx")
@@ -88,12 +90,65 @@ def patch_send(monkeypatch):
                 return DummyCommandApi.sample_traj
             return None
 
+        @staticmethod
+        def plan_preview_trajectory_points(points, preview_name="__planner_preview__", weld_metadata=None):
+            if not points:
+                raise ValueError("no points")
+            body = dict(planner_payload)
+            body["name"] = preview_name
+            body["waypoints"] = points
+            body["cartesian_path"] = points
+            body["trajectory"] = dict(DummyCommandApi.sample_traj)
+            if weld_metadata:
+                body["trajectory"]["weld"] = weld_metadata
+            return body
+
+    class DummyTopologyService:
+        model = {
+            "model_id": "step-test",
+            "filename": "fixture.step",
+            "fingerprint": "abc123",
+            "parts": [{"id": "part_0", "edge_count": 1}],
+            "edges": [
+                {
+                    "id": "part_0:edge_00000",
+                    "part_id": "part_0",
+                    "samples": [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]],
+                }
+            ],
+        }
+
+        def load_step(self, *, filename, step_bytes, sample_count):
+            assert filename
+            assert step_bytes
+            return dict(self.model)
+
+        def get_model(self, model_id):
+            if model_id != self.model["model_id"]:
+                raise KeyError(model_id)
+            return dict(self.model)
+
+        def sample_edge_segment(self, *, model_id, edge_id, start_s, end_s, sample_count):
+            assert model_id == self.model["model_id"]
+            assert edge_id == self.model["edges"][0]["id"]
+            return [
+                (0.0, 0.0, 0.0),
+                (0.1, 0.0, 0.0),
+                (0.2, 0.0, 0.0),
+            ]
+
     monkeypatch.setattr("gradient_os.api.main._send_controller_command", fake_send)
     monkeypatch.setattr(
         "gradient_os.api.main._probe_controller", lambda timeout=0.5: (True, "ok")
     )
     monkeypatch.setattr(
         "gradient_os.api.main.controller_command_api", DummyCommandApi
+    )
+    monkeypatch.setattr(
+        "gradient_os.api.main.topology_service", DummyTopologyService()
+    )
+    monkeypatch.setattr(
+        "gradient_os.api.main._WELD_PROGRAM_DIR", tempfile.mkdtemp(prefix="weld-programs-")
     )
     yield call_log
 
@@ -228,6 +283,84 @@ def test_trajectory_detail(client):
     body = resp.json()
     assert body["name"] == "alpha"
     assert body["trajectory"]["moves"][0]["vector"] == [0.1, 0.2, 0.3]
+
+
+def test_cad_topology_load_and_get(client):
+    raw = b"STEP-MOCK"
+    encoded = base64.b64encode(raw).decode("ascii")
+    resp = client.post(
+        "/cad/topology/load-step",
+        json={"filename": "fixture.step", "step_base64": encoded},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["model_id"] == "step-test"
+    assert body["edges"][0]["id"] == "part_0:edge_00000"
+
+    resp = client.get("/cad/topology/step-test")
+    assert resp.status_code == 200
+    assert resp.json()["parts"][0]["id"] == "part_0"
+
+
+def test_trajectory_plan_weld(client):
+    resp = client.post(
+        "/trajectory/plan-weld",
+        json={
+            "model_id": "step-test",
+            "edge_id": "part_0:edge_00000",
+            "start_s": 0.1,
+            "end_s": 0.9,
+            "weld_type": "fillet",
+            "weld_name": "test weld",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "__weld_preview__"
+    assert body["trajectory"]["weld"]["type"] == "fillet"
+    assert body["source"]["mode"] == "edge_segment"
+
+
+def test_weld_program_save_list_load(client):
+    step_payload = base64.b64encode(b"STEP-MOCK").decode("ascii")
+    save_resp = client.post(
+        "/weld-program/save",
+        json={
+            "name": "demo_program",
+            "step": {
+                "filename": "fixture.step",
+                "step_base64": step_payload,
+                "transform": {
+                    "position": {"x": 0.1, "y": 0.2, "z": 0.3},
+                    "rotationDeg": {"x": 1.0, "y": 2.0, "z": 3.0},
+                    "scale": 1.5,
+                },
+            },
+            "weld_draft": {
+                "modelId": "step-test",
+                "edgeId": "part_0:edge_00000",
+                "weldType": "fillet",
+                "weldName": "demo weld",
+                "startS": 0.2,
+                "endS": 0.8,
+            },
+            "editable_waypoints": [{"x": 0.0, "y": 0.0, "z": 0.0}, {"x": 0.2, "y": 0.0, "z": 0.0}],
+            "planned_trajectory": {"name": "__weld_preview__", "waypoints": [{"x": 0.0, "y": 0.0, "z": 0.0}]},
+        },
+    )
+    assert save_resp.status_code == 200
+    assert save_resp.json()["name"] == "demo_program"
+
+    list_resp = client.get("/weld-program/list")
+    assert list_resp.status_code == 200
+    assert "demo_program" in list_resp.json()["programs"]
+
+    load_resp = client.get("/weld-program/demo_program")
+    assert load_resp.status_code == 200
+    payload = load_resp.json()
+    assert payload["name"] == "demo_program"
+    assert payload["weld_draft"]["edgeId"] == "part_0:edge_00000"
+    assert payload["step"]["filename"] == "fixture.step"
 
 
 def test_preview_execute_clear(client, monkeypatch):

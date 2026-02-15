@@ -666,6 +666,7 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
         should_loop (bool): Whether to repeat the entire sequence upon completion.
     """
     try:
+        utils.trajectory_state["weld_active"] = False
         execution_loop_active = True
         while execution_loop_active and not utils.trajectory_state["should_stop"]:
             for i, step in enumerate(planned_steps):
@@ -676,6 +677,7 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
                     break
 
                 print(f"[Pi Execute] Executing Step {i+1}/{len(planned_steps)} ({step['type']})...")
+                utils.trajectory_state["weld_active"] = bool(step.get("weld_active", False))
                 if step['type'] == 'move':
                     _execute_joint_path(step['path'], step['freq'])
                 elif step['type'] == 'joint_move':
@@ -688,6 +690,7 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
                     while not utils.trajectory_state["should_stop"] and time.monotonic() < end_time:
                         time.sleep(0.01)  # Check for stop every 10 ms
                 elif step['type'] == 'pause':
+                    utils.trajectory_state["weld_active"] = False
                     print(f"[Pi Execute] Pausing for {step['duration']} seconds.")
                     # Make pause interruptible with correct timing
                     end_time = time.monotonic() + step['duration']
@@ -704,6 +707,8 @@ def _trajectory_executor_thread(planned_steps: list[dict], should_loop: bool):
         print("[Pi Trajectory] Executor thread finished.")
         # Clean up global state, but DO NOT reset the should_stop flag.
         # The stop flag should persist until a new motion command clears it.
+        utils.trajectory_state["weld_active"] = False
+        utils.trajectory_state["current_weld_type"] = None
         utils.trajectory_state["is_running"] = False
         utils.trajectory_state["thread"] = None
 
