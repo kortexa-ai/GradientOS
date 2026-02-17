@@ -718,7 +718,7 @@ def create_app() -> FastAPI:
         if not isinstance(weld_draft_raw, dict):
             raise HTTPException(status_code=400, detail="Field 'weld_draft' is required and must be an object.")
 
-        weld_type = _normalize_weld_type(
+        default_weld_type = _normalize_weld_type(
             weld_draft_raw.get("weldType", weld_draft_raw.get("weld_type", "fillet"))
         )
         segments: list[dict[str, Any]] = []
@@ -743,11 +743,15 @@ def create_app() -> FastAPI:
                     end_s = 1.0
                 start_s = max(0.0, min(1.0, start_s))
                 end_s = max(0.0, min(1.0, end_s))
+                weld_type = _normalize_weld_type(
+                    raw_segment.get("weldType", raw_segment.get("weld_type", default_weld_type))
+                )
                 segments.append(
                     {
                         "edgeId": edge_id,
                         "startS": start_s,
                         "endS": end_s,
+                        "weldType": weld_type,
                     }
                 )
                 seen_edge_ids.add(edge_id)
@@ -769,6 +773,7 @@ def create_app() -> FastAPI:
                     "edgeId": legacy_edge_id,
                     "startS": legacy_start_s,
                     "endS": legacy_end_s,
+                    "weldType": default_weld_type,
                 }
             )
 
@@ -787,11 +792,31 @@ def create_app() -> FastAPI:
             (seg for seg in segments if seg["edgeId"] == active_segment_edge_id),
             segments[0] if segments else None,
         )
+        active_weld_type = (
+            _normalize_weld_type(active_segment.get("weldType", default_weld_type))
+            if isinstance(active_segment, dict)
+            else default_weld_type
+        )
+        post_action_raw = str(
+            weld_draft_raw.get("postAction", weld_draft_raw.get("post_action", "return_to_start"))
+        ).strip()
+        post_action = (
+            "none"
+            if post_action_raw == "none"
+            else ("lift" if post_action_raw == "lift" else "return_to_start")
+        )
+
         weld_draft = {
             "modelId": str(weld_draft_raw.get("modelId", weld_draft_raw.get("model_id", ""))).strip(),
             "edgeId": active_segment["edgeId"] if active_segment else legacy_edge_id,
-            "weldType": weld_type,
-            "weldName": str(weld_draft_raw.get("weldName", weld_draft_raw.get("weld_name", f"{weld_type} weld"))).strip() or f"{weld_type} weld",
+            "weldType": active_weld_type,
+            "weldName": str(weld_draft_raw.get("weldName", weld_draft_raw.get("weld_name", f"{active_weld_type} weld"))).strip() or f"{active_weld_type} weld",
+            "workAngleDeg": float(weld_draft_raw.get("workAngleDeg", weld_draft_raw.get("work_angle_deg", 45.0))),
+            "travelAngleDeg": float(weld_draft_raw.get("travelAngleDeg", weld_draft_raw.get("travel_angle_deg", 0.0))),
+            "transitionClearanceMm": float(
+                weld_draft_raw.get("transitionClearanceMm", weld_draft_raw.get("transition_clearance_mm", 35.0))
+            ),
+            "postAction": post_action,
             "startS": active_segment["startS"] if active_segment else legacy_start_s,
             "endS": active_segment["endS"] if active_segment else legacy_end_s,
             "segments": segments,
@@ -932,6 +957,7 @@ def create_app() -> FastAPI:
             weld_name = f"{weld_type} weld"
 
         waypoints_override = _coerce_waypoint_list(payload.get("waypoints_override"))
+        sections = _coerce_plan_sections(payload.get("sections"))
         preview_name_raw = payload.get("preview_name")
         preview_name = (
             str(preview_name_raw).strip()
@@ -944,8 +970,22 @@ def create_app() -> FastAPI:
             weld_options = {}
         elif not isinstance(weld_options, dict):
             raise HTTPException(status_code=400, detail="options must be an object.")
+        post_action_raw = str(weld_options.get("post_action", "return_to_start")).strip()
+        weld_options["post_action"] = (
+            "none"
+            if post_action_raw == "none"
+            else ("lift" if post_action_raw == "lift" else "return_to_start")
+        )
 
-        if waypoints_override:
+        if sections:
+            weld_points = [
+                [float(point[0]), float(point[1]), float(point[2])]
+                for section in sections
+                for point in section["points"]
+            ]
+            sampled_start = max(0.0, min(1.0, start_s))
+            sampled_end = max(0.0, min(1.0, end_s))
+        elif waypoints_override:
             weld_points = [list(point) for point in waypoints_override]
             sampled_start = max(0.0, min(1.0, start_s))
             sampled_end = max(0.0, min(1.0, end_s))
@@ -979,10 +1019,16 @@ def create_app() -> FastAPI:
         }
 
         def _plan():
+            live_joints = _get_live_joint_angles_from_controller(timeout=1.0)
+            if controller_utils is not None:
+                controller_utils.current_logical_joint_angles_rad = list(live_joints)
+            if hasattr(controller_command_api, "utils"):
+                controller_command_api.utils.current_logical_joint_angles_rad = list(live_joints)
             return controller_command_api.plan_preview_trajectory_points(
                 weld_points,
                 preview_name=preview_name,
                 weld_metadata=weld_metadata,
+                sections=sections if sections else None,
             )
 
         try:
@@ -995,8 +1041,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Weld planning failed unexpectedly: {exc}") from exc
 
         result["source"] = {
-            "mode": "waypoints_override" if waypoints_override else "edge_segment",
+            "mode": "sections" if sections else ("waypoints_override" if waypoints_override else "edge_segment"),
             "sample_count": len(weld_points),
+            "section_count": len(sections) if sections else 0,
         }
         return result
 
@@ -1136,6 +1183,45 @@ def _coerce_waypoint_list(raw_points: Any) -> list[tuple[float, float, float]]:
     return points
 
 
+def _coerce_plan_sections(raw_sections: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_sections, list):
+        return []
+    sections: list[dict[str, Any]] = []
+    for idx, raw_section in enumerate(raw_sections):
+        if not isinstance(raw_section, dict):
+            raise HTTPException(status_code=400, detail=f"Invalid section at index {idx}: expected object")
+        kind_raw = str(raw_section.get("kind", "weld")).strip().lower()
+        kind = "transition" if kind_raw == "transition" else "weld"
+        points = _coerce_waypoint_list(raw_section.get("points"))
+        if len(points) < 2:
+            continue
+        section: dict[str, Any] = {
+            "kind": kind,
+            "points": points,
+        }
+        weld_type_raw = raw_section.get("weld_type", raw_section.get("weldType"))
+        if weld_type_raw is not None and str(weld_type_raw).strip():
+            section["weld_type"] = _normalize_weld_type(weld_type_raw)
+        edge_id_raw = raw_section.get("edge_id", raw_section.get("edgeId"))
+        if isinstance(edge_id_raw, str) and edge_id_raw.strip():
+            section["edge_id"] = edge_id_raw.strip()
+        sections.append(section)
+    return sections
+
+
+def _get_live_joint_angles_from_controller(timeout: float = 1.0) -> list[float]:
+    ok, detail = _send_controller_command("GET_POSITION", timeout=timeout)
+    if not ok:
+        raise HTTPException(status_code=503, detail=detail)
+    try:
+        joints = _parse_pose_response(detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if len(joints) == 0:
+        raise HTTPException(status_code=502, detail="Controller returned no joint angles in pose reply.")
+    return joints
+
+
 async def _plan_point(payload: dict) -> dict[str, Any]:
     try:
         x = float(payload.get("x"))
@@ -1149,13 +1235,7 @@ async def _plan_point(payload: dict) -> dict[str, Any]:
     closed_loop = bool(payload.get("closed_loop", True))
 
     def _compute_plan() -> dict[str, Any]:
-        ok, detail = _send_controller_command("GET_POSITION", timeout=1.0)
-        if not ok:
-            raise HTTPException(status_code=503, detail=detail)
-        try:
-            start_joints = _parse_pose_response(detail)
-        except ValueError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        start_joints = _get_live_joint_angles_from_controller(timeout=1.0)
 
         from ..arm_controller import trajectory_execution
         from .. import ik_solver

@@ -718,6 +718,7 @@ def _open_loop_executor_thread(
     frequency: int,
     diagnostics: bool = True,
     return_telemetry: bool = False,
+    owns_trajectory_state: bool = True,
 ):
     """High-speed *open-loop* executor.
 
@@ -846,8 +847,10 @@ def _open_loop_executor_thread(
                 "frequency": frequency,
             }
 
-        # If this executor thread is the one registered in trajectory_state, clear it
-        if utils.trajectory_state.get("thread") is threading.current_thread():
+        # Only clear global run-state when this executor owns lifecycle management.
+        # Nested calls from the higher-level trajectory step executor must not
+        # toggle is_running/thread between weld sub-steps.
+        if owns_trajectory_state and utils.trajectory_state.get("thread") is threading.current_thread():
             utils.trajectory_state.update({"is_running": False, "should_stop": False, "thread": None})
             # Clean up session keys
             utils.trajectory_state.pop('diagnostics_session_id', None)
@@ -863,6 +866,7 @@ def _closed_loop_executor_thread(
     frequency: int,
     diagnostics: bool = True,
     return_telemetry: bool = False,
+    owns_trajectory_state: bool = True,
 ):
     """
     Executes a pre-planned joint-space trajectory using a real-time, closed-loop
@@ -1158,7 +1162,7 @@ def _closed_loop_executor_thread(
                 "frequency": frequency,
             }
 
-        if utils.trajectory_state.get("thread") is threading.current_thread():
+        if owns_trajectory_state and utils.trajectory_state.get("thread") is threading.current_thread():
             utils.trajectory_state.update({"is_running": False, "should_stop": False, "thread": None})
             utils.trajectory_state.pop('diagnostics_session_id', None)
             utils.trajectory_state.pop('diagnostics_folder_type', None)
@@ -1182,5 +1186,10 @@ def _execute_joint_path(joint_path: list[list[float]], frequency: int):
         Execution frequency in Hz.
     """
     diagnostics_enabled = utils.trajectory_state.get("diagnostics_enabled", False)
-    _open_loop_executor_thread(joint_path, frequency, diagnostics=diagnostics_enabled)
+    _open_loop_executor_thread(
+        joint_path,
+        frequency,
+        diagnostics=diagnostics_enabled,
+        owns_trajectory_state=False,
+    )
 

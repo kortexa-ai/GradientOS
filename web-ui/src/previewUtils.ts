@@ -11,6 +11,7 @@ export type TrajectoryFile = {
   description?: string;
   loop?: boolean;
   orientation_euler_angles_deg?: number[] | null;
+  weld?: Record<string, unknown>;
   moves: TrajectoryMove[];
 };
 
@@ -47,38 +48,22 @@ export type ProgramNode = {
   children: ProgramNode[];
 };
 
+export type ProgramTreeViewMode = "chronological" | "grouped";
+
 type BuildProgramTreeInput = {
   plan: PreviewPlan | null;
   weldSegments?: Array<{
     edgeId: string;
     startS: number;
     endS: number;
+    weldType?: string;
   }>;
   weldType?: string;
+  viewMode?: ProgramTreeViewMode;
 };
 
 function toNodeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, "_");
-}
-
-function estimatePathRange(
-  segmentIndex: number,
-  totalSegments: number,
-  pathPointCount: number,
-): { start: number; end: number } | undefined {
-  if (totalSegments <= 0 || pathPointCount < 2) {
-    return undefined;
-  }
-  const maxIdx = pathPointCount - 1;
-  const start = Math.max(
-    0,
-    Math.min(maxIdx, Math.floor((segmentIndex / totalSegments) * maxIdx)),
-  );
-  const end = Math.max(
-    start,
-    Math.min(maxIdx, Math.ceil(((segmentIndex + 1) / totalSegments) * maxIdx)),
-  );
-  return { start, end };
 }
 
 function toPoint3(value: unknown): Point3 | null {
@@ -196,6 +181,7 @@ export function buildProgramTree({
   plan,
   weldSegments = [],
   weldType,
+  viewMode = "grouped",
 }: BuildProgramTreeInput): ProgramNode | null {
   if (!plan && (!Array.isArray(weldSegments) || weldSegments.length === 0)) {
     return null;
@@ -203,177 +189,190 @@ export function buildProgramTree({
 
   const trajectory = plan?.trajectory;
   const moves = Array.isArray(trajectory?.moves) ? trajectory.moves : [];
-  const pathPointCount = plan?.pathPoints.length ?? 0;
-  const totalWaypointSegments = Math.max((plan?.waypoints.length ?? 0) - 1, 0);
+  const defaultFocusPanel: "trajectory" | "weld" =
+    trajectory && typeof trajectory.weld === "object" && trajectory.weld !== null
+      ? "weld"
+      : "trajectory";
+  const pathPoints = Array.isArray(plan?.pathPoints) ? plan.pathPoints : [];
+  const controlPoints = Array.isArray(plan?.waypoints) ? plan.waypoints : [];
+  const pathPointCount = pathPoints.length;
 
-  const motionNodes: ProgramNode[] = [];
-  const controlNodes: ProgramNode[] = [];
-  const timingNodes: ProgramNode[] = [];
-  const waypointNodes: ProgramNode[] = [];
+  const exactPathNodes: ProgramNode[] = pathPoints.map((point, index) => ({
+    id: `path_sample_${index}`,
+    type: "waypoint",
+    label: `Path Sample ${index + 1}`,
+    subtitle: `${point.x.toFixed(4)}, ${point.y.toFixed(4)}, ${point.z.toFixed(4)}`,
+    badge: `${index + 1}`,
+    focus: {
+      openPanel: defaultFocusPanel,
+      pathRange: {
+        start: index,
+        end: Math.min(pathPointCount - 1, index + 1),
+      },
+    },
+    children: [],
+  }));
 
-  let waypointIndex = -1;
-  let traversedWaypointSegment = -1;
+  const controlPointNodes: ProgramNode[] = controlPoints.map((point, index) => ({
+    id: `control_point_${index}`,
+    type: "waypoint",
+    label: `Control Point ${index + 1}`,
+    subtitle: `${point.x.toFixed(4)}, ${point.y.toFixed(4)}, ${point.z.toFixed(4)}`,
+    badge: `${index + 1}`,
+    focus: {
+      openPanel: defaultFocusPanel,
+      waypointIndices: [index],
+    },
+    children: [],
+  }));
 
-  moves.forEach((move, moveIndex) => {
+  const commandNodes: ProgramNode[] = moves.map((move, moveIndex) => {
     const command = String(move?.command ?? "").trim() || "unknown";
-    const isAbsoluteMove = command === "move_absolute";
-    if (isAbsoluteMove) {
-      waypointIndex += 1;
-    }
-
     const focus: ProgramNodeFocus = {
-      openPanel: "trajectory",
+      openPanel: defaultFocusPanel,
       moveIndex,
     };
-    if (isAbsoluteMove && waypointIndex >= 0) {
-      focus.waypointIndices = [waypointIndex];
-      if (waypointIndex > 0) {
-        traversedWaypointSegment += 1;
-        const range = estimatePathRange(
-          traversedWaypointSegment,
-          totalWaypointSegments,
-          pathPointCount,
-        );
-        if (range) {
-          focus.pathRange = range;
-        }
-      }
-    }
-
-    const moveNode: ProgramNode = {
+    const commandNode: ProgramNode = {
       id: `move_${moveIndex}`,
       type: "move",
-      label: `${command}`,
+      label: command,
       subtitle: `Move ${moveIndex + 1}`,
       badge: `#${moveIndex + 1}`,
       focus,
       children: [],
     };
-
-    if (isAbsoluteMove && waypointIndex >= 0) {
-      const point = plan?.waypoints[waypointIndex];
-      moveNode.children.push({
-        id: `move_${moveIndex}_waypoint_${waypointIndex}`,
-        type: "waypoint",
-        label: `Waypoint ${waypointIndex + 1}`,
-        subtitle: point
-          ? `${point.x.toFixed(3)}, ${point.y.toFixed(3)}, ${point.z.toFixed(3)}`
-          : undefined,
-        focus: {
-          openPanel: "trajectory",
-          waypointIndices: [waypointIndex],
-          pathRange: focus.pathRange,
-          moveIndex,
-        },
-        children: [],
-      });
+    if (command === "move_absolute") {
+      const movePoint = toPoint3(move.vector ?? null);
+      if (movePoint) {
+        commandNode.children.push({
+          id: `move_${moveIndex}_endpoint`,
+          type: "waypoint",
+          label: "Move Endpoint",
+          subtitle: `${movePoint.x.toFixed(4)}, ${movePoint.y.toFixed(4)}, ${movePoint.z.toFixed(4)}`,
+          focus: {
+            openPanel: defaultFocusPanel,
+            moveIndex,
+          },
+          children: [],
+        });
+      }
     }
-
-    if (command === "pause") {
-      timingNodes.push(moveNode);
-    } else if (
-      command === "move_absolute" ||
-      command === "move_relative" ||
-      command === "move_arc"
-    ) {
-      motionNodes.push(moveNode);
-    } else {
-      controlNodes.push(moveNode);
-    }
+    return commandNode;
   });
 
-  if (Array.isArray(plan?.waypoints)) {
-    plan!.waypoints.forEach((point, index) => {
-      waypointNodes.push({
-        id: `waypoint_${index}`,
-        type: "waypoint",
-        label: `Waypoint ${index + 1}`,
-        subtitle: `${point.x.toFixed(3)}, ${point.y.toFixed(3)}, ${point.z.toFixed(3)}`,
-        badge: `${index + 1}`,
-        focus: {
-          openPanel: "trajectory",
-          waypointIndices: [index],
-        },
-        children: [],
-      });
+  const groupedOperationNodes: ProgramNode[] = [];
+  if (exactPathNodes.length > 0) {
+    groupedOperationNodes.push({
+      id: "op_path_exact",
+      type: "operationGroup",
+      label: "Exact Path Samples",
+      badge: `${exactPathNodes.length}`,
+      children: exactPathNodes,
+    });
+  }
+  if (controlPointNodes.length > 0) {
+    groupedOperationNodes.push({
+      id: "op_control_points",
+      type: "operationGroup",
+      label: "Control Points",
+      badge: `${controlPointNodes.length}`,
+      children: controlPointNodes,
+    });
+  }
+  if (commandNodes.length > 0) {
+    groupedOperationNodes.push({
+      id: exactPathNodes.length > 0 ? "op_commands_meta" : "op_commands",
+      type: "operationGroup",
+      label:
+        exactPathNodes.length > 0
+          ? "Controller Commands (Reference)"
+          : "Controller Commands",
+      badge: `${commandNodes.length}`,
+      children: commandNodes,
     });
   }
 
-  const operationGroups: ProgramNode[] = [];
-  if (motionNodes.length > 0) {
-    operationGroups.push({
-      id: "op_motion",
+  const chronologicalNodes: ProgramNode[] = [];
+  if (exactPathNodes.length > 0) {
+    chronologicalNodes.push({
+      id: "op_chronological",
       type: "operationGroup",
-      label: "Motion Operations",
-      badge: `${motionNodes.length}`,
-      children: motionNodes,
+      label: "Execution Path (Exact)",
+      badge: `${exactPathNodes.length}`,
+      children: exactPathNodes,
     });
-  }
-  if (timingNodes.length > 0) {
-    operationGroups.push({
-      id: "op_timing",
+  } else if (commandNodes.length > 0) {
+    chronologicalNodes.push({
+      id: "op_chronological",
       type: "operationGroup",
-      label: "Timing Operations",
-      badge: `${timingNodes.length}`,
-      children: timingNodes,
-    });
-  }
-  if (controlNodes.length > 0) {
-    operationGroups.push({
-      id: "op_control",
-      type: "operationGroup",
-      label: "Control Operations",
-      badge: `${controlNodes.length}`,
-      children: controlNodes,
-    });
-  }
-  if (waypointNodes.length > 0) {
-    operationGroups.push({
-      id: "op_waypoints",
-      type: "operationGroup",
-      label: "Waypoint List",
-      badge: `${waypointNodes.length}`,
-      children: waypointNodes,
+      label: "Execution Order",
+      badge: `${commandNodes.length}`,
+      children: commandNodes,
     });
   }
 
   if (Array.isArray(weldSegments) && weldSegments.length > 0) {
     const weldNodes: ProgramNode[] = weldSegments.map((segment, index) => {
-      const range = estimatePathRange(index, weldSegments.length, pathPointCount);
+      const segmentWeldType = typeof segment.weldType === "string" ? segment.weldType : weldType;
       return {
         id: `weld_segment_${index}_${toNodeId(segment.edgeId)}`,
         type: "weldSegment",
         label: `Segment ${index + 1}`,
         subtitle: segment.edgeId,
-        badge: weldType ?? "weld",
+        badge: segmentWeldType ?? "weld",
         focus: {
           openPanel: "weld",
           weldSegmentEdgeId: segment.edgeId,
-          pathRange: range,
         },
         children: [],
       };
     });
-    operationGroups.push({
+    const weldGroup: ProgramNode = {
       id: "op_weld",
       type: "operationGroup",
       label: "Weld Features",
       badge: `${weldNodes.length}`,
       children: weldNodes,
-    });
+    };
+    groupedOperationNodes.push(weldGroup);
+    chronologicalNodes.push(weldGroup);
   }
+
+  const distinctWeldTypes = Array.isArray(weldSegments)
+    ? Array.from(
+        new Set(
+          weldSegments
+            .map((segment) => (typeof segment.weldType === "string" ? segment.weldType.trim() : ""))
+            .filter((value) => value.length > 0),
+        ),
+      )
+    : [];
+  const setupSubtitle =
+    distinctWeldTypes.length > 1
+      ? "mixed weld workflow"
+      : distinctWeldTypes.length === 1
+        ? `${distinctWeldTypes[0]} workflow`
+        : weldType
+          ? `${weldType} workflow`
+          : "Robot sequence";
+
+  const operationGroups =
+    viewMode === "chronological" ? chronologicalNodes : groupedOperationNodes;
 
   return {
     id: "program_root",
     type: "program",
     label: plan?.name ?? "Program",
-    subtitle: `${moves.length} move(s)`,
+    subtitle:
+      pathPointCount > 0
+        ? `${moves.length} move(s) • ${pathPointCount} path sample(s)`
+        : `${moves.length} move(s)`,
     children: [
       {
         id: "setup_primary",
         type: "setupGroup",
         label: "Setup",
-        subtitle: weldType ? `${weldType} workflow` : "Robot sequence",
+        subtitle: setupSubtitle,
         children: operationGroups,
       },
     ],

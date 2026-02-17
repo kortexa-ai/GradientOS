@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
+import * as THREE from "three";
 import {
   Camera,
   CameraOff,
@@ -8,12 +18,10 @@ import {
   FolderOpen,
   Flame,
   Home,
-  Minus,
   Moon,
   Octagon,
   Play,
   Plug,
-  Plus,
   RefreshCcw,
   Route,
   Save,
@@ -39,6 +47,7 @@ import {
   previewFromPlannerPayload,
   previewFromTrajectoryDetail,
   type ProgramNode,
+  type ProgramTreeViewMode,
   type Point3,
   type PreviewPlan,
 } from "./previewUtils";
@@ -86,6 +95,7 @@ type PersistedSettings = {
   collapseRobotControl: boolean;
   activePanel: SidebarPanelId | null;
   showProgramTree: boolean;
+  programTreeViewMode: ProgramTreeViewMode;
   expandedProgramTreeNodeIds: string[];
   selectedProgramNodeId: string | null;
 };
@@ -107,6 +117,7 @@ type WeldSegmentDraft = {
   edgeId: string;
   startS: number;
   endS: number;
+  weldType: string;
 };
 
 type WeldDraft = {
@@ -115,6 +126,10 @@ type WeldDraft = {
   weldName: string;
   segments: WeldSegmentDraft[];
   activeSegmentEdgeId: string | null;
+  workAngleDeg: number;
+  travelAngleDeg: number;
+  transitionClearanceMm: number;
+  postAction: "none" | "return_to_start" | "lift";
 };
 
 type WeldProgramRecord = {
@@ -134,6 +149,14 @@ type WeldProgramRecord = {
     weld_type?: string;
     weldName?: string;
     weld_name?: string;
+    workAngleDeg?: number;
+    work_angle_deg?: number;
+    travelAngleDeg?: number;
+    travel_angle_deg?: number;
+    transitionClearanceMm?: number;
+    transition_clearance_mm?: number;
+    postAction?: "none" | "return_to_start" | "lift";
+    post_action?: "none" | "return_to_start" | "lift";
     startS?: number;
     start_s?: number;
     endS?: number;
@@ -145,6 +168,8 @@ type WeldProgramRecord = {
       start_s?: number;
       endS?: number;
       end_s?: number;
+      weldType?: string;
+      weld_type?: string;
     }>;
     activeSegmentEdgeId?: string | null;
     active_segment_edge_id?: string | null;
@@ -154,6 +179,46 @@ type WeldProgramRecord = {
 };
 
 const WELD_TYPE_OPTIONS = ["fillet", "butt", "lap", "tack/spot", "custom"] as const;
+const DRAWER_LABEL_CLASS = "block text-[13px] font-normal text-slate-300";
+const DRAWER_INPUT_CLASS =
+  "mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-[13px] text-slate-100 focus:border-cyan-400/60 focus:outline-none";
+const DRAWER_INLINE_INPUT_CLASS =
+  "rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-[13px] text-slate-100 focus:border-cyan-400/60 focus:outline-none";
+const DRAWER_META_TEXT_CLASS = "text-[12px] text-slate-400";
+const DRAWER_SECTION_TITLE_CLASS = "text-[14px] font-semibold text-slate-200";
+const DRAWER_ACTION_TEXT_CLASS = "text-[13px] font-semibold";
+
+const WELD_LABEL_CLASS = DRAWER_LABEL_CLASS;
+const WELD_INPUT_CLASS = DRAWER_INPUT_CLASS;
+const WELD_META_TEXT_CLASS = DRAWER_META_TEXT_CLASS;
+const WELD_SECTION_TITLE_CLASS = DRAWER_SECTION_TITLE_CLASS;
+const WORK_ANGLE_HELP_LIMIT_DEG = 80;
+const TRAVEL_ANGLE_HELP_LIMIT_DEG = 60;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function pointFromAngle(cx: number, cy: number, radius: number, degFromUp: number) {
+  const rad = (degFromUp * Math.PI) / 180;
+  return {
+    x: cx + Math.sin(rad) * radius,
+    y: cy - Math.cos(rad) * radius,
+  };
+}
+
+function angleFromPointer(
+  event: ReactPointerEvent<SVGSVGElement>,
+  centerX: number,
+  centerY: number,
+) {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const dx = x - centerX;
+  const dy = centerY - y;
+  return (Math.atan2(dx, dy) * 180) / Math.PI;
+}
 
 const SETTINGS_STORAGE_KEY = "gradient-ui:settings";
 const DEFAULT_STEP_TRANSFORM: StepTransform = {
@@ -172,7 +237,8 @@ function loadPersistedSettings(): PersistedSettings {
     collapseRobotControl: false,
     activePanel: "step",
     showProgramTree: true,
-    expandedProgramTreeNodeIds: ["program_root", "setup_primary", "op_motion", "op_weld"],
+    programTreeViewMode: "chronological",
+    expandedProgramTreeNodeIds: ["program_root", "setup_primary", "op_chronological", "op_weld"],
     selectedProgramNodeId: null,
   };
   if (typeof window === "undefined") {
@@ -222,6 +288,11 @@ function loadPersistedSettings(): PersistedSettings {
           typeof parsed.showProgramTree === "boolean"
             ? parsed.showProgramTree
             : defaults.showProgramTree,
+        programTreeViewMode:
+          parsed.programTreeViewMode === "chronological" ||
+          parsed.programTreeViewMode === "grouped"
+            ? parsed.programTreeViewMode
+            : defaults.programTreeViewMode,
         expandedProgramTreeNodeIds: Array.isArray(parsed.expandedProgramTreeNodeIds)
           ? parsed.expandedProgramTreeNodeIds
               .map((entry: unknown) => (typeof entry === "string" ? entry.trim() : ""))
@@ -307,6 +378,68 @@ function toTopologyEdgeOverlay(model: TopologyModel | null): TopologyEdgeOverlay
       } as TopologyEdgeOverlay;
     })
     .filter((edge) => edge.points.length >= 2);
+}
+
+function computeTopologyOffset(edges: TopologyEdgeOverlay[]): Point3 | null {
+  if (!Array.isArray(edges) || edges.length === 0) {
+    return null;
+  }
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let sawPoint = false;
+
+  edges.forEach((edge) => {
+    edge.points.forEach((point) => {
+      sawPoint = true;
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      minZ = Math.min(minZ, point.z);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    });
+  });
+
+  if (!sawPoint) {
+    return null;
+  }
+  return {
+    x: (minX + maxX) * 0.5,
+    y: (minY + maxY) * 0.5,
+    z: minZ,
+  };
+}
+
+function buildStepTransformMatrix(transform: StepTransform): THREE.Matrix4 {
+  const safeScale = Number.isFinite(transform.scale) ? Math.max(1e-4, transform.scale) : 1;
+  const position = new THREE.Vector3(
+    transform.position.x,
+    transform.position.y,
+    transform.position.z,
+  );
+  const rotation = new THREE.Euler(
+    THREE.MathUtils.degToRad(transform.rotationDeg.x),
+    THREE.MathUtils.degToRad(transform.rotationDeg.y),
+    THREE.MathUtils.degToRad(transform.rotationDeg.z),
+    "XYZ",
+  );
+  const quaternion = new THREE.Quaternion().setFromEuler(rotation);
+  const scale = new THREE.Vector3(safeScale, safeScale, safeScale);
+  return new THREE.Matrix4().compose(position, quaternion, scale);
+}
+
+function transformTopologyPointToScene(
+  point: Point3,
+  topologyOffset: Point3 | null,
+  stepMatrix: THREE.Matrix4,
+): Point3 {
+  const localX = topologyOffset ? point.x - topologyOffset.x : point.x;
+  const localY = topologyOffset ? point.y - topologyOffset.y : point.y;
+  const localZ = topologyOffset ? point.z - topologyOffset.z : point.z;
+  const scenePoint = new THREE.Vector3(localX, localY, localZ).applyMatrix4(stepMatrix);
+  return { x: scenePoint.x, y: scenePoint.y, z: scenePoint.z };
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -438,6 +571,7 @@ function mmFromSegmentS(segment: WeldSegmentDraft, edgeLengthM: number): {
 
 function normalizeWeldSegments(
   rawSegments: unknown,
+  defaultWeldType: string,
   validEdgeIds?: Set<string>,
 ): WeldSegmentDraft[] {
   if (!Array.isArray(rawSegments)) {
@@ -461,6 +595,9 @@ function normalizeWeldSegments(
       edgeId,
       startS: clamp01(Number(data.startS ?? data.start_s ?? 0)),
       endS: clamp01(Number(data.endS ?? data.end_s ?? 1)),
+      weldType:
+        String(data.weldType ?? data.weld_type ?? defaultWeldType).trim() ||
+        defaultWeldType,
     });
     unique.add(edgeId);
   });
@@ -478,7 +615,19 @@ function normalizeWeldDraftRecord(
   const modelId = String(raw.modelId ?? raw.model_id ?? fallbackModelId).trim() || fallbackModelId;
   const weldType = String(raw.weldType ?? raw.weld_type ?? "fillet").trim() || "fillet";
   const weldName = String(raw.weldName ?? raw.weld_name ?? `${weldType} weld`).trim() || `${weldType} weld`;
-  const segments = normalizeWeldSegments(raw.segments, validEdgeIds);
+  const workAngleDeg = Number(raw.workAngleDeg ?? raw.work_angle_deg ?? 45);
+  const travelAngleDeg = Number(raw.travelAngleDeg ?? raw.travel_angle_deg ?? 0);
+  const transitionClearanceMm = Number(
+    raw.transitionClearanceMm ?? raw.transition_clearance_mm ?? 35,
+  );
+  const postActionRaw = String(raw.postAction ?? raw.post_action ?? "return_to_start").trim();
+  const postAction: "none" | "return_to_start" | "lift" =
+    postActionRaw === "none"
+      ? "none"
+      : postActionRaw === "lift"
+        ? "lift"
+        : "return_to_start";
+  const segments = normalizeWeldSegments(raw.segments, weldType, validEdgeIds);
   if (segments.length === 0) {
     const edgeId = String(raw.edgeId ?? raw.edge_id ?? "").trim();
     if (
@@ -489,6 +638,7 @@ function normalizeWeldDraftRecord(
         edgeId,
         startS: clamp01(Number(raw.startS ?? raw.start_s ?? 0)),
         endS: clamp01(Number(raw.endS ?? raw.end_s ?? 1)),
+        weldType,
       });
     }
   }
@@ -508,38 +658,104 @@ function normalizeWeldDraftRecord(
     weldName,
     segments,
     activeSegmentEdgeId,
+    workAngleDeg: Number.isFinite(workAngleDeg) ? workAngleDeg : 45,
+    travelAngleDeg: Number.isFinite(travelAngleDeg) ? travelAngleDeg : 0,
+    transitionClearanceMm:
+      Number.isFinite(transitionClearanceMm) && transitionClearanceMm > 0
+        ? transitionClearanceMm
+        : 35,
+    postAction,
   };
 }
 
-function buildWeldPreviewPoints(
+type WeldPreviewSection = {
+  kind: "weld" | "transition";
+  weldType?: string;
+  edgeId?: string;
+  points: Point3[];
+};
+
+function buildWeldPreviewSections(
   draft: WeldDraft,
   topologyEdgeById: Map<string, TopologyEdgeOverlay>,
-): Point3[] {
-  const out: Point3[] = [];
+): WeldPreviewSection[] {
+  const sections: WeldPreviewSection[] = [];
+  const clearanceM =
+    Number.isFinite(draft.transitionClearanceMm) && draft.transitionClearanceMm > 0
+      ? draft.transitionClearanceMm / 1000
+      : 0.035;
   draft.segments.forEach((segment) => {
     const edge = topologyEdgeById.get(segment.edgeId);
     if (!edge || edge.points.length < 2) {
       return;
     }
-    const points = sampleSegmentOnPolyline(
+    const weldPoints = sampleSegmentOnPolyline(
       edge.points,
       segment.startS,
       segment.endS,
       24,
     );
-    if (points.length === 0) {
+    if (weldPoints.length === 0) {
       return;
     }
-    if (out.length > 0) {
-      const prev = out[out.length - 1];
-      const first = points[0];
-      if (Math.hypot(prev.x - first.x, prev.y - first.y, prev.z - first.z) < 1e-6) {
-        points.shift();
+    const lastSection = sections[sections.length - 1];
+    const previousWeldSection =
+      lastSection?.kind === "weld"
+        ? lastSection
+        : sections.length > 1 && sections[sections.length - 2]?.kind === "weld"
+          ? sections[sections.length - 2]
+          : null;
+    const previousEnd =
+      previousWeldSection && previousWeldSection.points.length > 0
+        ? previousWeldSection.points[previousWeldSection.points.length - 1]
+        : null;
+    const nextStart = weldPoints[0];
+    const isContiguous =
+      previousEnd &&
+      Math.hypot(
+        previousEnd.x - nextStart.x,
+        previousEnd.y - nextStart.y,
+        previousEnd.z - nextStart.z,
+      ) < 1e-4;
+    const shouldMerge =
+      Boolean(previousWeldSection) &&
+      isContiguous &&
+      previousWeldSection?.weldType === segment.weldType;
+
+    if (shouldMerge && previousWeldSection) {
+      if (previousWeldSection.points.length > 0 && weldPoints.length > 0) {
+        const first = weldPoints[0];
+        const prev = previousWeldSection.points[previousWeldSection.points.length - 1];
+        if (Math.hypot(prev.x - first.x, prev.y - first.y, prev.z - first.z) < 1e-6) {
+          weldPoints.shift();
+        }
       }
+      previousWeldSection.points.push(...weldPoints);
+      return;
     }
-    out.push(...points);
+
+    if (previousEnd && !isContiguous) {
+      const liftZ = Math.max(previousEnd.z, nextStart.z) + clearanceM;
+      sections.push({
+        kind: "transition",
+        points: [
+          { ...previousEnd },
+          { x: previousEnd.x, y: previousEnd.y, z: liftZ },
+          { x: nextStart.x, y: nextStart.y, z: liftZ },
+          { ...nextStart },
+        ],
+      });
+    }
+
+    sections.push({
+      kind: "weld",
+      weldType: segment.weldType,
+      edgeId: segment.edgeId,
+      points: weldPoints,
+    });
   });
-  return out;
+
+  return sections;
 }
 
 function indexProgramNodes(root: ProgramNode | null): Map<string, ProgramNode> {
@@ -578,7 +794,7 @@ function findWeldProgramNodeIdByEdge(
 
 function TelemetryPanel({ latest }: { latest: TelemetryEvent | null }) {
   return (
-    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
+    <div className="pointer-events-auto w-full">
       {latest ? (
         <div className="flex flex-col gap-3 text-sm">
           <div className="flex items-center justify-between text-xs text-slate-300/80">
@@ -694,21 +910,9 @@ function StepImportPanel({
   };
 
   return (
-    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
-          STEP Import
-        </span>
-        <button
-          type="button"
-          onClick={onResetTransform}
-          className="rounded-lg border border-slate-600/60 bg-slate-900/60 px-2 py-1 text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50"
-        >
-          Reset Pose
-        </button>
-      </div>
+    <div className="pointer-events-auto w-full">
       <div className="mb-3 flex items-center gap-2">
-        <label className="flex-1 cursor-pointer rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-center text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50">
+        <label className={`flex-1 cursor-pointer rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-center ${DRAWER_ACTION_TEXT_CLASS} text-slate-100 transition hover:border-slate-400 hover:text-slate-50`}>
           Load .step/.stp
           <input
             type="file"
@@ -724,32 +928,32 @@ function StepImportPanel({
           type="button"
           onClick={onClearFile}
           disabled={!stepFileName}
-          className={`rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-xs font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50 ${
+          className={`rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 ${DRAWER_ACTION_TEXT_CLASS} text-slate-100 transition hover:border-slate-400 hover:text-slate-50 ${
             stepFileName ? "" : "cursor-not-allowed opacity-60"
           }`}
         >
           Clear
         </button>
       </div>
-      <p className="truncate text-xs text-slate-300/80">
+      <p className={`truncate ${DRAWER_META_TEXT_CLASS}`}>
         File:{" "}
         <span className="font-semibold text-slate-100">
           {stepFileName ?? "None"}
         </span>
       </p>
-      <p className="mt-1 text-xs text-cyan-200/80">
+      <p className="mt-1 text-[12px] text-cyan-200/80">
         Frame: world (Z-up). +X red, +Y green, +Z blue.
       </p>
-      <p className={`mt-1 text-xs ${statusTone}`}>{stepStatus.message}</p>
+      <p className={`mt-1 text-[12px] ${statusTone}`}>{stepStatus.message}</p>
       <div className="mt-3 grid grid-cols-3 gap-2">
         {(["x", "y", "z"] as const).map((axis) => (
           <label
             key={`pos-${axis}`}
-            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[11px] text-slate-300/90"
+            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[12px] text-slate-300/90"
           >
             P{axis.toUpperCase()} (m)
             <input
-              className="rounded bg-slate-900/70 px-2 py-1 text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+              className="rounded bg-slate-900/70 px-2 py-1 text-[13px] text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
               type="number"
               step="0.01"
               value={transform.position[axis]}
@@ -766,11 +970,11 @@ function StepImportPanel({
         {(["x", "y", "z"] as const).map((axis) => (
           <label
             key={`rot-${axis}`}
-            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[11px] text-slate-300/90"
+            className="flex flex-col gap-1 rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[12px] text-slate-300/90"
           >
             R{axis.toUpperCase()} (deg)
             <input
-              className="rounded bg-slate-900/70 px-2 py-1 text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+              className="rounded bg-slate-900/70 px-2 py-1 text-[13px] text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
               type="number"
               step="1"
               value={transform.rotationDeg[axis]}
@@ -784,10 +988,10 @@ function StepImportPanel({
             />
           </label>
         ))}
-        <label className="col-span-3 flex items-center justify-between rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-xs text-slate-300/90">
+        <label className="col-span-3 flex items-center justify-between rounded-lg border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[13px] text-slate-300/90">
           <span>Scale</span>
           <input
-            className="w-24 rounded bg-slate-900/70 px-2 py-1 text-right text-xs text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
+            className="w-24 rounded bg-slate-900/70 px-2 py-1 text-right text-[13px] text-slate-100 outline-none ring-1 ring-slate-700/70 focus:ring-cyan-500/50"
             type="number"
             min="0.01"
             step="0.1"
@@ -798,6 +1002,13 @@ function StepImportPanel({
           />
         </label>
       </div>
+      <button
+        type="button"
+        onClick={onResetTransform}
+        className={`mt-3 w-full rounded-lg border border-slate-600/60 bg-slate-900/60 px-2 py-2 ${DRAWER_ACTION_TEXT_CLASS} text-slate-100 transition hover:border-slate-400 hover:text-slate-50`}
+      >
+        Reset Pose
+      </button>
     </div>
   );
 }
@@ -846,11 +1057,8 @@ function TrajectoryPanel({
     waypointList.length > 0 ? waypointList[waypointList.length - 1] : null;
 
   return (
-    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
-          Trajectory
-        </span>
+    <div className="pointer-events-auto w-full">
+      <div className="mb-3 flex items-center justify-end">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -902,7 +1110,7 @@ function TrajectoryPanel({
           </button>
         </div>
       </div>
-      <div className="text-sm text-slate-100/90">
+      <div className="text-[13px] leading-[1.35] text-slate-100/90">
         {isPlanLoading ? (
           <p>Planning preview trajectory…</p>
         ) : isRunning ? (
@@ -914,16 +1122,16 @@ function TrajectoryPanel({
           </p>
         ) : preview ? (
           <div className="flex flex-col gap-2">
-            <div className="text-xs text-slate-300/80">
+            <div className={DRAWER_META_TEXT_CLASS}>
               Loaded:{" "}
               <span className="font-semibold text-slate-100">{preview.name}</span>
             </div>
-            <div className="text-xs text-slate-300/80">
+            <div className={DRAWER_META_TEXT_CLASS}>
               Waypoints:{" "}
               <span className="font-semibold text-slate-100">{waypointCount}</span>
             </div>
             {lastPoint && (
-              <div className="text-xs text-slate-300/80">
+              <div className={DRAWER_META_TEXT_CLASS}>
                 Last point (m):{" "}
                 <span className="font-semibold text-slate-100">
                   {lastPoint.x.toFixed(3)}, {lastPoint.y.toFixed(3)},{" "}
@@ -938,7 +1146,7 @@ function TrajectoryPanel({
       </div>
       <div className="mt-4 border-t border-slate-700/50 pt-3">
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
+          <span className={DRAWER_SECTION_TITLE_CLASS}>
             Saved Trajectories
           </span>
           <button
@@ -958,11 +1166,11 @@ function TrajectoryPanel({
           </button>
         </div>
         {isTrajectoryListLoading ? (
-          <p className="text-xs text-slate-300/80">Loading trajectories…</p>
+          <p className={DRAWER_META_TEXT_CLASS}>Loading trajectories…</p>
         ) : hasSavedTrajectories ? (
           <div className="flex items-center gap-2">
             <select
-              className="flex-1 rounded-lg border border-slate-600/70 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 focus:border-cyan-400/60 focus:outline-none focus:ring-2 focus:ring-cyan-500/30"
+              className={`flex-1 ${DRAWER_INLINE_INPUT_CLASS} px-3 py-2 focus:ring-2 focus:ring-cyan-500/30`}
               value={selectedTrajectory}
               onChange={(event) => onSelectTrajectory(event.target.value)}
             >
@@ -976,7 +1184,7 @@ function TrajectoryPanel({
               type="button"
               onClick={onLoadTrajectory}
               disabled={!selectedTrajectory || isLoadingSavedTrajectory}
-              className={`rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:border-slate-400 hover:text-slate-50 ${
+              className={`rounded-lg border border-slate-600/60 bg-slate-900/60 px-3 py-2 ${DRAWER_ACTION_TEXT_CLASS} text-slate-100 transition hover:border-slate-400 hover:text-slate-50 ${
                 (!selectedTrajectory || isLoadingSavedTrajectory)
                   ? "cursor-not-allowed opacity-60"
                   : ""
@@ -987,7 +1195,7 @@ function TrajectoryPanel({
             </button>
           </div>
         ) : (
-          <p className="text-xs text-slate-300/80">
+          <p className={DRAWER_META_TEXT_CLASS}>
             No saved trajectories available.
           </p>
         )}
@@ -1007,13 +1215,14 @@ type WeldPanelProps = {
     startMm: number;
     endMm: number;
     lengthMm: number;
+    weldType: string;
   }>;
   weldSelectionMode: boolean;
   draft: WeldDraft | null;
   isPlanningWeld: boolean;
   isRunning: boolean;
+  canRunPreview: boolean;
   weldActive: boolean;
-  editableWaypoints: Point3[];
   onToggleSelection: () => void;
   onSelectEdge: (edgeId: string) => void;
   onRemoveEdge: (edgeId: string) => void;
@@ -1021,12 +1230,12 @@ type WeldPanelProps = {
   onRun: () => void;
   onSetWeldType: (value: string) => void;
   onSetWeldName: (value: string) => void;
+  onSetWorkAngleDeg: (value: number) => void;
+  onSetTravelAngleDeg: (value: number) => void;
+  onSetTransitionClearanceMm: (value: number) => void;
+  onSetPostAction: (value: "none" | "return_to_start" | "lift") => void;
   onSetStartS: (value: number) => void;
   onSetEndS: (value: number) => void;
-  onWaypointChange: (index: number, axis: "x" | "y" | "z", value: number) => void;
-  onAddWaypoint: () => void;
-  onRemoveWaypoint: (index: number) => void;
-  onApplyWaypointReplan: () => void;
   weldProgramName: string;
   onWeldProgramNameChange: (value: string) => void;
   onSaveProgram: () => void;
@@ -1040,6 +1249,261 @@ type WeldPanelProps = {
   onRefreshPrograms: () => void;
 };
 
+function WeldAngleHelpTooltip({
+  workAngleDeg,
+  travelAngleDeg,
+}: {
+  workAngleDeg: number;
+  travelAngleDeg: number;
+}) {
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [draggingWork, setDraggingWork] = useState(false);
+  const [draggingTravel, setDraggingTravel] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState({ left: 16, top: 16 });
+  const [demoWorkAngle, setDemoWorkAngle] = useState(() =>
+    clamp(workAngleDeg, -WORK_ANGLE_HELP_LIMIT_DEG, WORK_ANGLE_HELP_LIMIT_DEG),
+  );
+  const [demoTravelAngle, setDemoTravelAngle] = useState(() =>
+    clamp(travelAngleDeg, -TRAVEL_ANGLE_HELP_LIMIT_DEG, TRAVEL_ANGLE_HELP_LIMIT_DEG),
+  );
+
+  const syncFromCurrentAngles = useCallback(() => {
+    setDemoWorkAngle(clamp(workAngleDeg, -WORK_ANGLE_HELP_LIMIT_DEG, WORK_ANGLE_HELP_LIMIT_DEG));
+    setDemoTravelAngle(
+      clamp(travelAngleDeg, -TRAVEL_ANGLE_HELP_LIMIT_DEG, TRAVEL_ANGLE_HELP_LIMIT_DEG),
+    );
+  }, [workAngleDeg, travelAngleDeg]);
+
+  const updateTooltipPosition = useCallback(() => {
+    const button = buttonRef.current;
+    if (!button) {
+      return;
+    }
+    const rect = button.getBoundingClientRect();
+    const tooltipWidth = tooltipRef.current?.offsetWidth ?? 368;
+    const tooltipHeight = tooltipRef.current?.offsetHeight ?? 320;
+    const margin = 12;
+    const gap = 10;
+
+    let left = rect.right + gap;
+    if (left + tooltipWidth > window.innerWidth - margin) {
+      left = rect.left - tooltipWidth - gap;
+    }
+    if (left < margin) {
+      left = margin;
+    }
+
+    let top = rect.bottom + 8;
+    if (top + tooltipHeight > window.innerHeight - margin) {
+      top = rect.top - tooltipHeight - 8;
+    }
+    if (top < margin) {
+      top = margin;
+    }
+
+    setTooltipPosition({ left, top });
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || tooltipRef.current?.contains(target)) {
+        return;
+      }
+      setIsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    };
+    const onViewportChange = () => updateTooltipPosition();
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    const raf = window.requestAnimationFrame(updateTooltipPosition);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+      window.cancelAnimationFrame(raf);
+    };
+  }, [isOpen, updateTooltipPosition]);
+
+  const updateWorkFromPointer = useCallback((event: ReactPointerEvent<SVGSVGElement>) => {
+    const angle = angleFromPointer(event, 76, 78);
+    setDemoWorkAngle(clamp(angle, -WORK_ANGLE_HELP_LIMIT_DEG, WORK_ANGLE_HELP_LIMIT_DEG));
+  }, []);
+
+  const updateTravelFromPointer = useCallback((event: ReactPointerEvent<SVGSVGElement>) => {
+    const angle = angleFromPointer(event, 76, 78);
+    setDemoTravelAngle(clamp(angle, -TRAVEL_ANGLE_HELP_LIMIT_DEG, TRAVEL_ANGLE_HELP_LIMIT_DEG));
+  }, []);
+
+  const workTip = pointFromAngle(76, 78, 42, demoWorkAngle);
+  const travelTip = pointFromAngle(76, 78, 42, demoTravelAngle);
+
+  const tooltip =
+    isOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={tooltipRef}
+            className="fixed z-[80] w-[23rem] rounded-lg border border-slate-600/70 bg-slate-950/95 p-3 shadow-xl shadow-slate-950/70 backdrop-blur"
+            style={{ left: tooltipPosition.left, top: tooltipPosition.top }}
+          >
+            <div className="mb-1 text-[12px] font-semibold uppercase tracking-[0.16em] text-cyan-200/90">
+              Angle Definitions
+            </div>
+            <p className="mb-2 text-[12px] leading-5 text-slate-300/90">
+              Work angle is side-to-side torch tilt across the joint. Travel angle is forward/back
+              tilt along the weld direction. Drag either torch tip to preview how each angle is
+              measured.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded border border-slate-700/60 bg-slate-900/65 p-1.5">
+                <div className="mb-1 text-[11px] font-semibold text-slate-200">
+                  Work ({demoWorkAngle.toFixed(0)} deg)
+                </div>
+                <svg
+                  viewBox="0 0 152 120"
+                  className="h-[120px] w-full cursor-grab rounded bg-slate-950/70 active:cursor-grabbing"
+                  onPointerDown={(event) => {
+                    setDraggingWork(true);
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    updateWorkFromPointer(event);
+                  }}
+                  onPointerMove={(event) => {
+                    if (draggingWork) {
+                      updateWorkFromPointer(event);
+                    }
+                  }}
+                  onPointerUp={(event) => {
+                    setDraggingWork(false);
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                  onPointerCancel={(event) => {
+                    setDraggingWork(false);
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                >
+                  <path d="M 20 110 L 76 78 L 132 110" stroke="#334155" strokeWidth="2" fill="none" />
+                  <line
+                    x1="76"
+                    y1="78"
+                    x2="76"
+                    y2="24"
+                    stroke="#38bdf8"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 3"
+                  />
+                  <circle cx="76" cy="78" r="42" stroke="#475569" strokeWidth="1.2" fill="none" />
+                  <line
+                    x1="76"
+                    y1="78"
+                    x2={workTip.x}
+                    y2={workTip.y}
+                    stroke="#f59e0b"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  <circle cx={workTip.x} cy={workTip.y} r="4.5" fill="#f59e0b" />
+                  <text x="10" y="20" fill="#94a3b8" fontSize="9">
+                    cross-section
+                  </text>
+                </svg>
+              </div>
+              <div className="rounded border border-slate-700/60 bg-slate-900/65 p-1.5">
+                <div className="mb-1 text-[11px] font-semibold text-slate-200">
+                  Travel ({demoTravelAngle.toFixed(0)} deg)
+                </div>
+                <svg
+                  viewBox="0 0 152 120"
+                  className="h-[120px] w-full cursor-grab rounded bg-slate-950/70 active:cursor-grabbing"
+                  onPointerDown={(event) => {
+                    setDraggingTravel(true);
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    updateTravelFromPointer(event);
+                  }}
+                  onPointerMove={(event) => {
+                    if (draggingTravel) {
+                      updateTravelFromPointer(event);
+                    }
+                  }}
+                  onPointerUp={(event) => {
+                    setDraggingTravel(false);
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                  onPointerCancel={(event) => {
+                    setDraggingTravel(false);
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }}
+                >
+                  <line x1="20" y1="96" x2="132" y2="96" stroke="#334155" strokeWidth="2" />
+                  <line x1="96" y1="90" x2="124" y2="90" stroke="#22c55e" strokeWidth="2" />
+                  <polygon points="124,90 116,86 116,94" fill="#22c55e" />
+                  <line
+                    x1="76"
+                    y1="78"
+                    x2="76"
+                    y2="24"
+                    stroke="#38bdf8"
+                    strokeWidth="1.5"
+                    strokeDasharray="4 3"
+                  />
+                  <circle cx="76" cy="78" r="42" stroke="#475569" strokeWidth="1.2" fill="none" />
+                  <line
+                    x1="76"
+                    y1="78"
+                    x2={travelTip.x}
+                    y2={travelTip.y}
+                    stroke="#f97316"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                  />
+                  <circle cx={travelTip.x} cy={travelTip.y} r="4.5" fill="#f97316" />
+                  <text x="10" y="20" fill="#94a3b8" fontSize="9">
+                    seam direction →
+                  </text>
+                </svg>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )
+      : null;
+
+  return (
+    <div className="inline-flex">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => {
+          if (!isOpen) {
+            syncFromCurrentAngles();
+            setIsOpen(true);
+            return;
+          }
+          setIsOpen(false);
+        }}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-cyan-500/50 bg-cyan-500/15 text-[11px] font-semibold text-cyan-100 transition hover:border-cyan-300/70 hover:bg-cyan-500/25"
+        aria-label="Explain work and travel angles"
+        title="Angle definition help"
+      >
+        ?
+      </button>
+      {tooltip}
+    </div>
+  );
+}
+
 function WeldPanel({
   isConnected,
   isTopologyLoading,
@@ -1051,8 +1515,8 @@ function WeldPanel({
   draft,
   isPlanningWeld,
   isRunning,
+  canRunPreview,
   weldActive,
-  editableWaypoints,
   onToggleSelection,
   onSelectEdge,
   onRemoveEdge,
@@ -1060,12 +1524,12 @@ function WeldPanel({
   onRun,
   onSetWeldType,
   onSetWeldName,
+  onSetWorkAngleDeg,
+  onSetTravelAngleDeg,
+  onSetTransitionClearanceMm,
+  onSetPostAction,
   onSetStartS,
   onSetEndS,
-  onWaypointChange,
-  onAddWaypoint,
-  onRemoveWaypoint,
-  onApplyWaypointReplan,
   weldProgramName,
   onWeldProgramNameChange,
   onSaveProgram,
@@ -1089,21 +1553,10 @@ function WeldPanel({
       !isPlanningWeld &&
       !isRunning,
   );
-  const canWaypointReplan = editableWaypoints.length > 1 && !isPlanningWeld && !isRunning;
 
   return (
-    <div className="pointer-events-auto w-full max-w-xs rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-orange-200/80">
-          Weld Planning
-        </span>
-        {weldActive ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-orange-400/40 bg-orange-500/20 px-2 py-0.5 text-[11px] font-semibold text-orange-100">
-            <Flame size={12} /> Weld ON
-          </span>
-        ) : null}
-      </div>
-      <div className="space-y-2 text-xs text-slate-200/90">
+    <div className="pointer-events-auto w-full">
+      <div className="space-y-2 text-[13px] leading-[1.35] text-slate-200/90">
         <div className="rounded border border-slate-700/50 bg-slate-950/50 px-2 py-2">
           <div className="mb-1 flex items-center justify-between">
             <span className="text-slate-300">Topology Model</span>
@@ -1111,7 +1564,7 @@ function WeldPanel({
               {topologyModelId ? topologyModelId.slice(0, 12) : "none"}
             </span>
           </div>
-          <div className="flex items-center justify-between text-slate-400">
+          <div className={`flex items-center justify-between ${WELD_META_TEXT_CLASS}`}>
             <span>Edges</span>
             <span>{topologyEdgeCount}</span>
           </div>
@@ -1119,7 +1572,7 @@ function WeldPanel({
             type="button"
             onClick={onToggleSelection}
             disabled={!topologyModelId || isTopologyLoading || !isConnected}
-            className={`mt-2 inline-flex w-full items-center justify-center gap-1 rounded border px-2 py-1 text-xs font-semibold transition ${
+            className={`mt-2 inline-flex w-full items-center justify-center gap-1 rounded border px-2 py-1 text-[13px] font-semibold transition ${
               weldSelectionMode
                 ? "border-cyan-400/50 bg-cyan-500/20 text-cyan-100"
                 : "border-slate-600/60 bg-slate-900/60 text-slate-200 hover:border-slate-400"
@@ -1129,7 +1582,7 @@ function WeldPanel({
             {weldSelectionMode ? "Edge Select Enabled" : "Enable Edge Select"}
           </button>
           <div className="mt-2 rounded border border-slate-700/50 bg-slate-950/40 p-1">
-            <div className="mb-1 text-[11px] text-slate-400">
+            <div className={WELD_META_TEXT_CLASS}>
               Selected Edges ({selectedEdges.length})
             </div>
             {selectedEdges.length > 0 ? (
@@ -1147,19 +1600,20 @@ function WeldPanel({
                     >
                       <button
                         type="button"
-                        className="flex-1 text-left text-[11px] text-slate-200"
+                        className="flex-1 text-left text-[12px] text-slate-200"
                         onClick={() => onSelectEdge(segment.edgeId)}
                         title={segment.edgeId}
                       >
                         <div className="truncate">{segment.edgeId}</div>
-                        <div className="text-[10px] text-slate-400">
+                        <div className="text-[11px] text-slate-400">
                           {segment.startMm.toFixed(1)} - {segment.endMm.toFixed(1)} /{" "}
                           {segment.lengthMm.toFixed(1)} mm
                         </div>
+                        <div className="text-[11px] text-cyan-300/80">{segment.weldType}</div>
                       </button>
                       <button
                         type="button"
-                        className="rounded border border-slate-600/70 bg-slate-900/70 px-1 text-[10px] text-slate-200 hover:border-slate-400"
+                        className="rounded border border-slate-600/70 bg-slate-900/70 px-1 text-[11px] text-slate-200 hover:border-slate-400"
                         onClick={() => onRemoveEdge(segment.edgeId)}
                         aria-label={`Remove ${segment.edgeId}`}
                       >
@@ -1170,18 +1624,18 @@ function WeldPanel({
                 })}
               </div>
             ) : (
-              <div className="text-[11px] text-slate-500">No edges selected yet.</div>
+              <div className={WELD_META_TEXT_CLASS}>No edges selected yet.</div>
             )}
           </div>
         </div>
 
-        <label className="block text-slate-300">
+        <label className={WELD_LABEL_CLASS}>
           Weld Type
           <select
-            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
-            value={draft?.weldType ?? "fillet"}
+            className={WELD_INPUT_CLASS}
+            value={activeSegment?.weldType ?? draft?.weldType ?? "fillet"}
             onChange={(event) => onSetWeldType(event.target.value)}
-            disabled={!draft}
+            disabled={!activeSegment}
           >
             {WELD_TYPE_OPTIONS.map((value) => (
               <option key={value} value={value}>
@@ -1191,22 +1645,85 @@ function WeldPanel({
           </select>
         </label>
 
-        <label className="block text-slate-300">
+        <label className={WELD_LABEL_CLASS}>
           Weld Name
           <input
-            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+            className={WELD_INPUT_CLASS}
             value={draft?.weldName ?? ""}
             onChange={(event) => onSetWeldName(event.target.value)}
             disabled={!draft}
           />
         </label>
 
+        <div className="grid grid-cols-2 gap-2">
+          <label className={WELD_LABEL_CLASS}>
+            <div className="flex items-center justify-between gap-2">
+              <span>Work Angle (deg)</span>
+              <WeldAngleHelpTooltip
+                workAngleDeg={draft?.workAngleDeg ?? 45}
+                travelAngleDeg={draft?.travelAngleDeg ?? 0}
+              />
+            </div>
+            <input
+              className={WELD_INPUT_CLASS}
+              type="number"
+              step="1"
+              value={Number((draft?.workAngleDeg ?? 45).toFixed(1))}
+              onChange={(event) => onSetWorkAngleDeg(Number(event.target.value))}
+              disabled={!draft}
+            />
+          </label>
+          <label className={WELD_LABEL_CLASS}>
+            Travel Angle (deg)
+            <input
+              className={WELD_INPUT_CLASS}
+              type="number"
+              step="1"
+              value={Number((draft?.travelAngleDeg ?? 0).toFixed(1))}
+              onChange={(event) => onSetTravelAngleDeg(Number(event.target.value))}
+              disabled={!draft}
+            />
+          </label>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <label className={WELD_LABEL_CLASS}>
+            Clearance (mm)
+            <input
+              className={WELD_INPUT_CLASS}
+              type="number"
+              min={1}
+              step="1"
+              value={Number((draft?.transitionClearanceMm ?? 35).toFixed(1))}
+              onChange={(event) => onSetTransitionClearanceMm(Number(event.target.value))}
+              disabled={!draft}
+            />
+          </label>
+          <label className={WELD_LABEL_CLASS}>
+            End Action
+            <select
+              className={WELD_INPUT_CLASS}
+              value={draft?.postAction ?? "return_to_start"}
+              onChange={(event) => {
+                const value = event.target.value;
+                onSetPostAction(
+                  value === "none" || value === "lift" ? value : "return_to_start",
+                );
+              }}
+              disabled={!draft}
+            >
+              <option value="return_to_start">Return to trajectory start</option>
+              <option value="lift">Lift</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+        </div>
+
         <div className="rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
-          <div className="mb-1 text-slate-300">Edge Segment</div>
-          <div className="text-[11px] text-slate-400">
+          <div className={`mb-1 ${WELD_SECTION_TITLE_CLASS}`}>Edge Segment</div>
+          <div className={WELD_META_TEXT_CLASS}>
             edge: <span className="text-slate-200">{activeEdgeId ?? "none selected"}</span>
           </div>
-          <label className="mt-2 block text-slate-300">
+          <label className={`${WELD_LABEL_CLASS} mt-2`}>
             Start: {activeRow ? `${activeRow.startMm.toFixed(1)} mm` : "0.0 mm"}
             <input
               className="mt-1 w-full"
@@ -1219,7 +1736,7 @@ function WeldPanel({
               onChange={(event) => onSetStartS(Number(event.target.value))}
             />
           </label>
-          <label className="mt-1 block text-slate-300">
+          <label className={`${WELD_LABEL_CLASS} mt-1`}>
             End: {activeRow ? `${activeRow.endMm.toFixed(1)} mm` : "0.0 mm"}
             <input
               className="mt-1 w-full"
@@ -1236,7 +1753,7 @@ function WeldPanel({
             type="button"
             onClick={onPlanFromEdge}
             disabled={!canPlanFromEdge}
-            className={`mt-2 w-full rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
+            className={`mt-2 w-full rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 text-[13px] font-semibold text-slate-100 transition hover:border-slate-400 ${
               !canPlanFromEdge ? "opacity-60" : ""
             }`}
           >
@@ -1248,66 +1765,13 @@ function WeldPanel({
           </button>
         </div>
 
-        <div className="rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
-          <div className="mb-1 flex items-center justify-between text-slate-300">
-            <span>Editable Waypoints ({editableWaypoints.length})</span>
-            <button
-              type="button"
-              onClick={onAddWaypoint}
-              disabled={!draft || isPlanningWeld || isRunning}
-              className={`rounded border border-slate-600/60 bg-slate-900/60 p-1 text-slate-100 ${(!draft || isPlanningWeld || isRunning) ? "opacity-60" : ""}`}
-              aria-label="Add waypoint"
-            >
-              <Plus size={12} />
-            </button>
-          </div>
-          <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
-            {editableWaypoints.map((point, index) => (
-              <div key={`weld-wp-${index}`} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-1">
-                {(["x", "y", "z"] as const).map((axis) => (
-                  <input
-                    key={`${index}-${axis}`}
-                    className="rounded border border-slate-600/60 bg-slate-950/70 px-1 py-0.5 text-[11px] text-slate-100"
-                    type="number"
-                    step="0.001"
-                    value={Number(point[axis].toFixed(4))}
-                    onChange={(event) =>
-                      onWaypointChange(index, axis, Number(event.target.value))
-                    }
-                  />
-                ))}
-                <button
-                  type="button"
-                  onClick={() => onRemoveWaypoint(index)}
-                  disabled={editableWaypoints.length <= 2}
-                  className={`rounded border border-slate-600/60 bg-slate-900/60 p-1 text-slate-100 ${
-                    editableWaypoints.length <= 2 ? "opacity-60" : ""
-                  }`}
-                  aria-label={`Remove waypoint ${index + 1}`}
-                >
-                  <Minus size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={onApplyWaypointReplan}
-            disabled={!canWaypointReplan}
-            className={`mt-2 w-full rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
-              !canWaypointReplan ? "opacity-60" : ""
-            }`}
-          >
-            Apply Waypoint Edits
-          </button>
-        </div>
       </div>
       <div className="mt-3 rounded border border-slate-700/50 bg-slate-950/40 px-2 py-2">
-        <div className="mb-1 text-xs font-semibold text-slate-300">Weld Program</div>
-        <label className="block text-slate-300">
+        <div className={`mb-1 ${WELD_SECTION_TITLE_CLASS}`}>Weld Program</div>
+        <label className={WELD_LABEL_CLASS}>
           Program Name
           <input
-            className="mt-1 w-full rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+            className={WELD_INPUT_CLASS}
             value={weldProgramName}
             onChange={(event) => onWeldProgramNameChange(event.target.value)}
             placeholder="my_weld_program"
@@ -1317,7 +1781,7 @@ function WeldPanel({
           type="button"
           onClick={onSaveProgram}
           disabled={!draft || isSavingProgram || !weldProgramName.trim()}
-          className={`mt-2 inline-flex w-full items-center justify-center gap-2 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 transition hover:border-slate-400 ${
+          className={`mt-2 inline-flex w-full items-center justify-center gap-2 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 text-[13px] font-semibold text-slate-100 transition hover:border-slate-400 ${
             (!draft || isSavingProgram || !weldProgramName.trim()) ? "opacity-60" : ""
           }`}
         >
@@ -1325,11 +1789,11 @@ function WeldPanel({
           {isSavingProgram ? "Saving..." : "Save Program"}
         </button>
         <div className="mt-2 flex items-center justify-between">
-          <span className="text-[11px] text-slate-400">Saved Programs</span>
+          <span className={WELD_META_TEXT_CLASS}>Saved Programs</span>
           <button
             type="button"
             onClick={onRefreshPrograms}
-            className={`rounded border border-slate-600/60 bg-slate-900/60 px-1.5 py-0.5 text-[10px] text-slate-200 ${isProgramListLoading ? "opacity-60" : ""}`}
+            className={`rounded border border-slate-600/60 bg-slate-900/60 px-1.5 py-0.5 text-[12px] text-slate-200 ${isProgramListLoading ? "opacity-60" : ""}`}
             disabled={isProgramListLoading}
           >
             {isProgramListLoading ? "..." : "Refresh"}
@@ -1338,7 +1802,7 @@ function WeldPanel({
         {savedPrograms.length > 0 ? (
           <div className="mt-1 flex items-center gap-2">
             <select
-              className="flex-1 rounded border border-slate-600/70 bg-slate-950/70 px-2 py-1 text-slate-100 focus:border-cyan-400/60 focus:outline-none"
+              className={`flex-1 ${WELD_INPUT_CLASS.replace("mt-1 w-full ", "")}`}
               value={selectedProgram}
               onChange={(event) => onSelectedProgramChange(event.target.value)}
             >
@@ -1352,7 +1816,7 @@ function WeldPanel({
               type="button"
               onClick={onLoadProgram}
               disabled={!selectedProgram || isLoadingProgram}
-              className={`inline-flex items-center gap-1 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 font-semibold text-slate-100 ${
+              className={`inline-flex items-center gap-1 rounded border border-slate-600/60 bg-slate-900/60 px-2 py-1 text-[13px] font-semibold text-slate-100 ${
                 (!selectedProgram || isLoadingProgram) ? "opacity-60" : ""
               }`}
             >
@@ -1361,15 +1825,15 @@ function WeldPanel({
             </button>
           </div>
         ) : (
-          <div className="mt-1 text-[11px] text-slate-400">No saved weld programs.</div>
+          <div className={`mt-1 ${WELD_META_TEXT_CLASS}`}>No saved weld programs.</div>
         )}
       </div>
       <button
         type="button"
         onClick={onRun}
-        disabled={!draft || isRunning || isPlanningWeld}
+        disabled={!canRunPreview || isRunning || isPlanningWeld}
         className={`mt-3 inline-flex w-full items-center justify-center gap-2 rounded border border-orange-400/40 bg-orange-500/20 px-3 py-2 text-sm font-semibold text-orange-100 transition hover:bg-orange-500/30 ${
-          (!draft || isRunning || isPlanningWeld) ? "opacity-60" : ""
+          (!canRunPreview || isRunning || isPlanningWeld) ? "opacity-60" : ""
         }`}
       >
         <Play size={14} /> Run Weld Preview
@@ -1571,6 +2035,7 @@ export default function App() {
   const [weldDraft, setWeldDraft] = useState<WeldDraft | null>(null);
   const [isPlanningWeld, setIsPlanningWeld] = useState(false);
   const [weldEditableWaypoints, setWeldEditableWaypoints] = useState<Point3[]>([]);
+  const [weldPreviewCacheReady, setWeldPreviewCacheReady] = useState(false);
   const [weldProgramName, setWeldProgramName] = useState("weld_program");
   const [savedWeldPrograms, setSavedWeldPrograms] = useState<string[]>([]);
   const [selectedWeldProgram, setSelectedWeldProgram] = useState("");
@@ -1585,6 +2050,7 @@ export default function App() {
   const showBoundingBox = settings.showBoundingBox;
   const activePanel = settings.activePanel;
   const showProgramTree = settings.showProgramTree;
+  const programTreeViewMode = settings.programTreeViewMode;
   const isRobotControlCollapsed = settings.collapseRobotControl;
   const expandedProgramTreeNodeIds = settings.expandedProgramTreeNodeIds;
   const selectedProgramNodeId = settings.selectedProgramNodeId;
@@ -1618,6 +2084,14 @@ export default function App() {
   const topologyOverlays = useMemo(
     () => toTopologyEdgeOverlay(topologyModel),
     [topologyModel],
+  );
+  const topologySceneOffset = useMemo(
+    () => computeTopologyOffset(topologyOverlays),
+    [topologyOverlays],
+  );
+  const stepTransformMatrix = useMemo(
+    () => buildStepTransformMatrix(stepTransform),
+    [stepTransform],
   );
   const topologyEdgeById = useMemo(
     () => new Map(topologyOverlays.map((edge) => [edge.id, edge])),
@@ -1691,6 +2165,7 @@ export default function App() {
               startMm: mm.startMm,
               endMm: mm.endMm,
               lengthMm: lengthM * 1000,
+              weldType: segment.weldType,
             };
           })
         : [],
@@ -1702,8 +2177,9 @@ export default function App() {
         plan: previewPlan,
         weldSegments: weldDraft?.segments ?? [],
         weldType: weldDraft?.weldType,
+        viewMode: programTreeViewMode,
       }),
-    [previewPlan, weldDraft],
+    [previewPlan, weldDraft, programTreeViewMode],
   );
   const programNodeById = useMemo(
     () => indexProgramNodes(programTreeRoot),
@@ -1742,6 +2218,47 @@ export default function App() {
     }
     return out;
   }, [selectedProgramNode, visualPathPoints, visualWaypoints]);
+  const selectedProgramControlPointIndex = useMemo(() => {
+    if (!selectedProgramNode?.id.startsWith("control_point_")) {
+      return null;
+    }
+    const candidate = selectedProgramNode.focus?.waypointIndices?.[0];
+    if (typeof candidate !== "number" || !Number.isInteger(candidate) || candidate < 0) {
+      return null;
+    }
+    return candidate;
+  }, [selectedProgramNode]);
+  const treeEditableWaypoints = weldDraft ? weldEditableWaypoints : plannerPoints;
+  const selectedProgramControlPoint = useMemo(() => {
+    if (selectedProgramControlPointIndex === null) {
+      return null;
+    }
+    if (
+      selectedProgramControlPointIndex < 0 ||
+      selectedProgramControlPointIndex >= treeEditableWaypoints.length
+    ) {
+      return null;
+    }
+    const point = treeEditableWaypoints[selectedProgramControlPointIndex];
+    if (!point) {
+      return null;
+    }
+    return {
+      index: selectedProgramControlPointIndex,
+      point,
+    };
+  }, [selectedProgramControlPointIndex, treeEditableWaypoints]);
+  const canTreeWaypointValueEdit = !isPlanningWeld && !isRunningPreview;
+  const minRemainingWaypoints = weldDraft ? 2 : 1;
+  const canTreeWaypointAdd = canTreeWaypointValueEdit;
+  const canTreeWaypointRemove = Boolean(
+      selectedProgramControlPoint &&
+      treeEditableWaypoints.length > minRemainingWaypoints &&
+      canTreeWaypointValueEdit,
+  );
+  const canTreeWaypointApply =
+    canTreeWaypointValueEdit &&
+    (weldDraft ? weldEditableWaypoints.length > 1 : treeEditableWaypoints.length > 0);
   const sidebarItems = useMemo<SidebarItem[]>(
     () => [
       { id: "step", label: "STEP Import", icon: <FolderOpen size={17} />, shortcut: "1" },
@@ -1766,7 +2283,10 @@ export default function App() {
     [isVisionActive],
   );
   const eventSourceRef = useRef<EventSource | null>(null);
+  const panelSelectionOriginRef = useRef<"tree" | "weld" | null>(null);
   const trajectoryRefreshInFlight = useRef(false);
+  const lastTelemetrySourceTimeRef = useRef<number | null>(null);
+  const lastAcceptedJointsRef = useRef<number[] | null>(null);
 
   const disconnect = useCallback(() => {
     eventSourceRef.current?.close();
@@ -1791,12 +2311,15 @@ export default function App() {
     setWeldDraft(null);
     setIsPlanningWeld(false);
     setWeldEditableWaypoints([]);
+    setWeldPreviewCacheReady(false);
     setSavedWeldPrograms([]);
     setSelectedWeldProgram("");
     setIsWeldProgramListLoading(false);
     setIsSavingWeldProgram(false);
     setIsLoadingWeldProgram(false);
     setPendingWeldProgramRestore(null);
+    lastTelemetrySourceTimeRef.current = null;
+    lastAcceptedJointsRef.current = null;
   }, []);
 
   const handleMessage = useCallback((payload: string) => {
@@ -1806,9 +2329,18 @@ export default function App() {
     let parsedAlerts: Alert[] | undefined;
     let weldActiveValue: boolean | undefined;
     let weldTypeValue: string | undefined;
+    let sourceTimeSec: number | undefined;
 
     try {
       const parsed = JSON.parse(payload);
+      if (typeof parsed?.t === "number" && Number.isFinite(parsed.t)) {
+        sourceTimeSec = parsed.t;
+      } else if (typeof parsed?.t === "string") {
+        const parsedTime = Number(parsed.t);
+        if (Number.isFinite(parsedTime)) {
+          sourceTimeSec = parsedTime;
+        }
+      }
       if (Array.isArray(parsed?.joints)) {
         joints = parsed.joints
           .map((value: unknown) =>
@@ -1865,6 +2397,38 @@ export default function App() {
       weld_active: weldActiveValue,
       weld_type: weldTypeValue,
     };
+
+    const candidateTimeSec = sourceTimeSec ?? next.timestamp / 1000;
+    const lastTimeSec = lastTelemetrySourceTimeRef.current;
+    if (lastTimeSec !== null && candidateTimeSec <= lastTimeSec) {
+      // Drop out-of-order telemetry packets to prevent visual snap-backs.
+      return;
+    }
+    if (Array.isArray(joints) && joints.length > 0 && lastAcceptedJointsRef.current) {
+      const previous = lastAcceptedJointsRef.current;
+      if (previous.length === joints.length) {
+        let maxJump = 0;
+        for (let i = 0; i < joints.length; i += 1) {
+          const jump = Math.abs(joints[i] - previous[i]);
+          if (jump > maxJump) {
+            maxJump = jump;
+          }
+        }
+        const dtSec =
+          lastTimeSec !== null ? Math.max(0, candidateTimeSec - lastTimeSec) : Number.POSITIVE_INFINITY;
+        // Reject single-frame spikes (commonly stale packets) that imply impossible
+        // arm motion over one telemetry interval.
+        if (dtSec <= 0.25 && maxJump > 0.8) {
+          return;
+        }
+      }
+    }
+
+    lastTelemetrySourceTimeRef.current = candidateTimeSec;
+    if (Array.isArray(joints) && joints.length > 0) {
+      lastAcceptedJointsRef.current = joints.slice();
+    }
+
     setLatest(next);
     // Merge alerts into state (keep last 20)
     if (Array.isArray(next.alerts) && next.alerts.length > 0) {
@@ -1936,6 +2500,7 @@ export default function App() {
     setWeldSelectionMode(false);
     setWeldDraft(null);
     setWeldEditableWaypoints([]);
+    setWeldPreviewCacheReady(false);
     setPendingWeldProgramRestore(null);
     if (file) {
       setStepTransform(DEFAULT_STEP_TRANSFORM);
@@ -1949,6 +2514,7 @@ export default function App() {
     setWeldSelectionMode(false);
     setWeldDraft(null);
     setWeldEditableWaypoints([]);
+    setWeldPreviewCacheReady(false);
     setPendingWeldProgramRestore(null);
   }, []);
 
@@ -1987,6 +2553,7 @@ export default function App() {
         setTopologyModel(null);
         setWeldDraft(null);
         setWeldEditableWaypoints([]);
+        setWeldPreviewCacheReady(false);
         setPendingWeldProgramRestore(null);
         return;
       }
@@ -2024,9 +2591,16 @@ export default function App() {
               edgeId: segment.edgeId,
               startS: clamp01(segment.startS),
               endS: clamp01(segment.endS),
+              weldType:
+                String(segment.weldType ?? restored.weldType ?? "fillet").trim() || "fillet",
             }));
           if (restoredSegments.length === 0 && fallbackEdgeId) {
-            restoredSegments.push({ edgeId: fallbackEdgeId, startS: 0, endS: 1 });
+            restoredSegments.push({
+              edgeId: fallbackEdgeId,
+              startS: 0,
+              endS: 1,
+              weldType: restored.weldType ?? "fillet",
+            });
           }
           const restoredActive =
             restored.activeSegmentEdgeId &&
@@ -2047,45 +2621,19 @@ export default function App() {
           if (pendingWeldProgramRestore.previewPlan) {
             setPreviewPlan(pendingWeldProgramRestore.previewPlan);
             setPlannerPoints(pendingWeldProgramRestore.previewPlan.waypoints);
+            setWeldPreviewCacheReady(false);
+          } else {
+            // Clear any previous preview/path so loading a program without a saved plan
+            // does not leave stale geometry visible in the scene.
+            setPreviewPlan(null);
+            setPlannerPoints([]);
+            setWeldPreviewCacheReady(false);
           }
           setPendingWeldProgramRestore(null);
           return;
         }
-        const firstEdgeId =
-          Array.isArray(data.edges) && data.edges.length > 0 ? data.edges[0]?.id : null;
-        if (firstEdgeId) {
-          setWeldDraft((prev) => {
-            const filteredSegments =
-              prev?.segments
-                ?.filter((segment) => validEdgeIds.has(segment.edgeId))
-                .map((segment) => ({
-                  edgeId: segment.edgeId,
-                  startS: clamp01(segment.startS),
-                  endS: clamp01(segment.endS),
-                })) ?? [];
-            const nextSegments =
-              filteredSegments.length > 0
-                ? filteredSegments
-                : [{ edgeId: firstEdgeId, startS: 0, endS: 1 }];
-            const activeSegmentEdgeId =
-              prev?.activeSegmentEdgeId &&
-              nextSegments.some((segment) => segment.edgeId === prev.activeSegmentEdgeId)
-                ? prev.activeSegmentEdgeId
-                : (nextSegments[0]?.edgeId ?? null);
-            if (!activeSegmentEdgeId) {
-              return null;
-            }
-            return {
-              modelId: data.model_id,
-              weldType: prev?.weldType ?? "fillet",
-              weldName: prev?.weldName ?? "fillet weld",
-              segments: nextSegments,
-              activeSegmentEdgeId,
-            };
-          });
-        } else {
-          setWeldDraft(null);
-        }
+        // Fresh STEP imports start with no selected weld edges.
+        setWeldDraft(null);
       } catch (err) {
         if (cancelled) {
           return;
@@ -2093,6 +2641,7 @@ export default function App() {
         setTopologyModel(null);
         setWeldDraft(null);
         setWeldEditableWaypoints([]);
+        setWeldPreviewCacheReady(false);
         setPendingWeldProgramRestore(null);
         setError(`Failed to load CAD topology: ${(err as Error).message}`);
       } finally {
@@ -2112,6 +2661,7 @@ export default function App() {
       if (points.length === 0) {
         setPreviewPlan(null);
         setPlannerPoints([]);
+        setWeldPreviewCacheReady(false);
         return;
       }
       setIsPlanLoading(true);
@@ -2130,6 +2680,7 @@ export default function App() {
         const { plan, waypoints } = previewFromPlannerPayload(data);
         setPreviewPlan(plan);
         setPlannerPoints(waypoints);
+        setWeldPreviewCacheReady(false);
       } catch (err) {
         setError(`Failed to plan trajectory: ${(err as Error).message}`);
       } finally {
@@ -2182,51 +2733,45 @@ export default function App() {
     await requestPlannerPreview(nextPoints);
   }, [plannerPoints, isPlanLoading, requestPlannerPreview]);
 
-  const handleRunPreview = useCallback(async () => {
-    if (!previewPlan || isPlanLoading || isRunningPreview) {
-      return;
-    }
-    setIsRunningPreview(true);
-    setError(null);
-    try {
-      const response = await fetch(`${normalizedApiHost}/trajectory/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: previewPlan.name, use_cache: true }),
-      });
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(message || `Run request failed (${response.status})`);
-      }
-    } catch (err) {
-      setError(`Failed to execute trajectory: ${(err as Error).message}`);
-    } finally {
-      setIsRunningPreview(false);
-    }
-  }, [previewPlan, isPlanLoading, isRunningPreview, normalizedApiHost]);
-
   const handleClearPreview = useCallback(() => {
     setError(null);
     setPreviewPlan(null);
     setPlannerPoints([]);
     setWeldEditableWaypoints([]);
+    setWeldPreviewCacheReady(false);
     setIsPlanning(false);
   }, []);
 
   const requestWeldPreview = useCallback(
-    async (draft: WeldDraft, waypointsOverride?: Point3[]) => {
-      const primarySegment = draft.segments[0];
+    async (draft: WeldDraft, waypointsOverride?: Point3[]): Promise<PreviewPlan | null> => {
+      setWeldPreviewCacheReady(false);
+      const primarySegment =
+        draft.segments.find((segment) => segment.edgeId === draft.activeSegmentEdgeId) ??
+        draft.segments[0];
       if (!primarySegment) {
         setError("Select at least one edge before planning a weld.");
-        return;
+        return null;
       }
-      const computedOverride =
+      const sourceSections =
         Array.isArray(waypointsOverride) && waypointsOverride.length > 1
-          ? waypointsOverride
-          : buildWeldPreviewPoints(draft, topologyEdgeById);
+          ? [
+              {
+                kind: "weld" as const,
+                weldType: primarySegment.weldType,
+                edgeId: primarySegment.edgeId,
+                points: waypointsOverride,
+              },
+            ]
+          : buildWeldPreviewSections(draft, topologyEdgeById).map((section) => ({
+              ...section,
+              points: section.points.map((point) =>
+                transformTopologyPointToScene(point, topologySceneOffset, stepTransformMatrix),
+              ),
+            }));
+      const computedOverride = sourceSections.flatMap((section) => section.points);
       if (computedOverride.length < 2) {
         setError("Selected edge segments do not produce enough points to plan a weld.");
-        return;
+        return null;
       }
       setIsPlanningWeld(true);
       setError(null);
@@ -2239,14 +2784,34 @@ export default function App() {
             edge_id: primarySegment.edgeId,
             start_s: clamp01(primarySegment.startS),
             end_s: clamp01(primarySegment.endS),
-            weld_type: draft.weldType,
+            weld_type: primarySegment.weldType || draft.weldType,
             weld_name: draft.weldName,
             sample_count: 48,
             waypoints_override: encodePointsForApi(computedOverride),
+            sections: sourceSections.map((section) => ({
+              kind: section.kind,
+              weld_type: section.weldType,
+              edge_id: section.edgeId,
+              points: encodePointsForApi(section.points),
+            })),
+            options: {
+              work_angle_deg: draft.workAngleDeg,
+              travel_angle_deg: draft.travelAngleDeg,
+              transition_clearance_mm: draft.transitionClearanceMm,
+              post_action: draft.postAction,
+            },
           }),
         });
         if (!response.ok) {
-          const message = await response.text();
+          let message = "";
+          try {
+            const payload = (await response.json()) as { detail?: unknown };
+            if (typeof payload?.detail === "string") {
+              message = payload.detail;
+            }
+          } catch {
+            message = await response.text();
+          }
           throw new Error(message || `Weld planning failed (${response.status})`);
         }
         const data = await response.json();
@@ -2254,21 +2819,92 @@ export default function App() {
         setPreviewPlan(plan);
         setPlannerPoints(waypoints);
         setWeldEditableWaypoints(waypoints);
+        setWeldPreviewCacheReady(true);
         setIsPlanning(false);
+        return plan;
       } catch (err) {
-        setError(`Failed to plan weld: ${(err as Error).message}`);
+        const detail = (err as Error).message;
+        const hint = detail.includes("Planning failed for one or more waypoints")
+          ? " Try moving the STEP model closer to the robot workspace or adjusting start/end segment positions."
+          : "";
+        setError(`Failed to plan weld: ${detail}${hint}`);
+        return null;
       } finally {
         setIsPlanningWeld(false);
       }
     },
-    [normalizedApiHost, topologyEdgeById],
+    [
+      normalizedApiHost,
+      topologyEdgeById,
+      topologySceneOffset,
+      stepTransformMatrix,
+    ],
   );
+
+  const handleRunPreview = useCallback(async () => {
+    if (!previewPlan || isPlanLoading || isRunningPreview) {
+      return;
+    }
+    setIsRunningPreview(true);
+    setError(null);
+    try {
+      const trajectoryMeta = previewPlan.trajectory as unknown as Record<string, unknown>;
+      const isWeldPreview =
+        Boolean(trajectoryMeta) &&
+        typeof trajectoryMeta.weld === "object" &&
+        trajectoryMeta.weld !== null;
+      let runName = previewPlan.name;
+      let useCache = false;
+      if (isWeldPreview) {
+        useCache = true;
+        if (!weldDraft) {
+          throw new Error(
+            "Weld preview is unavailable. Re-plan the weld preview before running.",
+          );
+        }
+        // Always regenerate weld preview from the robot's current state so
+        // return_to_start targets the actual pre-weld start pose for THIS run.
+        const replanned = await requestWeldPreview(weldDraft);
+        if (!replanned) {
+          throw new Error("Failed to refresh weld preview before run.");
+        }
+        runName = replanned.name;
+      }
+      const response = await fetch(`${normalizedApiHost}/trajectory/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Weld previews need cached high-fidelity paths; endpoint-only re-planning
+        // flattens the weld arc into sparse straight segments.
+        body: JSON.stringify({ name: runName, use_cache: useCache }),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Run request failed (${response.status})`);
+      }
+    } catch (err) {
+      setError(`Failed to execute trajectory: ${(err as Error).message}`);
+    } finally {
+      setIsRunningPreview(false);
+    }
+  }, [
+    previewPlan,
+    isPlanLoading,
+    isRunningPreview,
+    normalizedApiHost,
+    weldDraft,
+    requestWeldPreview,
+  ]);
 
   const handleTopologyEdgeSelected = useCallback(
     (edgeId: string) => {
+      panelSelectionOriginRef.current = "weld";
       setWeldDraft((current) => {
         const modelId = topologyModel?.model_id ?? current?.modelId ?? "";
-        const weldType = current?.weldType ?? "fillet";
+        const weldType =
+          current?.segments.find((segment) => segment.edgeId === current.activeSegmentEdgeId)
+            ?.weldType ??
+          current?.weldType ??
+          "fillet";
         const existingSegments = current?.segments ?? [];
         const alreadySelected = existingSegments.some((segment) => segment.edgeId === edgeId);
         return {
@@ -2277,8 +2913,12 @@ export default function App() {
           weldName: current?.weldName ?? `${weldType} weld`,
           segments: alreadySelected
             ? existingSegments
-            : [...existingSegments, { edgeId, startS: 0, endS: 1 }],
+            : [...existingSegments, { edgeId, startS: 0, endS: 1, weldType }],
           activeSegmentEdgeId: edgeId,
+          workAngleDeg: current?.workAngleDeg ?? 45,
+          travelAngleDeg: current?.travelAngleDeg ?? 0,
+          transitionClearanceMm: current?.transitionClearanceMm ?? 35,
+          postAction: current?.postAction ?? "return_to_start",
         };
       });
     },
@@ -2298,6 +2938,90 @@ export default function App() {
     }
     await requestWeldPreview(weldDraft, weldEditableWaypoints);
   }, [requestWeldPreview, weldDraft, weldEditableWaypoints]);
+
+  const handleTreeWaypointChange = useCallback(
+    (index: number, axis: "x" | "y" | "z", value: number) => {
+      if (weldDraft) {
+        setWeldEditableWaypoints((current) =>
+          current.map((point, pointIndex) =>
+            pointIndex === index
+              ? {
+                  ...point,
+                  [axis]: Number.isFinite(value) ? value : point[axis],
+                }
+              : point,
+          ),
+        );
+        setWeldPreviewCacheReady(false);
+        return;
+      }
+      setPlannerPoints((current) =>
+        current.map((point, pointIndex) =>
+          pointIndex === index
+            ? {
+                ...point,
+                [axis]: Number.isFinite(value) ? value : point[axis],
+              }
+            : point,
+        ),
+      );
+    },
+    [weldDraft],
+  );
+
+  const handleTreeAddWaypoint = useCallback(() => {
+    if (weldDraft) {
+      setWeldEditableWaypoints((current) => {
+        if (current.length === 0) {
+          return [{ x: 0, y: 0, z: 0 }, { x: 0.02, y: 0, z: 0 }];
+        }
+        const last = current[current.length - 1];
+        return [...current, { ...last }];
+      });
+      setWeldPreviewCacheReady(false);
+      return;
+    }
+    setPlannerPoints((current) => {
+      if (current.length === 0) {
+        return [{ x: 0, y: 0, z: 0 }];
+      }
+      const last = current[current.length - 1];
+      return [...current, { ...last }];
+    });
+  }, [weldDraft]);
+
+  const handleTreeRemoveWaypoint = useCallback((index: number) => {
+    if (weldDraft) {
+      setWeldEditableWaypoints((current) =>
+        current.length <= 2
+          ? current
+          : current.filter((_, pointIndex) => pointIndex !== index),
+      );
+      setWeldPreviewCacheReady(false);
+      return;
+    }
+    setPlannerPoints((current) =>
+      current.length <= 1
+        ? current
+        : current.filter((_, pointIndex) => pointIndex !== index),
+    );
+  }, [weldDraft]);
+
+  const handleApplyTreeWaypointEdits = useCallback(async () => {
+    if (weldDraft) {
+      await handleApplyWeldWaypointEdits();
+      return;
+    }
+    if (treeEditableWaypoints.length === 0) {
+      return;
+    }
+    await requestPlannerPreview(treeEditableWaypoints);
+  }, [
+    weldDraft,
+    handleApplyWeldWaypointEdits,
+    requestPlannerPreview,
+    treeEditableWaypoints,
+  ]);
 
   const refreshWeldProgramList = useCallback(async () => {
     setIsWeldProgramListLoading(true);
@@ -2354,25 +3078,17 @@ export default function App() {
             modelId: weldDraft.modelId,
             weldType: weldDraft.weldType,
             weldName: weldDraft.weldName,
+            workAngleDeg: weldDraft.workAngleDeg,
+            travelAngleDeg: weldDraft.travelAngleDeg,
+            transitionClearanceMm: weldDraft.transitionClearanceMm,
+            postAction: weldDraft.postAction,
             segments: weldDraft.segments.map((segment) => ({
               edgeId: segment.edgeId,
               startS: clamp01(segment.startS),
               endS: clamp01(segment.endS),
+              weldType: segment.weldType,
             })),
             activeSegmentEdgeId: weldDraft.activeSegmentEdgeId,
-            // legacy single-segment fields kept for backward compatibility
-            edgeId:
-              weldDraft.segments.find(
-                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
-              )?.edgeId ?? weldDraft.segments[0]?.edgeId ?? "",
-            startS:
-              weldDraft.segments.find(
-                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
-              )?.startS ?? weldDraft.segments[0]?.startS ?? 0,
-            endS:
-              weldDraft.segments.find(
-                (segment) => segment.edgeId === weldDraft.activeSegmentEdgeId,
-              )?.endS ?? weldDraft.segments[0]?.endS ?? 1,
           },
           editable_waypoints: weldEditableWaypoints,
           planned_trajectory: previewPlan,
@@ -2418,6 +3134,12 @@ export default function App() {
       if (!program?.step?.step_base64 || !program?.step?.filename) {
         throw new Error("Saved program is missing STEP payload.");
       }
+
+      // Reset visible preview immediately for a successful program load so stale
+      // path geometry from a previous plan is not shown while restore proceeds.
+      setPreviewPlan(null);
+      setPlannerPoints([]);
+      setWeldPreviewCacheReady(false);
 
       const stepFileFromProgram = base64ToFile(
         program.step.step_base64,
@@ -2508,6 +3230,7 @@ export default function App() {
       setPreviewPlan(plan);
       setPlannerPoints(plan.waypoints);
       setWeldEditableWaypoints(plan.waypoints);
+      setWeldPreviewCacheReady(false);
       if (data?.trajectory?.weld && typeof data.trajectory.weld === "object") {
         const weld = data.trajectory.weld as Record<string, unknown>;
         const weldType =
@@ -2516,6 +3239,18 @@ export default function App() {
           typeof weld.model_id === "string" && weld.model_id.trim() ? weld.model_id.trim() : "";
         const edgeId =
           typeof weld.edge_id === "string" && weld.edge_id.trim() ? weld.edge_id.trim() : "";
+        const options =
+          weld.options && typeof weld.options === "object"
+            ? (weld.options as Record<string, unknown>)
+            : {};
+        const postActionRaw =
+          typeof options.post_action === "string" ? options.post_action.trim() : "return_to_start";
+        const postAction: "none" | "return_to_start" | "lift" =
+          postActionRaw === "none"
+            ? "none"
+            : postActionRaw === "lift"
+              ? "lift"
+              : "return_to_start";
         const segments =
           edgeId.length > 0
             ? [
@@ -2523,6 +3258,7 @@ export default function App() {
                   edgeId,
                   startS: typeof weld.start_s === "number" ? clamp01(weld.start_s) : 0,
                   endS: typeof weld.end_s === "number" ? clamp01(weld.end_s) : 1,
+                  weldType,
                 },
               ]
             : [];
@@ -2537,6 +3273,10 @@ export default function App() {
                     : `${weldType} weld`,
                 segments,
                 activeSegmentEdgeId: segments[0].edgeId,
+                workAngleDeg: 45,
+                travelAngleDeg: 0,
+                transitionClearanceMm: 35,
+                postAction,
               }
             : null,
         );
@@ -2696,11 +3436,16 @@ export default function App() {
   }, [selectedProgramNodeId, programNodeById, updateSettings]);
 
   useEffect(() => {
+    if (panelSelectionOriginRef.current !== "tree") {
+      return;
+    }
     if (!selectedProgramNodeId) {
+      panelSelectionOriginRef.current = null;
       return;
     }
     const segmentEdgeId = selectedProgramNode?.focus?.weldSegmentEdgeId;
     if (!segmentEdgeId) {
+      panelSelectionOriginRef.current = null;
       return;
     }
     setWeldDraft((current) => {
@@ -2715,9 +3460,13 @@ export default function App() {
         activeSegmentEdgeId: segmentEdgeId,
       };
     });
+    panelSelectionOriginRef.current = null;
   }, [selectedProgramNodeId, selectedProgramNode]);
 
   useEffect(() => {
+    if (panelSelectionOriginRef.current === "tree") {
+      return;
+    }
     const activeEdgeId = weldDraft?.activeSegmentEdgeId ?? null;
     if (!activeEdgeId) {
       return;
@@ -2803,12 +3552,28 @@ export default function App() {
     (nodeId: string) => {
       const node = programNodeById.get(nodeId);
       const nextPanel = node?.focus?.openPanel;
+      panelSelectionOriginRef.current = "tree";
       updateSettings({
         selectedProgramNodeId: nodeId,
         activePanel: nextPanel ?? activePanel,
       });
     },
     [programNodeById, updateSettings, activePanel],
+  );
+  const handleChangeProgramTreeViewMode = useCallback(
+    (value: ProgramTreeViewMode) => {
+      if (value === programTreeViewMode) {
+        return;
+      }
+      updateSettings({
+        programTreeViewMode: value,
+        expandedProgramTreeNodeIds:
+          value === "chronological"
+            ? ["program_root", "setup_primary", "op_chronological", "op_weld"]
+            : ["program_root", "setup_primary", "op_motion", "op_weld"],
+      });
+    },
+    [programTreeViewMode, updateSettings],
   );
 
   const streamingLabel = useMemo(
@@ -2818,6 +3583,42 @@ export default function App() {
   const headerAlert = [error, visionError].filter(Boolean).join(" • ");
   const hasHeaderAlert = headerAlert.length > 0;
   const alertTone = error ? "rose" : "amber";
+  const activeDrawerWidthClass = activePanel === "telemetry"
+    ? "w-[30rem] max-w-[calc(100vw-7rem)]"
+    : "w-[20rem] max-w-[calc(100vw-7rem)]";
+  const activeDrawerHeightMode = activePanel === "weld" ? "full" : "content";
+  const activeDrawerHeader = activePanel === "step"
+    ? (
+        <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
+          STEP Import
+        </span>
+      )
+    : activePanel === "trajectory"
+      ? (
+          <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
+            Trajectory
+          </span>
+        )
+      : activePanel === "weld"
+        ? (
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-[0.25em] text-orange-200/80">
+                Weld Planning
+              </span>
+              {weldActive ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-orange-400/40 bg-orange-500/20 px-2 py-0.5 text-[11px] font-semibold text-orange-100">
+                  <Flame size={12} /> Weld ON
+                </span>
+              ) : null}
+            </div>
+          )
+        : activePanel === "telemetry"
+          ? (
+              <span className="text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
+                Live Charts
+              </span>
+            )
+          : null;
   const activeDrawerContent = activePanel === "step"
     ? (
         <StepImportPanel
@@ -2865,10 +3666,11 @@ export default function App() {
               draft={weldDraft}
               isPlanningWeld={isPlanningWeld}
               isRunning={isRunningPreview}
+              canRunPreview={Boolean(previewPlan?.name)}
               weldActive={weldActive}
-              editableWaypoints={weldEditableWaypoints}
               onToggleSelection={() => setWeldSelectionMode((value) => !value)}
-              onSelectEdge={(edgeId) =>
+              onSelectEdge={(edgeId) => {
+                panelSelectionOriginRef.current = "weld";
                 setWeldDraft((current) =>
                   current
                     ? {
@@ -2876,8 +3678,8 @@ export default function App() {
                         activeSegmentEdgeId: edgeId,
                       }
                     : current,
-                )
-              }
+                );
+              }}
               onRemoveEdge={(edgeId) =>
                 setWeldDraft((current) => {
                   if (!current) {
@@ -2912,6 +3714,11 @@ export default function App() {
                     ? {
                         ...current,
                         weldType: value,
+                        segments: current.segments.map((segment) =>
+                          segment.edgeId === current.activeSegmentEdgeId
+                            ? { ...segment, weldType: value }
+                            : segment,
+                        ),
                         weldName:
                           current.weldName && current.weldName.trim().length > 0
                             ? current.weldName
@@ -2926,6 +3733,49 @@ export default function App() {
                     ? {
                         ...current,
                         weldName: value,
+                      }
+                    : current,
+                )
+              }
+              onSetWorkAngleDeg={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        workAngleDeg: Number.isFinite(value) ? value : current.workAngleDeg,
+                      }
+                    : current,
+                )
+              }
+              onSetTravelAngleDeg={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        travelAngleDeg: Number.isFinite(value) ? value : current.travelAngleDeg,
+                      }
+                    : current,
+                )
+              }
+              onSetTransitionClearanceMm={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        transitionClearanceMm:
+                          Number.isFinite(value) && value > 0
+                            ? value
+                            : current.transitionClearanceMm,
+                      }
+                    : current,
+                )
+              }
+              onSetPostAction={(value) =>
+                setWeldDraft((current) =>
+                  current
+                    ? {
+                        ...current,
+                        postAction: value,
                       }
                     : current,
                 )
@@ -2958,35 +3808,6 @@ export default function App() {
                     : current,
                 )
               }
-              onWaypointChange={(index, axis, value) =>
-                setWeldEditableWaypoints((current) =>
-                  current.map((point, pointIndex) =>
-                    pointIndex === index
-                      ? {
-                          ...point,
-                          [axis]: Number.isFinite(value) ? value : point[axis],
-                        }
-                      : point,
-                  ),
-                )
-              }
-              onAddWaypoint={() =>
-                setWeldEditableWaypoints((current) => {
-                  if (current.length === 0) {
-                    return [{ x: 0, y: 0, z: 0 }, { x: 0.02, y: 0, z: 0 }];
-                  }
-                  const last = current[current.length - 1];
-                  return [...current, { ...last }];
-                })
-              }
-              onRemoveWaypoint={(index) =>
-                setWeldEditableWaypoints((current) =>
-                  current.length <= 2
-                    ? current
-                    : current.filter((_, pointIndex) => pointIndex !== index),
-                )
-              }
-              onApplyWaypointReplan={handleApplyWeldWaypointEdits}
               weldProgramName={weldProgramName}
               onWeldProgramNameChange={setWeldProgramName}
               onSaveProgram={handleSaveWeldProgram}
@@ -3170,6 +3991,9 @@ export default function App() {
         {activePanel && activeDrawerContent ? (
           <SidebarDrawer
             onClose={() => updateSettings({ activePanel: null })}
+            headerContent={activeDrawerHeader}
+            widthClassName={activeDrawerWidthClass}
+            heightMode={activeDrawerHeightMode}
           >
             {activeDrawerContent}
           </SidebarDrawer>
@@ -3179,8 +4003,19 @@ export default function App() {
             root={programTreeRoot}
             expandedNodeIds={expandedProgramTreeNodeIds}
             selectedNodeId={selectedProgramNodeId}
+            viewMode={programTreeViewMode}
+            editableControlPoint={selectedProgramControlPoint}
+            canEditWaypointValues={canTreeWaypointValueEdit}
+            canAddWaypoint={canTreeWaypointAdd}
+            canRemoveWaypoint={canTreeWaypointRemove}
+            canApplyWaypointEdits={canTreeWaypointApply}
             onToggleExpand={handleToggleProgramTreeNode}
             onSelectNode={handleSelectProgramTreeNode}
+            onChangeViewMode={handleChangeProgramTreeViewMode}
+            onWaypointChange={handleTreeWaypointChange}
+            onAddWaypoint={handleTreeAddWaypoint}
+            onRemoveWaypoint={handleTreeRemoveWaypoint}
+            onApplyWaypointEdits={handleApplyTreeWaypointEdits}
           />
         ) : null}
         <div className="pointer-events-none absolute left-1/2 top-4 z-20 -translate-x-1/2 transform">

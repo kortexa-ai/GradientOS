@@ -1460,18 +1460,22 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
       edgeLinesById.forEach((line, edgeId) => {
         const material = line.material as THREE.LineBasicMaterial;
         if (edgeId === activeSelectedId) {
+          material.transparent = false;
           material.color.setHex(TOPOLOGY_EDGE_SELECTED_COLOR);
           material.opacity = 1.0;
           line.renderOrder = 18;
         } else if (selectedIds.has(edgeId)) {
+          material.transparent = false;
           material.color.setHex(TOPOLOGY_EDGE_SELECTED_COLOR);
-          material.opacity = 0.9;
+          material.opacity = 1.0;
           line.renderOrder = 16;
         } else if (edgeId === hoveredId && weldSelectionModeRef.current) {
+          material.transparent = false;
           material.color.setHex(TOPOLOGY_EDGE_HOVER_COLOR);
           material.opacity = 1.0;
           line.renderOrder = 17;
         } else {
+          material.transparent = true;
           material.color.setHex(TOPOLOGY_EDGE_DEFAULT_COLOR);
           material.opacity = 0.65;
           line.renderOrder = 11;
@@ -1803,7 +1807,7 @@ export const ArmVisualizer = forwardRef(function ArmVisualizer(
     markerSource.forEach((point, index) => {
       const isHighlighted = highlightedWaypoints.has(index);
       const marker = new THREE.Mesh(
-        new THREE.SphereGeometry(0.008, 12, 12),
+        new THREE.SphereGeometry(0.001, 12, 12),
         new THREE.MeshBasicMaterial({
           color: isHighlighted
             ? 0xf97316

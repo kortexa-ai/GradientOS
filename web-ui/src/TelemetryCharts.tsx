@@ -462,10 +462,7 @@ export function TelemetryCharts({ latest }: { latest: TelemetryEvent | null }) {
   const halfWidth = Math.max(100, Math.floor((width - 8) / 2)); // 8px approximate gap
 
   return (
-    <div ref={containerRef} className="pointer-events-auto w-full max-w-xl rounded-xl border border-slate-700/60 bg-slate-900/80 p-3 shadow-lg shadow-slate-900/50 backdrop-blur-lg">
-      <div className="mb-2 text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
-        Live Charts
-      </div>
+    <div ref={containerRef} className="pointer-events-auto w-full p-1">
       <div className="grid grid-cols-2 gap-2">
         <MiniChart title="J1 (deg)" data={jointsDeg[0]} color="#22d3ee" unit="" width={halfWidth} />
         <MiniChart title="J2 (deg)" data={jointsDeg[1]} color="#38bdf8" unit="" width={halfWidth} />

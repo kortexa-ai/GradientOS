@@ -423,6 +423,19 @@ def handle_run_trajectory(trajectory_name: str, use_cache: bool = False, loop_ov
         print("[Pi Trajectory] ERROR: Cannot start trajectory, another task is running.")
         return
 
+    # Jog can stay active in the UI and keep streaming velocity packets.
+    # Force-stop it before trajectory execution so no jog loop can contend
+    # with weld path playback.
+    if utils.trajectory_state.get("is_jogging"):
+        print("[Pi Trajectory] Jog mode is active; stopping jog before trajectory run.")
+        try:
+            handle_jog_stop()
+        except Exception as e:
+            print(f"[Pi Trajectory] WARNING: Failed to stop jog mode cleanly: {e}")
+        if utils.trajectory_state.get("is_jogging"):
+            print("[Pi Trajectory] ERROR: Jog mode is still active; aborting trajectory run.")
+            return
+
     # --- 1. Load Trajectory Definition ---
     trajectory = _load_trajectory_by_name(trajectory_name)
 
@@ -1507,16 +1520,25 @@ def _plan_preview_points_payload(
     preview_name: str,
     description: str,
     weld_metadata: dict | None = None,
+    sections: list[dict] | None = None,
 ) -> dict:
     if len(points) == 0:
         raise ValueError("At least one waypoint is required.")
 
     current_q = np.array(utils.current_logical_joint_angles_rad, dtype=float)
+    trajectory_start_fk = ik_solver.get_fk(current_q.tolist())
+    trajectory_start_pos = (
+        np.array(trajectory_start_fk, dtype=float)
+        if trajectory_start_fk is not None
+        else None
+    )
     planned_steps = []
     waypoint_results = []
     cartesian_samples = []
     planning_succeeded = True
-    sample_stride = 5  # Down-sample cartesian samples to keep payload modest
+    failed_waypoint_idx: int | None = None
+    failed_waypoint_target: np.ndarray | None = None
+    failed_segment_start_fk: np.ndarray | None = None
     plan_velocity = utils.DEFAULT_PROFILE_VELOCITY
     if plan_velocity is None or not np.isfinite(plan_velocity) or float(plan_velocity) <= 0:
         plan_velocity = 0.08
@@ -1524,38 +1546,8 @@ def _plan_preview_points_payload(
     if plan_acceleration is None or not np.isfinite(plan_acceleration) or float(plan_acceleration) <= 0:
         plan_acceleration = 0.2
 
-    print(f"[Pi Trajectory] Planning {len(points)} waypoint(s) for preview '{preview_name}'.")
-
-    for idx, waypoint in enumerate(points, start=1):
-        target_pos = np.array(waypoint, dtype=float)
-        t_start = time.monotonic()
-        joint_path = trajectory_execution._plan_linear_move(
-            current_q,
-            target_pos,
-            float(plan_velocity),
-            float(plan_acceleration),
-            100,
-            True,
-            forced_orientation=None,
-        )
-        if not joint_path:
-            print(f"[Pi Trajectory] ERROR: Failed to plan waypoint #{idx} -> {np.round(target_pos, 4)}.")
-            planning_succeeded = False
-            break
-
-        planned_step = {
-            "type": "move",
-            "path": joint_path,
-            "freq": 100,
-        }
-        if weld_metadata:
-            planned_step["weld_active"] = True
-        planned_steps.append(planned_step)
-
-        # Gather cartesian samples along the path for visualization.
-        for sample_index, joint_sample in enumerate(joint_path):
-            if sample_index % sample_stride != 0 and sample_index != len(joint_path) - 1:
-                continue
+    def _append_cartesian_samples(joint_path: list[list[float]]) -> None:
+        for joint_sample in joint_path:
             pose_matrix = ik_solver.get_fk_matrix(np.array(joint_sample))
             if pose_matrix is None:
                 continue
@@ -1568,6 +1560,7 @@ def _plan_preview_points_payload(
                 ]
             )
 
+    def _append_waypoint_result(joint_path: list[list[float]], fallback_target: np.ndarray) -> None:
         final_pose = ik_solver.get_fk_matrix(np.array(joint_path[-1]))
         if final_pose is not None:
             position = final_pose[:3, 3].tolist()
@@ -1581,32 +1574,411 @@ def _plan_preview_points_payload(
         else:
             waypoint_results.append(
                 {
-                    "position": [round(float(val), 4) for val in waypoint],
+                    "position": [round(float(val), 4) for val in fallback_target.tolist()],
                     "orientation_euler_deg": None,
                 }
             )
 
-        current_q = np.array(joint_path[-1])
-        t_end = time.monotonic()
-        print(f"[Pi Trajectory] Planned waypoint #{idx} -> {np.round(target_pos, 4)} in {(t_end - t_start) * 1000:.2f} ms")
+    def _safe_float(raw_value, default_value: float) -> float:
+        try:
+            value = float(raw_value)
+        except Exception:
+            value = default_value
+        if not np.isfinite(value):
+            return default_value
+        return value
+
+    def _normalize(vec: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+        norm = float(np.linalg.norm(vec))
+        if norm < 1e-9:
+            return fallback.copy()
+        return vec / norm
+
+    def _rotate_about_axis(vec: np.ndarray, axis: np.ndarray, angle_rad: float) -> np.ndarray:
+        axis_n = _normalize(axis, np.array([0.0, 0.0, 1.0], dtype=float))
+        c = float(np.cos(angle_rad))
+        s = float(np.sin(angle_rad))
+        return (vec * c) + (np.cross(axis_n, vec) * s) + (axis_n * np.dot(axis_n, vec) * (1.0 - c))
+
+    def _resample_polyline(polyline_points: list[np.ndarray], spacing_m: float) -> list[np.ndarray]:
+        if len(polyline_points) < 2:
+            return list(polyline_points)
+        spacing = max(1e-4, float(spacing_m))
+        cumulative = [0.0]
+        for idx in range(1, len(polyline_points)):
+            cumulative.append(
+                cumulative[-1]
+                + float(np.linalg.norm(polyline_points[idx] - polyline_points[idx - 1]))
+            )
+        total = cumulative[-1]
+        if total < 1e-9:
+            return [polyline_points[0], polyline_points[-1]]
+        samples = list(np.arange(0.0, total, spacing))
+        if not samples or abs(samples[-1] - total) > 1e-6:
+            samples.append(total)
+        out: list[np.ndarray] = []
+        seg_idx = 0
+        for s_val in samples:
+            while seg_idx < len(cumulative) - 2 and cumulative[seg_idx + 1] < s_val:
+                seg_idx += 1
+            seg_start = cumulative[seg_idx]
+            seg_end = cumulative[seg_idx + 1]
+            if seg_end - seg_start < 1e-9:
+                out.append(polyline_points[seg_idx].copy())
+                continue
+            t = (s_val - seg_start) / (seg_end - seg_start)
+            out.append(polyline_points[seg_idx] * (1.0 - t) + polyline_points[seg_idx + 1] * t)
+        return out
+
+    def _build_weld_orientations(
+        path_points: list[np.ndarray],
+        start_angles: np.ndarray,
+        work_angle_deg: float,
+        travel_angle_deg: float,
+    ) -> list[np.ndarray]:
+        start_pose = ik_solver.get_fk_matrix(start_angles.tolist())
+        fallback_orientation = (
+            np.array(start_pose[:3, :3], dtype=float)
+            if start_pose is not None
+            else np.identity(3)
+        )
+        fallback_forward = _normalize(fallback_orientation[:, 0], np.array([1.0, 0.0, 0.0], dtype=float))
+        world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+        work_rad = np.deg2rad(np.clip(work_angle_deg, 0.0, 89.0))
+        travel_rad = np.deg2rad(np.clip(travel_angle_deg, -89.0, 89.0))
+        orientations: list[np.ndarray] = []
+        last_forward = fallback_forward.copy()
+        for idx, point in enumerate(path_points):
+            prev_pt = path_points[idx - 1] if idx > 0 else point
+            next_pt = path_points[idx + 1] if idx < len(path_points) - 1 else point
+            forward_raw = next_pt - prev_pt
+            forward = _normalize(forward_raw, last_forward)
+            horizontal_forward = forward - (np.dot(forward, world_up) * world_up)
+            horizontal_forward = _normalize(horizontal_forward, forward)
+            side_axis = np.cross(world_up, horizontal_forward)
+            side_axis = _normalize(side_axis, np.array([1.0, 0.0, 0.0], dtype=float))
+            torch_axis = (np.cos(work_rad) * horizontal_forward) - (np.sin(work_rad) * world_up)
+            torch_axis = _normalize(torch_axis, -world_up)
+            torch_axis = _rotate_about_axis(torch_axis, side_axis, travel_rad)
+            torch_axis = _normalize(torch_axis, -world_up)
+            y_axis = np.cross(torch_axis, forward)
+            y_axis = _normalize(y_axis, np.cross(torch_axis, fallback_forward))
+            x_axis = np.cross(y_axis, torch_axis)
+            x_axis = _normalize(x_axis, fallback_forward)
+            y_axis = np.cross(torch_axis, x_axis)
+            y_axis = _normalize(y_axis, np.array([0.0, 1.0, 0.0], dtype=float))
+            orientation = np.column_stack((x_axis, y_axis, torch_axis))
+            orientations.append(orientation)
+            last_forward = forward
+        return orientations
+
+    print(f"[Pi Trajectory] Planning {len(points)} waypoint(s) for preview '{preview_name}'.")
+    weld_points_for_payload: list[list[float]] | None = None
+    if weld_metadata:
+        options = weld_metadata.get("options") if isinstance(weld_metadata.get("options"), dict) else {}
+        interior_speed = max(0.005, _safe_float(options.get("interior_speed_m_s", plan_velocity), plan_velocity))
+        transition_speed = max(0.01, _safe_float(options.get("transition_speed_m_s", plan_velocity), plan_velocity))
+        transition_clearance_mm = max(
+            1.0,
+            _safe_float(options.get("transition_clearance_mm", 35.0), 35.0),
+        )
+        transition_clearance_m = transition_clearance_mm / 1000.0
+        work_angle_deg = _safe_float(options.get("work_angle_deg", 45.0), 45.0)
+        travel_angle_deg = _safe_float(options.get("travel_angle_deg", 0.0), 0.0)
+        post_action_raw = str(options.get("post_action", "return_to_start")).strip().lower()
+        post_action = (
+            post_action_raw
+            if post_action_raw in {"none", "lift", "return_to_start"}
+            else "return_to_start"
+        )
+        options["post_action"] = post_action
+        if isinstance(weld_metadata.get("options"), dict):
+            weld_metadata["options"]["post_action"] = post_action
+        else:
+            weld_metadata["options"] = {"post_action": post_action}
+        planned_sections = sections if isinstance(sections, list) and len(sections) > 0 else [
+            {"kind": "weld", "points": points, "weld_type": weld_metadata.get("type")}
+        ]
+        weld_points_for_payload = []
+        for section_index, section in enumerate(planned_sections, start=1):
+            section_kind = str(section.get("kind", "weld")).strip().lower()
+            section_kind = "transition" if section_kind == "transition" else "weld"
+            raw_section_points = section.get("points")
+            if not isinstance(raw_section_points, list):
+                continue
+            section_points = [np.array(point, dtype=float) for point in raw_section_points]
+            section_points = [point for point in section_points if point.shape[0] >= 3]
+            if len(section_points) < 2:
+                continue
+            weld_points_for_payload.extend(
+                [[round(float(v), 4) for v in point.tolist()[:3]] for point in section_points]
+            )
+
+            if section_kind == "weld":
+                first_target = section_points[0]
+                current_pos = ik_solver.get_fk(current_q.tolist())
+                if current_pos is None or np.linalg.norm(np.array(current_pos) - first_target) > 1e-4:
+                    joint_path = trajectory_execution._plan_linear_move(
+                        current_q,
+                        first_target,
+                        float(plan_velocity),
+                        float(plan_acceleration),
+                        100,
+                        True,
+                        forced_orientation=None,
+                    )
+                    if not joint_path:
+                        print(f"[Pi Trajectory] ERROR: Failed weld entry for section #{section_index} -> {np.round(first_target, 4)}.")
+                        planning_succeeded = False
+                        failed_waypoint_idx = section_index
+                        failed_waypoint_target = first_target
+                        failed_segment_start_fk = (
+                            np.array(current_pos, dtype=float)
+                            if current_pos is not None
+                            else None
+                        )
+                        break
+                    planned_steps.append({"type": "move", "path": joint_path, "freq": 100, "weld_active": False})
+                    _append_cartesian_samples(joint_path)
+                    _append_waypoint_result(joint_path, first_target)
+                    current_q = np.array(joint_path[-1], dtype=float)
+
+                interior_points = _resample_polyline(section_points, interior_speed / 100.0)
+                current_pos = ik_solver.get_fk(current_q.tolist())
+                if (
+                    current_pos is not None
+                    and len(interior_points) > 1
+                    and np.linalg.norm(interior_points[0] - np.array(current_pos)) < 1e-4
+                ):
+                    interior_points = interior_points[1:]
+                if len(interior_points) == 0:
+                    continue
+                if len(interior_points) == 1:
+                    interior_points.append(section_points[-1].copy())
+                interior_orientations = _build_weld_orientations(
+                    interior_points,
+                    current_q,
+                    work_angle_deg=work_angle_deg,
+                    travel_angle_deg=travel_angle_deg,
+                )
+                joint_path = trajectory_execution._plan_high_fidelity_trajectory(
+                    cartesian_points=[point.tolist()[:3] for point in interior_points],
+                    start_q=current_q,
+                    use_smoothing=True,
+                    orientations_list=interior_orientations,
+                )
+                if not joint_path:
+                    print(
+                        f"[Pi Trajectory] WARNING: Torch-angle orientations failed for weld section #{section_index}; retrying with orientation lock."
+                    )
+                    joint_path = trajectory_execution._plan_high_fidelity_trajectory(
+                        cartesian_points=[point.tolist()[:3] for point in interior_points],
+                        start_q=current_q,
+                        use_smoothing=True,
+                        forced_orientation=None,
+                        orientations_list=None,
+                    )
+                if not joint_path:
+                    print(f"[Pi Trajectory] ERROR: Failed weld interior for section #{section_index}.")
+                    planning_succeeded = False
+                    failed_waypoint_idx = section_index
+                    failed_waypoint_target = interior_points[-1]
+                    failed_segment_start_fk = (
+                        np.array(current_pos, dtype=float)
+                        if current_pos is not None
+                        else None
+                    )
+                    break
+                planned_steps.append({"type": "move", "path": joint_path, "freq": 100, "weld_active": True})
+                _append_cartesian_samples(joint_path)
+                _append_waypoint_result(joint_path, interior_points[-1])
+                current_q = np.array(joint_path[-1], dtype=float)
+            else:
+                for point_index, target_pos in enumerate(section_points, start=1):
+                    current_pos = ik_solver.get_fk(current_q.tolist())
+                    if current_pos is not None and np.linalg.norm(np.array(current_pos) - target_pos) < 1e-5:
+                        continue
+                    segment_start_fk = np.array(current_pos, dtype=float) if current_pos is not None else None
+                    joint_path = trajectory_execution._plan_linear_move(
+                        current_q,
+                        target_pos,
+                        float(transition_speed),
+                        float(plan_acceleration),
+                        100,
+                        True,
+                        forced_orientation=None,
+                    )
+                    if not joint_path:
+                        print(
+                            f"[Pi Trajectory] ERROR: Failed transition point #{point_index} in section #{section_index} -> {np.round(target_pos, 4)}."
+                        )
+                        planning_succeeded = False
+                        failed_waypoint_idx = point_index
+                        failed_waypoint_target = target_pos
+                        failed_segment_start_fk = segment_start_fk
+                        break
+                    planned_steps.append({"type": "move", "path": joint_path, "freq": 100, "weld_active": False})
+                    _append_cartesian_samples(joint_path)
+                    _append_waypoint_result(joint_path, target_pos)
+                    current_q = np.array(joint_path[-1], dtype=float)
+                if not planning_succeeded:
+                    break
+        if planning_succeeded:
+            def _plan_post_action_target(target_pos: np.ndarray, label: str) -> bool:
+                nonlocal current_q
+                nonlocal planning_succeeded
+                nonlocal failed_waypoint_idx
+                nonlocal failed_waypoint_target
+                nonlocal failed_segment_start_fk
+
+                current_pos_local = ik_solver.get_fk(current_q.tolist())
+                if (
+                    current_pos_local is not None
+                    and np.linalg.norm(np.array(current_pos_local) - target_pos) < 1e-5
+                ):
+                    return True
+                segment_start_fk = (
+                    np.array(current_pos_local, dtype=float)
+                    if current_pos_local is not None
+                    else None
+                )
+                joint_path = trajectory_execution._plan_linear_move(
+                    current_q,
+                    target_pos,
+                    float(transition_speed),
+                    float(plan_acceleration),
+                    100,
+                    True,
+                    forced_orientation=None,
+                )
+                if not joint_path:
+                    print(
+                        f"[Pi Trajectory] ERROR: Failed post-action transition ({label}) -> {np.round(target_pos, 4)}."
+                    )
+                    planning_succeeded = False
+                    failed_waypoint_idx = len(planned_steps) + 1
+                    failed_waypoint_target = target_pos
+                    failed_segment_start_fk = segment_start_fk
+                    return False
+                planned_steps.append(
+                    {"type": "move", "path": joint_path, "freq": 100, "weld_active": False}
+                )
+                _append_cartesian_samples(joint_path)
+                _append_waypoint_result(joint_path, target_pos)
+                current_q = np.array(joint_path[-1], dtype=float)
+                return True
+
+            end_fk = ik_solver.get_fk(current_q.tolist())
+            end_pos = np.array(end_fk, dtype=float) if end_fk is not None else None
+            if post_action == "lift" and end_pos is not None:
+                lift_target = np.array(
+                    [end_pos[0], end_pos[1], end_pos[2] + transition_clearance_m],
+                    dtype=float,
+                )
+                _plan_post_action_target(lift_target, "lift")
+            elif (
+                post_action == "return_to_start"
+                and end_pos is not None
+                and trajectory_start_pos is not None
+                and np.linalg.norm(end_pos - trajectory_start_pos) >= 1e-4
+            ):
+                lift_z = max(float(end_pos[2]), float(trajectory_start_pos[2])) + transition_clearance_m
+                return_points = [
+                    np.array([end_pos[0], end_pos[1], lift_z], dtype=float),
+                    np.array([trajectory_start_pos[0], trajectory_start_pos[1], lift_z], dtype=float),
+                    trajectory_start_pos.copy(),
+                ]
+                for idx, target in enumerate(return_points, start=1):
+                    if not _plan_post_action_target(target, f"return_to_start:{idx}"):
+                        break
+    else:
+        for idx, waypoint in enumerate(points, start=1):
+            target_pos = np.array(waypoint, dtype=float)
+            segment_start_fk = ik_solver.get_fk(current_q.tolist())
+            t_start = time.monotonic()
+            joint_path = trajectory_execution._plan_linear_move(
+                current_q,
+                target_pos,
+                float(plan_velocity),
+                float(plan_acceleration),
+                100,
+                True,
+                forced_orientation=None,
+            )
+            if not joint_path:
+                print(f"[Pi Trajectory] ERROR: Failed to plan waypoint #{idx} -> {np.round(target_pos, 4)}.")
+                planning_succeeded = False
+                failed_waypoint_idx = idx
+                failed_waypoint_target = target_pos
+                failed_segment_start_fk = (
+                    np.array(segment_start_fk, dtype=float)
+                    if segment_start_fk is not None
+                    else None
+                )
+                break
+
+            planned_step = {
+                "type": "move",
+                "path": joint_path,
+                "freq": 100,
+            }
+            planned_steps.append(planned_step)
+            _append_cartesian_samples(joint_path)
+            _append_waypoint_result(joint_path, target_pos)
+
+            current_q = np.array(joint_path[-1], dtype=float)
+            t_end = time.monotonic()
+            print(
+                f"[Pi Trajectory] Planned waypoint #{idx} -> {np.round(target_pos, 4)} in {(t_end - t_start) * 1000:.2f} ms"
+            )
 
     if not planning_succeeded or len(planned_steps) == 0:
+        if failed_waypoint_idx is not None and failed_waypoint_target is not None:
+            failed_target = [round(float(v), 4) for v in failed_waypoint_target.tolist()]
+            if failed_segment_start_fk is not None and failed_segment_start_fk.shape[0] >= 3:
+                start_fk = [round(float(v), 4) for v in failed_segment_start_fk[:3].tolist()]
+                raise RuntimeError(
+                    f"Planning failed at waypoint #{failed_waypoint_idx} target={failed_target} "
+                    f"from start_fk={start_fk}."
+                )
+            raise RuntimeError(
+                f"Planning failed at waypoint #{failed_waypoint_idx} target={failed_target}."
+            )
         raise RuntimeError("Planning failed for one or more waypoints.")
 
-    # Build recorded trajectory representation mirroring handle_end_trajectory().
+    # Build recorded trajectory representation from planned steps.
     moves = []
-    for i, waypoint_data in enumerate(waypoint_results):
+    move_counter = 0
+    for step in planned_steps:
+        if step.get("type") == "pause":
+            moves.append({"command": "pause", "duration": float(step.get("duration", 1.0))})
+            continue
+        if step.get("type") != "move":
+            continue
+        step_path = step.get("path") or []
+        if not step_path:
+            continue
+        final_pose = ik_solver.get_fk_matrix(np.array(step_path[-1]))
+        if final_pose is not None:
+            position = [round(float(p), 4) for p in final_pose[:3, 3].tolist()]
+            orient_deg = R.from_matrix(final_pose[:3, :3]).as_euler('xyz', degrees=True).tolist()
+            orient_payload = [round(float(o), 2) for o in orient_deg]
+        else:
+            position = [round(float(v), 4) for v in np.array(step_path[-1], dtype=float).tolist()[:3]]
+            orient_payload = None
         move = {
             "command": "move_absolute",
-            "vector": waypoint_data["position"],
+            "vector": position,
         }
-        if waypoint_data["orientation_euler_deg"]:
-            move["orientation_euler_deg"] = waypoint_data["orientation_euler_deg"]
-        if weld_metadata:
+        if orient_payload is not None:
+            move["orientation_euler_deg"] = orient_payload
+        if bool(step.get("weld_active", False)):
             move["is_weld"] = True
-            move["weld_type"] = weld_metadata.get("type")
+            if weld_metadata:
+                move["weld_type"] = weld_metadata.get("type")
         moves.append(move)
-        if i < len(waypoint_results) - 1:
+        move_counter += 1
+        if weld_metadata is None and move_counter < len(planned_steps):
             moves.append({"command": "pause", "duration": 1.0})
 
     traj_dict = {
@@ -1623,12 +1995,20 @@ def _plan_preview_points_payload(
     with open(preview_path, "w") as f:
         json.dump(traj_dict, f, indent=2)
     print(f"[Pi Trajectory] Preview trajectory saved to {preview_path}")
+    try:
+        os.makedirs(utils.TRAJECTORY_CACHE_DIR, exist_ok=True)
+        cache_path = os.path.join(utils.TRAJECTORY_CACHE_DIR, f"{preview_name}.json")
+        with open(cache_path, "w") as f:
+            json.dump(utils._convert_numpy_to_list(planned_steps), f, indent=2)
+        print(f"[Pi Trajectory] Preview planned-steps cache saved to {cache_path}")
+    except Exception as e:
+        print(f"[Pi Trajectory] WARNING: Failed to save preview planned-steps cache: {e}")
 
     payload = {
         "name": preview_name,
         "trajectory": traj_dict,
         "cartesian_path": cartesian_samples,
-        "waypoints": [item["position"] for item in waypoint_results],
+        "waypoints": weld_points_for_payload if weld_points_for_payload else [item["position"] for item in waypoint_results],
         "file_path": preview_path,
         "step_summaries": [
             {"type": step.get("type"), "freq": step.get("freq"), "points": len(step.get("path", []))}
@@ -1645,6 +2025,7 @@ def plan_preview_trajectory_points(
     *,
     preview_name: str = PLANNED_PREVIEW_NAME,
     weld_metadata: dict | None = None,
+    sections: list[dict] | None = None,
 ) -> dict:
     description = (
         f"Planned on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} via "
@@ -1655,6 +2036,7 @@ def plan_preview_trajectory_points(
         preview_name=preview_name,
         description=description,
         weld_metadata=weld_metadata,
+        sections=sections,
     )
 
 
