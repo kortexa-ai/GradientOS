@@ -1760,3 +1760,141 @@ Use this file as persistent, repo-local execution memory.
 
 - Remaining risk or pending check:
   - None immediate; monitor for recurrence under long runs or repeated run/stop cycles.
+
+### 2026-02-18 11:47 +11:00 - README refresh for merge readiness
+
+#### Task Summary
+
+- Added a root repository `README.md` and refreshed `web-ui/README.md` to reflect current product behavior.
+- Prepared branch-level merge commit message guidance.
+
+#### Mistakes And Fixes
+
+- Source: `[self]`
+- Mistake:
+  - Assuming a root README existed would have left the “main repo readme” request partially done.
+- Detection:
+  - File check showed no `README.md` at repository root.
+- Fix:
+  - Created root `README.md` and updated `web-ui/README.md` with current architecture/workflow notes.
+- Preventive rule:
+  - For docs requests, verify file existence first and create missing canonical docs rather than only editing submodule docs.
+
+#### User Preferences
+
+- New or reinforced preference:
+  - Wants merge-ready artifacts: clear commit messaging plus up-to-date top-level and UI docs.
+- How it changed execution:
+  - Prioritized practical documentation updates and concise merge messaging over deep code changes.
+
+#### What Worked
+
+- Pattern/check that worked:
+  - Pairing root + feature-area README updates keeps main-branch handoff clearer for maintainers/operators.
+
+#### What Did Not Work
+
+- Failed attempt and why:
+  - None in this step.
+
+#### Guardrails For Next Session
+
+- Preflight rule:
+  - When asked for "main repo README," explicitly confirm root-level presence and update/create accordingly.
+
+#### Follow-Ups / Risks
+
+- Remaining risk or pending check:
+  - Consider later consolidation between `README.md`, `AGENTS.md`, and `docs/README.md` to reduce duplicated startup guidance.
+
+### 2026-02-18 11:55 +11:00 - Main README clarification: docs/README is canonical
+
+#### Task Summary
+
+- Updated `docs/README.md` after user clarified this is the canonical "main README" for repo-level documentation.
+- Built a comprehensive commit-message draft based on full branch diff context rather than only current unstaged files.
+
+#### Mistakes And Fixes
+
+- Source: `[user]`
+- Mistake:
+  - Initial README update targeted root-level docs first; user clarified canonical main README is `docs/README.md`.
+- Detection:
+  - Direct user correction in follow-up message.
+- Fix:
+  - Added a dedicated `STEP_LOADER Branch Highlights` section in `docs/README.md` with end-to-end scope summary.
+- Preventive rule:
+  - In this repo, treat `docs/README.md` as the primary documentation entrypoint unless user asks otherwise.
+
+#### User Preferences
+
+- New or reinforced preference:
+  - Wants branch merge materials to be comprehensive and grounded in the full branch scope.
+- How it changed execution:
+  - Used `master..HEAD` log/stat context before drafting commit message language.
+
+#### What Worked
+
+- Pattern/check that worked:
+  - Pairing user clarification with git-range analysis produced accurate high-level change framing.
+
+#### What Did Not Work
+
+- Failed attempt and why:
+  - A root-only README update was insufficient for this repository's doc convention.
+
+#### Guardrails For Next Session
+
+- Preflight rule:
+  - For merge/prep requests, confirm canonical docs path and summarize against `base..HEAD` rather than local unstaged delta only.
+
+#### Follow-Ups / Risks
+
+- Remaining risk or pending check:
+  - None immediate.
+
+### 2026-02-18 11:59 +11:00 - docs/README rewritten as true onboarding entrypoint
+
+#### Task Summary
+
+- Replaced `docs/README.md` content with newcomer-first documentation: features, system function, and usage workflow.
+- Removed release-note style sectioning that did not match the file's purpose.
+
+#### Mistakes And Fixes
+
+- Source: `[user]`
+- Mistake:
+  - Prior update style emphasized branch-change summaries instead of serving as a practical start guide.
+- Detection:
+  - Explicit user correction on expected README role and tone.
+- Fix:
+  - Full rewrite of `docs/README.md` around onboarding flow and operational usage.
+- Preventive rule:
+  - For canonical README files, optimize for "what it is / how it works / how to use it" before changelog-style content.
+
+#### User Preferences
+
+- New or reinforced preference:
+  - README must function as the primary onboarding document for new repo users.
+- How it changed execution:
+  - Shifted from patching sections to a complete structure reset aligned to onboarding intent.
+
+#### What Worked
+
+- Pattern/check that worked:
+  - Rebuilding the file from scratch avoided carrying over conflicting structure and tone.
+
+#### What Did Not Work
+
+- Failed attempt and why:
+  - Incremental edits against prior structure kept reintroducing non-onboarding framing.
+
+#### Guardrails For Next Session
+
+- Preflight rule:
+  - Before editing a "main README", define target reader and first-use journey explicitly, then shape sections around that path.
+
+#### Follow-Ups / Risks
+
+- Remaining risk or pending check:
+  - None immediate.

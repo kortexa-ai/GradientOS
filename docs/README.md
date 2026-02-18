@@ -1,3 +1,201 @@
+# GradientOS Documentation
+
+GradientOS is a robot control and offline programming stack for Gradient Robotics arms.
+It combines a realtime controller, an HTTP/SSE API, and a web operator interface for
+trajectory and weld workflows.
+
+This file is the starting point for new contributors and operators.
+
+## What GradientOS Provides
+
+- Realtime arm control through controller command handlers
+- Cartesian and joint trajectory planning/execution
+- STEP-based offline programming workflow with topology-aware weld planning
+- Web UI with 3D scene visualization, telemetry, and program inspection
+- Program Tree tooling to inspect exact execution path samples and edit control points
+- Optional vision pipeline for camera streaming and image/AI processing
+
+## How The System Works
+
+### Runtime Components
+
+- `gradient-controller`
+  - UDP command server and motion execution runtime
+  - owns planning/execution primitives and actuator IO
+- `gradient-api`
+  - FastAPI proxy over controller commands
+  - provides REST endpoints and `/monitor` SSE telemetry
+- `web-ui`
+  - React/TypeScript operator UI for planning, inspection, and execution
+- `gradient-vision` (optional)
+  - vision and MJPEG streaming utilities
+
+### Data Flow
+
+```mermaid
+graph TD
+    A[Web UI or CLI] --> B[gradient-api]
+    B --> C[gradient-controller]
+    C --> D[Trajectory planning and IK/FK]
+    D --> E[Actuator backend]
+    C --> F[Telemetry stream]
+    F --> B
+    B --> A
+```
+
+## Quick Start
+
+## Prerequisites
+
+- Python 3.11+ (3.12 preferred)
+- `uv` (recommended for env/package management)
+- Node.js 18+ and npm (for `web-ui`)
+
+## Setup
+
+```bash
+git clone https://github.com/terrorproforma/GradientOS.git --verbose
+cd GradientOS
+./setup.sh
+```
+
+Manual fallback:
+
+```bash
+uv venv .venv
+source ./start.sh
+```
+
+## Run The Stack
+
+### Linux/macOS
+
+```bash
+# Controller (hardware)
+./run.sh
+
+# Or simulator controller
+./run-sim.sh
+
+# API
+./run-api.sh
+
+# Web UI
+./run-web.sh
+```
+
+### Windows PowerShell
+
+```powershell
+# Terminal 1: simulator controller
+.\run-sim.ps1
+
+# Terminal 2: API
+.\run-api.ps1
+
+# Terminal 3: web UI
+cd .\web-ui
+npm install
+npm run dev -- --host 0.0.0.0 --port 8000
+```
+
+Defaults:
+
+- Web UI: `http://localhost:8000`
+- API: `http://localhost:4000`
+
+## First-Run Operator Workflow (Web UI)
+
+1. Open the UI and set API host if needed.
+2. Click **Connect** to subscribe to telemetry.
+3. Load/import a STEP model for topology extraction.
+4. Select edges, configure weld options, and plan preview.
+5. Inspect execution details in Program Tree.
+6. Run preview trajectory/weld program.
+7. Save/load weld programs as needed.
+
+## Key Motion And Weld Behavior
+
+- Weld preview execution uses high-fidelity planned steps.
+- Program Tree reflects exact execution path samples (no intentionally coarse display path).
+- `return_to_start` for weld runs resolves from the run-time pre-weld start pose.
+- Realtime jog and trajectory playback include runtime guards to avoid controller contention.
+
+## CLI And Service Entry Points
+
+After install, common commands include:
+
+- `gradient-controller`
+- `gradient-api`
+- `gradient-ui`
+- `gradient-cli`
+- `gradient-vision`
+
+If scripts are not on PATH, run through modules:
+
+- `python -m gradient_os.run_controller`
+- `python -m gradient_os.api.main`
+- `python -m gradient_os.ui_start`
+- `python -m gradient_os.cli_controller`
+- `python -m gradient_os.vision`
+
+## Project Layout
+
+- `src/gradient_os/arm_controller/` - controller runtime and command handlers
+- `src/gradient_os/api/` - HTTP/SSE API
+- `src/gradient_os/cad/` - topology extraction and STEP-driven planning helpers
+- `src/gradient_os/vision/` - vision pipeline
+- `web-ui/` - React operator interface
+- `docs/` - subsystem docs and references
+- `tests/` - automated tests
+
+## Documentation Map
+
+Core:
+
+- `docs/run_controller.md`
+- `docs/command_api.md`
+- `docs/trajectory_execution.md`
+- `docs/servo_driver.md`
+- `docs/servo_protocol.md`
+- `docs/utils.md`
+- `docs/ik_solver.md`
+- `docs/trajectory_recorder.md`
+
+UI and API:
+
+- `docs/UI_readme.md`
+- `web-ui/README.md`
+
+Vision:
+
+- `src/gradient_os/vision/README.md`
+
+EtherCAT/RTOS:
+
+- `docs/ethercat/bringup.md`
+- `docs/ethercat/igh.md`
+- `docs/ethercat/rtcore_jog.md`
+
+## Deployment Notes
+
+For unattended deployments on Linux targets, see:
+
+- `systemd/README.md`
+- `web-ui/systemd/` (API service helper scripts)
+
+## Troubleshooting Quick Checks
+
+- UI cannot connect:
+  - verify API is running on expected host/port
+  - verify firewall/network path
+- API is up but no motion:
+  - verify controller process is running
+  - verify controller host/port env configuration
+- Unexpected motion behavior:
+  - stop active jog mode before test execution
+  - clear and re-plan preview before rerun
+
 # Mini Arm Controller Documentation
 
 This documentation provides a comprehensive overview of the Mini Arm Controller software, from the high-level API down to the low-level hardware communication and IK solver implementation.

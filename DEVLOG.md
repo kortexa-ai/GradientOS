@@ -669,3 +669,59 @@
   - User confirmed issue had also reproduced previously with jog disabled, supporting execution-state race as root cause.
 - Follow-up notes / risks:
   - Keep jog-stop pre-run guard in place as defense-in-depth even if not primary root cause in this incident.
+
+## 2026-02-18 11:47 +11:00
+
+- Task summary:
+  - Added/updated repository-facing README documentation for merge to `main`.
+  - Prepared a merge-ready commit message for the current branch changes.
+- Changes:
+  - Added new root `README.md` with:
+    - project overview,
+    - quick start commands (including Windows `.ps1` launchers),
+    - current weld workflow behavior notes (exact path samples, return-to-start semantics, execution stability guards),
+    - pointers to docs and web UI guidance.
+  - Updated `web-ui/README.md` from legacy early-stage description to current production capabilities:
+    - scene/telemetry, trajectory and weld planning, Program Tree exact-path behavior, and operational notes.
+- Validation:
+  - Lint check: `ReadLints` on `README.md` and `web-ui/README.md` reported no issues.
+- Follow-up notes / risks:
+  - If release process requires it, align any duplicated quick-start wording between `README.md`, `AGENTS.md`, and `docs/README.md` in a later docs-only cleanup.
+
+## 2026-02-18 11:55 +11:00
+
+- Task summary:
+  - Updated `docs/README.md` (the main repository README target used by this project) with a branch-highlights summary for `STEP_LOADER`.
+  - Prepared a comprehensive merge commit message covering full branch scope.
+- Changes:
+  - Updated `docs/README.md`:
+    - added a `STEP_LOADER Branch Highlights` section,
+    - documented CAD topology + weld pipeline additions,
+    - documented trajectory execution correctness fixes (including execution-state lifecycle guard behavior),
+    - documented Web UI upgrades (STEP/weld/program tree/exact path visibility),
+    - documented platform/dev workflow updates (Windows launchers, API tests).
+- Validation:
+  - Lint check: `ReadLints` on `docs/README.md` reported no issues.
+  - Verified branch scope context using:
+    - `git log --oneline master..HEAD`
+    - `git diff --stat master..HEAD`
+- Follow-up notes / risks:
+  - Docs now include both long-form architecture and branch summary; if desired later, split release notes into a dedicated changelog section.
+
+## 2026-02-18 11:59 +11:00
+
+- Task summary:
+  - Reworked `docs/README.md` into a clean newcomer onboarding document focused on features, architecture, and practical usage.
+  - Removed release-note style framing and replaced with user/operator starting guidance.
+- Changes:
+  - Rewrote `docs/README.md`:
+    - clear "what GradientOS provides" section,
+    - runtime architecture and data-flow summary,
+    - Linux/macOS and Windows quick-start/run instructions,
+    - first-run operator workflow for Web UI,
+    - motion/weld behavior notes,
+    - project layout + documentation map + troubleshooting.
+- Validation:
+  - Lint check: `ReadLints` on `docs/README.md` reported no issues.
+- Follow-up notes / risks:
+  - If needed, older deep-dive narrative content can be moved into dedicated per-subsystem docs to keep this entrypoint concise.
