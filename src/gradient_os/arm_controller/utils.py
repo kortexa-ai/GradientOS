@@ -240,6 +240,9 @@ trajectory_state = {
     "is_running": False,
     "should_stop": False,
     "thread": None,
+    # Weld execution state for telemetry/UI overlays.
+    "weld_active": False,
+    "current_weld_type": None,
     # Diagnostics toggle (runtime), used to enable IK/executor logging and charts
     "diagnostics_enabled": False,
     # --- Real-time jogging state ---

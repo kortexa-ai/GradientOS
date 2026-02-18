@@ -1,11 +1,19 @@
 #define IKFAST_HAS_LIBRARY
 #include "ikfast.h"
 #include <vector>
+#include <cmath>
+#include <cstring>
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <cstdlib>  // getenv
 #include <string>
+
+// MSVC does not always expose M_PI from <cmath>; define it only when missing.
+// This keeps Windows builds working without affecting Linux behavior.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace py = pybind11;
 

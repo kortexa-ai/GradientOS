@@ -8,21 +8,24 @@ cd "$(dirname "$0")"
 
 REPO_ROOT="${PWD}"
 VENV_BIN="${REPO_ROOT}/.venv/bin"
+VENV_PY="${VENV_BIN}/python"
 
 if [[ -d "${VENV_BIN}" ]]; then
   export PATH="${VENV_BIN}:${PATH}"
 fi
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
-UV_AVAILABLE=false
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  VISION_BASE_CMD=(python -m gradient_os.vision.cli)
-elif command -v uv >/dev/null 2>&1; then
-  UV_AVAILABLE=true
-  VISION_BASE_CMD=(uv run gradient-vision)
-else
-  VISION_BASE_CMD=(python -m gradient_os.vision.cli)
+if [[ ! -x "${VENV_PY}" ]]; then
+  echo "[gradient-robotics] ERROR: Missing ${VENV_PY}" >&2
+  echo "[gradient-robotics] Use the single repo virtualenv (.venv) used by start.sh/setup.sh." >&2
+  exit 1
 fi
+
+if [[ -n "${VIRTUAL_ENV:-}" ]] && [[ "${VIRTUAL_ENV}" != "${REPO_ROOT}/.venv" ]]; then
+  echo "[gradient-robotics] WARNING: Different virtualenv active (${VIRTUAL_ENV}). Using ${VENV_PY} instead." >&2
+fi
+
+VISION_BASE_CMD=("${VENV_PY}" -m gradient_os.vision.cli)
 
 check_ai_with() {
   local cmd=("$@")
@@ -38,11 +41,7 @@ PY
 }
 
 AI_READY=false
-if command -v python >/dev/null 2>&1 && check_ai_with python -; then
-  AI_READY=true
-elif command -v python3 >/dev/null 2>&1 && check_ai_with python3 -; then
-  AI_READY=true
-elif $UV_AVAILABLE && check_ai_with uv run python -; then
+if check_ai_with "${VENV_PY}" -; then
   AI_READY=true
 fi
 

@@ -13,3 +13,41 @@
     @apply min-h-screen;
   }
 }
+
+@layer utilities {
+  .gradient-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.85) rgba(2, 6, 23, 0.45);
+  }
+
+  .gradient-scrollbar::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .gradient-scrollbar::-webkit-scrollbar-track {
+    border-radius: 9999px;
+    background: linear-gradient(
+      180deg,
+      rgba(2, 6, 23, 0.5) 0%,
+      rgba(15, 23, 42, 0.45) 100%
+    );
+  }
+
+  .gradient-scrollbar::-webkit-scrollbar-thumb {
+    border: 2px solid rgba(2, 6, 23, 0.7);
+    border-radius: 9999px;
+    background: linear-gradient(
+      180deg,
+      rgba(56, 189, 248, 0.32) 0%,
+      rgba(100, 116, 139, 0.92) 100%
+    );
+  }
+
+  .gradient-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      rgba(103, 232, 249, 0.45) 0%,
+      rgba(148, 163, 184, 0.95) 100%
+    );
+  }
+}

@@ -1,14 +1,20 @@
 # GradientOS Web UI
 
-Early React/TypeScript frontend for the GradientOS API. It connects to the
-`/monitor` SSE endpoint and shows the raw streaming telemetry; later we can add
-controls and 3D visualization with `@react-three/fiber`.
+Production-facing React/TypeScript operator interface for GradientOS.
+
+The app provides:
+
+- live arm visualization in a 3D scene
+- telemetry and controller alerts
+- trajectory preview and execution controls
+- STEP topology loading and weld planning tools
+- Program Tree inspection/editing for planned motion
 
 ## Prerequisites
 
-- Node.js 18+ (recommended) and npm, pnpm, or yarn
-- The GradientOS API (`gradient-api`) running locally or accessible over the
-  network
+- Node.js 18+ and npm
+- `gradient-api` running and reachable (default `http://localhost:4000`)
+- controller/simulator running if you want live execution
 
 ## Install
 
@@ -19,20 +25,61 @@ npm install
 
 ## Scripts
 
-- `npm run dev` – Start the Vite dev server with hot reload
-- `npm run build` – Production build (Tailwind CSS v4 + React)
-- `npm run preview` – Serve the production build locally for testing
+- `npm run dev` - start Vite dev server (default port `8000`)
+- `npm run build` - production build
+- `npm run preview` - serve the production build locally
 
-## Usage
+## Run (Local)
 
-1. Ensure `gradient-api` is running (e.g. `gradient-api --dev`).
-2. Start the dev server: `npm run dev`.
-3. Open the printed URL (default `http://localhost:8000`). The UI auto-fills the
-   API host to the same origin on port 4000 (e.g. `http://192.168.2.140:4000`
-   when you browse from another machine). Click **Connect** to subscribe to
-   telemetry or change the host if you need a different endpoint.
+1. Start backend services from repo root:
+   - `./run-sim.sh` and `./run-api.sh` (or PowerShell `.ps1` variants)
+2. Start UI:
 
-The page will list the latest joint angles/gripper value and maintain an event
-log. Tailwind CSS v4 powers the styling, so utility classes are available
-directly in the JSX. Future iterations will replace the text view with a 3D
-scene built on `@react-three/fiber`.
+```bash
+cd web-ui
+npm run dev
+```
+
+3. Open `http://localhost:8000`
+4. Confirm API host, then click **Connect**
+
+## Feature Overview
+
+### Scene + Telemetry
+
+- 3D arm, workcell overlays, and path rendering
+- SSE telemetry via `/monitor`
+- weld-active and alert overlays
+
+### Trajectory Planning
+
+- point-based preview planning
+- execute planned preview
+- recorded trajectory load/run flows
+
+### Weld Planning
+
+- STEP topology edge selection
+- per-segment weld configuration
+- work/travel angles and transition clearance
+- post-actions (`none`, `lift`, `return_to_start`)
+
+### Program Tree
+
+- exact execution path sample inspection (no low-resolution trim view)
+- control-point editing from Program Tree context
+- apply edits back into planner flow
+
+## Operational Notes
+
+- Weld run flow refreshes preview planning before execution to capture current pre-run robot state.
+- `return_to_start` targets the trajectory start pose captured at run time.
+- Runtime execution uses stability guards to avoid sub-step state races during weld playback.
+
+## Build Check
+
+Before merging UI changes, run:
+
+```bash
+npm run build
+```

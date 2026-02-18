@@ -10,6 +10,7 @@ cd "$(dirname "$0")"
 
 REPO_ROOT="${PWD}"
 VENV_BIN="${REPO_ROOT}/.venv/bin"
+VENV_PY="${VENV_BIN}/python"
 
 # Put project paths at the front so systemd/manual runs behave consistently
 if [[ -d "${VENV_BIN}" ]]; then
@@ -17,17 +18,17 @@ if [[ -d "${VENV_BIN}" ]]; then
 fi
 export PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}"
 
-# Prefer the active virtualenv's Python if present to avoid re-syncing deps via uv
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  CONTROLLER_CMD=(python -m gradient_os.run_controller)
-elif [[ -x "${VENV_BIN}/python" ]]; then
-  # If a local .venv exists, prefer it over `uv run` (avoids network fetches).
-  CONTROLLER_CMD=("${VENV_BIN}/python" -m gradient_os.run_controller)
-elif command -v uv >/dev/null 2>&1; then
-  CONTROLLER_CMD=(uv run gradient-controller)
-else
-  CONTROLLER_CMD=(python -m gradient_os.run_controller)
+if [[ ! -x "${VENV_PY}" ]]; then
+  echo "[gradient-robotics] ERROR: Missing ${VENV_PY}" >&2
+  echo "[gradient-robotics] Use the single repo virtualenv (.venv) used by start.sh/setup.sh." >&2
+  exit 1
 fi
+
+if [[ -n "${VIRTUAL_ENV:-}" ]] && [[ "${VIRTUAL_ENV}" != "${REPO_ROOT}/.venv" ]]; then
+  echo "[gradient-robotics] WARNING: Different virtualenv active (${VIRTUAL_ENV}). Using ${VENV_PY} instead." >&2
+fi
+
+CONTROLLER_CMD=("${VENV_PY}" -m gradient_os.run_controller)
 
 # Allow SERIAL_PORT env override when args omit it.
 SERIAL_PORT_ENV="${SERIAL_PORT:-}"

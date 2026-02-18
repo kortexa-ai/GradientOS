@@ -27,6 +27,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 	const [deadman, setDeadman] = useState<boolean>(true);
 	const [linBaseMmS, setLinBaseMmS] = useState<number>(50);
 	const [angBaseDegS, setAngBaseDegS] = useState<number>(15);
+	const [lastJogCommand, setLastJogCommand] = useState<[number, number, number, number, number, number]>([0, 0, 0, 0, 0, 0]);
 	const jogTimerRef = useRef<number | null>(null);
 	const lastSentRef = useRef<[number, number, number, number, number, number]>([0, 0, 0, 0, 0, 0]);
 	const lastSentAtRef = useRef<number>(0);
@@ -86,6 +87,9 @@ export function ControlPanel({ apiHost, onError }: Props) {
 		return [vx, vy, vz, vroll, vpitch, vyaw] as [number, number, number, number, number, number];
 	}, [linBaseMmS, angBaseDegS, speedMult, deadman]);
 
+	const effectiveLinearMS = useMemo(() => (linBaseMmS / 1000.0) * speedMult, [linBaseMmS, speedMult]);
+	const effectiveAngularDegS = useMemo(() => angBaseDegS * speedMult, [angBaseDegS, speedMult]);
+
 	const sendJogTick = useCallback(async () => {
 		const now = Date.now();
 		const v = computeJogVector();
@@ -96,14 +100,23 @@ export function ControlPanel({ apiHost, onError }: Props) {
 		if (!changed && now - lastSentAtRef.current < keepaliveMs) {
 			return;
 		}
+		const commandPayload: [number, number, number, number, number, number] = [
+			Number(v[0].toFixed(6)),
+			Number(v[1].toFixed(6)),
+			Number(v[2].toFixed(6)),
+			Number(v[3].toFixed(3)),
+			Number(v[4].toFixed(3)),
+			Number(v[5].toFixed(3)),
+		];
 		await post("/control/jog/velocity", {
-			vx: Number(v[0].toFixed(6)),
-			vy: Number(v[1].toFixed(6)),
-			vz: Number(v[2].toFixed(6)),
-			v_roll: Number(v[3].toFixed(3)),
-			v_pitch: Number(v[4].toFixed(3)),
-			v_yaw: Number(v[5].toFixed(3)),
+			vx: commandPayload[0],
+			vy: commandPayload[1],
+			vz: commandPayload[2],
+			v_roll: commandPayload[3],
+			v_pitch: commandPayload[4],
+			v_yaw: commandPayload[5],
 		});
+		setLastJogCommand(commandPayload);
 		lastSentRef.current = v;
 		lastSentAtRef.current = now;
 	}, [computeJogVector, post]);
@@ -132,6 +145,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 		linCountsRef.current = { x: 0, y: 0, z: 0 };
 		angCountsRef.current = { x: 0, y: 0, z: 0 };
 		lastSentRef.current = [0, 0, 0, 0, 0, 0];
+		setLastJogCommand([0, 0, 0, 0, 0, 0]);
 		await post("/control/jog/velocity", { vx: 0, vy: 0, vz: 0, v_roll: 0, v_pitch: 0, v_yaw: 0 });
 		await post("/control/jog/stop");
 	}, [post]);
@@ -208,7 +222,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 	}, []);
 
 	return (
-		<div className="pointer-events-auto w-[360px] rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 text-slate-100 shadow-lg shadow-slate-900/40 backdrop-blur">
+		<div className="pointer-events-auto w-full rounded-xl border border-slate-700/60 bg-slate-900/80 p-4 text-slate-100 shadow-lg shadow-slate-900/40 backdrop-blur">
 			<div className="mb-2 text-xs font-semibold uppercase tracking-[0.25em] text-cyan-200/80">
 				Robot Control
 			</div>
@@ -267,7 +281,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 				</div>
 				<div className="mb-2 grid grid-cols-2 gap-2">
 					<label className="flex items-center justify-between rounded border border-slate-700/60 bg-slate-800/60 px-2 py-1 text-xs">
-						<span>Linear (mm/s)</span>
+						<span>Linear Base (mm/s)</span>
 						<input
 							className="w-16 rounded bg-slate-900/60 px-1 text-right outline-none"
 							type="number"
@@ -278,7 +292,7 @@ export function ControlPanel({ apiHost, onError }: Props) {
 						/>
 					</label>
 					<label className="flex items-center justify-between rounded border border-slate-700/60 bg-slate-800/60 px-2 py-1 text-xs">
-						<span>Angular (deg/s)</span>
+						<span>Angular Base (deg/s)</span>
 						<input
 							className="w-16 rounded bg-slate-900/60 px-1 text-right outline-none"
 							type="number"
@@ -288,6 +302,22 @@ export function ControlPanel({ apiHost, onError }: Props) {
 							onChange={(e) => setAngBaseDegS(Number(e.target.value))}
 						/>
 					</label>
+				</div>
+				<div className="mb-2 rounded border border-slate-700/60 bg-slate-950/40 px-2 py-2 text-[11px] text-slate-300/90">
+					<div className="mb-1 flex items-center justify-between">
+						<span className="font-semibold text-slate-200">Backend Jog Command (live)</span>
+						<span className="tabular-nums text-cyan-200/80">
+							base: {effectiveLinearMS.toFixed(4)} m/s, {effectiveAngularDegS.toFixed(2)} deg/s
+						</span>
+					</div>
+					<div className="tabular-nums">
+						<span className="text-slate-400">linear m/s:</span>{" "}
+						vx={lastJogCommand[0].toFixed(6)} vy={lastJogCommand[1].toFixed(6)} vz={lastJogCommand[2].toFixed(6)}
+					</div>
+					<div className="tabular-nums">
+						<span className="text-slate-400">angular deg/s:</span>{" "}
+						roll={lastJogCommand[3].toFixed(3)} pitch={lastJogCommand[4].toFixed(3)} yaw={lastJogCommand[5].toFixed(3)}
+					</div>
 				</div>
 				<div className="grid grid-cols-3 gap-1">
 					<button

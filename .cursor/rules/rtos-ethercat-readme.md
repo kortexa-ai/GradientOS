@@ -10,6 +10,15 @@ alwaysApply: true
 - Living “unknowns” checklist: `RTOS-ETHERCAT-PLAN/Uncertainties.md` (keep this up to date during bring-up)
 - IgH/EtherLab notes + upstream links: `docs/ethercat/igh.md`
 
+## Required memory context (always)
+
+- Scratchpad skill: `.cursor/skills/learning-scratchpad-loop/SKILL.md`
+- Scratchpad template: `.cursor/skills/learning-scratchpad-loop/references/scratchpad-template.md`
+- Scratchpad file: `AGENT_SCRATCHPAD.md`
+- Devlog skill: `.cursor/skills/devlog-loop/SKILL.md`
+- Devlog template: `.cursor/skills/devlog-loop/references/devlog-entry-template.md`
+- Devlog file: `DEVLOG.md`
+
 If instructions conflict, the full specification wins.
 
 ## Non-negotiable architecture (v1)

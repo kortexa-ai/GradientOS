@@ -75,10 +75,38 @@ class SimulationBackend(ActuatorBackend):
         self._num_joints = num_joints if num_joints is not None else default_num_joints
         self._has_gripper = has_gripper if has_gripper is not None else default_has_gripper
         self._encoder_resolution = encoder_resolution if encoder_resolution is not None else default_encoder_resolution
+        self._encoder_center = self._encoder_resolution // 2
         
         self._robot_config = robot_config
         self._positions = [0.0] * self._num_joints
         self._gripper_position = 0.0
+        self._raw_positions: dict[int, int] = {}
+
+        if self._robot_config:
+            self._actuator_ids = list(self._robot_config.get("actuator_ids", []))
+            raw_l2p = dict(self._robot_config.get("logical_to_physical_map", {}))
+            self._logical_to_physical = {
+                int(logical_idx): [int(physical_idx) for physical_idx in physical_indices]
+                for logical_idx, physical_indices in raw_l2p.items()
+            }
+            self._mapping_ranges = list(self._robot_config.get("actuator_mapping_ranges_rad", []))
+            self._inverted_actuator_ids = set(self._robot_config.get("inverted_actuator_ids", set()))
+            self._master_offsets = list(
+                self._robot_config.get(
+                    "logical_joint_master_offsets_rad",
+                    [0.0] * self._num_joints,
+                )
+            )
+            self._gripper_id = self._robot_config.get("gripper_actuator_id")
+        else:
+            self._actuator_ids = list(range(self._num_joints))
+            self._logical_to_physical = {idx: [idx] for idx in range(self._num_joints)}
+            self._mapping_ranges = [(-math.pi, math.pi)] * len(self._actuator_ids)
+            self._inverted_actuator_ids = set()
+            self._master_offsets = [0.0] * self._num_joints
+            self._gripper_id = 100 if self._has_gripper else None
+
+        self._initialize_raw_cache()
         self._initialized = False
     
     def initialize(self) -> bool:
@@ -112,6 +140,7 @@ class SimulationBackend(ActuatorBackend):
         if len(positions_rad) != self._num_joints:
             raise ValueError(f"Expected {self._num_joints} positions, got {len(positions_rad)}")
         self._positions = list(positions_rad)
+        self._update_raw_from_logical()
     
     def get_joint_positions(self, verbose: bool = False) -> list[float]:
         if verbose:
@@ -130,61 +159,41 @@ class SimulationBackend(ActuatorBackend):
     def sync_write(self, commands: list[tuple]) -> None:
         # Update positions from the commands
         # Commands are in format [(servo_id, raw_pos, speed, accel), ...]
-        # We need to map servo_id to joint index
-        actuator_ids = self._robot_config.get('actuator_ids', []) if self._robot_config else []
-        logical_to_physical = self._robot_config.get('logical_to_physical_map', {}) if self._robot_config else {}
-        gripper_id = self._robot_config.get('gripper_actuator_id') if self._robot_config else None
-        
-        # Build reverse mapping: servo_id -> logical_joint_index
-        servo_to_joint = {}
-        for logical_idx, physical_indices in logical_to_physical.items():
-            for phys_idx in physical_indices:
-                if phys_idx < len(actuator_ids):
-                    servo_id = actuator_ids[phys_idx]
-                    servo_to_joint[servo_id] = logical_idx
-        
+        # We keep raw actuator values exactly as commanded, then derive logical
+        # joint angles from those raw values using robot mapping metadata.
         for servo_id_or_idx, raw_pos, _, _ in commands:
-            # Check if it's a servo ID or already an index
-            if servo_id_or_idx in servo_to_joint:
-                joint_idx = servo_to_joint[servo_id_or_idx]
-                if 0 <= joint_idx < self._num_joints:
-                    # Convert raw position to radians for storage
-                    center = self._encoder_resolution // 2
-                    self._positions[joint_idx] = (raw_pos - center) * math.pi / center
-            elif servo_id_or_idx == gripper_id:
-                # Handle gripper
-                center = self._encoder_resolution // 2
-                self._gripper_position = (raw_pos - center) * math.pi / center
-            elif 0 <= servo_id_or_idx < self._num_joints:
-                # Fallback: treat as index for backward compatibility
-                center = self._encoder_resolution // 2
-                self._positions[servo_id_or_idx] = (raw_pos - center) * math.pi / center
+            servo_id = int(servo_id_or_idx)
+            clamped_raw = max(0, min(self._encoder_resolution, int(raw_pos)))
+
+            # Normal case: caller sends actuator IDs directly.
+            if servo_id in self._actuator_ids:
+                self._raw_positions[servo_id] = clamped_raw
+                continue
+
+            # Backward-compat: allow actuator index addressing.
+            if 0 <= servo_id < len(self._actuator_ids):
+                mapped_servo_id = self._actuator_ids[servo_id]
+                self._raw_positions[mapped_servo_id] = clamped_raw
+                continue
+
+            # Unknown actuator ID; keep a best-effort cache.
+            self._raw_positions[servo_id] = clamped_raw
+
+        self._update_logical_positions_from_raw()
     
     def sync_read_positions(self, servo_ids: list[int] = None, timeout_s: Optional[float] = None) -> dict[int, int]:
-        # Return simulated raw values using configured encoder resolution
-        # Keys are servo IDs (matching the real hardware behavior)
-        center = self._encoder_resolution // 2
-        scale = center / math.pi
-        
-        actuator_ids = self._robot_config.get('actuator_ids', []) if self._robot_config else []
-        logical_to_physical = self._robot_config.get('logical_to_physical_map', {}) if self._robot_config else {}
-        
-        # Build mapping: servo_id -> logical_joint_index (just the primary servo per joint)
-        servo_to_joint = {}
-        for logical_idx, physical_indices in logical_to_physical.items():
-            if physical_indices and physical_indices[0] < len(actuator_ids):
-                servo_id = actuator_ids[physical_indices[0]]
-                servo_to_joint[servo_id] = logical_idx
-        
+        # Return cached raw values for requested actuator IDs.
         result = {}
-        target_ids = servo_ids if servo_ids else list(servo_to_joint.keys())
-        
+        target_ids = servo_ids if servo_ids else list(self._actuator_ids)
         for servo_id in target_ids:
-            if servo_id in servo_to_joint:
-                joint_idx = servo_to_joint[servo_id]
-                if 0 <= joint_idx < len(self._positions):
-                    result[servo_id] = int(self._positions[joint_idx] * scale + center)
-        
+            sid = int(servo_id)
+            if sid in self._raw_positions:
+                result[sid] = self._raw_positions[sid]
+            elif 0 <= sid < len(self._actuator_ids):
+                mapped = self._actuator_ids[sid]
+                result[sid] = self._raw_positions.get(mapped, self._encoder_center)
+            else:
+                result[sid] = self._encoder_center
         return result
 
     def sync_read_block(
@@ -210,13 +219,16 @@ class SimulationBackend(ActuatorBackend):
         return {sid: payload for sid in target_ids}
     
     def raw_to_joint_positions(self, raw_positions: dict[int, int]) -> list[float]:
-        result = [0.0] * self._num_joints
-        center = self._encoder_resolution // 2
-        scale = math.pi / center
-        for idx, raw in raw_positions.items():
-            if 0 <= idx < self._num_joints:
-                result[idx] = (raw - center) * scale
-        return result
+        if not raw_positions:
+            return [0.0] * self._num_joints
+        for sid, raw in raw_positions.items():
+            sid_int = int(sid)
+            if sid_int in self._actuator_ids:
+                self._raw_positions[sid_int] = int(raw)
+            elif 0 <= sid_int < len(self._actuator_ids):
+                self._raw_positions[self._actuator_ids[sid_int]] = int(raw)
+        self._update_logical_positions_from_raw()
+        return list(self._positions)
     
     def set_single_actuator_position(
         self,
@@ -225,30 +237,25 @@ class SimulationBackend(ActuatorBackend):
         speed: int,
         accel: int,
     ) -> None:
-        gripper_id = self._robot_config.get('gripper_actuator_id') if self._robot_config else 100
-        if actuator_id == gripper_id and self._has_gripper:
+        if actuator_id == self._gripper_id and self._has_gripper:
             self._gripper_position = position_rad
+            self._raw_positions[actuator_id] = self._angle_to_raw(position_rad, actuator_id)
             return
         
         # Map servo ID to joint index
         joint_idx = self._servo_id_to_joint_index(actuator_id)
         if joint_idx is not None and 0 <= joint_idx < self._num_joints:
             self._positions[joint_idx] = position_rad
+            physical_angle = position_rad + self._master_offset_for_joint(joint_idx)
+            self._raw_positions[actuator_id] = self._angle_to_raw(physical_angle, actuator_id)
     
     def read_single_actuator_position(self, actuator_id: int) -> Optional[int]:
-        center = self._encoder_resolution // 2
-        scale = center / math.pi
-        gripper_id = self._robot_config.get('gripper_actuator_id') if self._robot_config else 100
-        
-        if actuator_id == gripper_id and self._has_gripper:
-            return int(self._gripper_position * scale + center)
-        
-        # Map servo ID to joint index
-        joint_idx = self._servo_id_to_joint_index(actuator_id)
-        if joint_idx is not None and 0 <= joint_idx < self._num_joints:
-            return int(self._positions[joint_idx] * scale + center)
-        
-        return None
+        if actuator_id in self._raw_positions:
+            return self._raw_positions[actuator_id]
+        if 0 <= actuator_id < len(self._actuator_ids):
+            mapped = self._actuator_ids[actuator_id]
+            return self._raw_positions.get(mapped, self._encoder_center)
+        return self._encoder_center
     
     def _servo_id_to_joint_index(self, servo_id: int) -> Optional[int]:
         """Map a servo ID to its logical joint index."""
@@ -288,11 +295,95 @@ class SimulationBackend(ActuatorBackend):
         return self._gripper_position if self._has_gripper else None
     
     def get_present_actuator_ids(self) -> set[int]:
-        ids = set(range(self._num_joints))
-        if self._has_gripper:
-            ids.add(100)
+        ids = set(self._actuator_ids)
+        if self._has_gripper and self._gripper_id is not None:
+            ids.add(self._gripper_id)
         return ids
     
     def ping_actuator(self, actuator_id: int) -> bool:
         return actuator_id in self.get_present_actuator_ids()
+
+    def _initialize_raw_cache(self) -> None:
+        self._raw_positions.clear()
+        for servo_id in self._actuator_ids:
+            self._raw_positions[int(servo_id)] = self._encoder_center
+        if self._has_gripper and self._gripper_id is not None:
+            self._raw_positions[int(self._gripper_id)] = self._encoder_center
+
+    def _master_offset_for_joint(self, logical_joint_idx: int) -> float:
+        if 0 <= logical_joint_idx < len(self._master_offsets):
+            return float(self._master_offsets[logical_joint_idx])
+        return 0.0
+
+    def _servo_id_to_config_index(self, servo_id: int) -> Optional[int]:
+        try:
+            return self._actuator_ids.index(int(servo_id))
+        except ValueError:
+            return None
+
+    def _is_direct_mapping(self, servo_id: int) -> bool:
+        return int(servo_id) not in self._inverted_actuator_ids
+
+    def _mapping_range_for_servo(self, servo_id: int) -> tuple[float, float]:
+        cfg_idx = self._servo_id_to_config_index(servo_id)
+        if cfg_idx is not None and cfg_idx < len(self._mapping_ranges):
+            lo, hi = self._mapping_ranges[cfg_idx]
+            return float(lo), float(hi)
+        return -math.pi, math.pi
+
+    def _raw_to_angle(self, raw_value: int, servo_id: int) -> float:
+        lo, hi = self._mapping_range_for_servo(servo_id)
+        span = hi - lo
+        if abs(span) < 1e-12:
+            return lo
+        normalized = float(raw_value) / float(self._encoder_resolution)
+        if self._is_direct_mapping(servo_id):
+            return lo + normalized * span
+        return hi - normalized * span
+
+    def _angle_to_raw(self, angle_rad: float, servo_id: int) -> int:
+        lo, hi = self._mapping_range_for_servo(servo_id)
+        span = hi - lo
+        if abs(span) < 1e-12:
+            return self._encoder_center
+        clamped = max(lo, min(hi, float(angle_rad)))
+        normalized = (clamped - lo) / span
+        if not self._is_direct_mapping(servo_id):
+            normalized = 1.0 - normalized
+        raw = int(round(normalized * float(self._encoder_resolution)))
+        return max(0, min(self._encoder_resolution, raw))
+
+    def _update_logical_positions_from_raw(self) -> None:
+        logical_positions = [0.0] * self._num_joints
+        for logical_idx in range(self._num_joints):
+            physical_indices = self._logical_to_physical.get(logical_idx, [logical_idx])
+            physical_angles: list[float] = []
+            for phys_idx in physical_indices:
+                if 0 <= int(phys_idx) < len(self._actuator_ids):
+                    servo_id = self._actuator_ids[int(phys_idx)]
+                    raw = self._raw_positions.get(servo_id, self._encoder_center)
+                    physical_angles.append(self._raw_to_angle(raw, servo_id))
+            if physical_angles:
+                mean_physical = float(sum(physical_angles)) / float(len(physical_angles))
+                logical_positions[logical_idx] = mean_physical - self._master_offset_for_joint(logical_idx)
+        self._positions = logical_positions
+
+        if self._has_gripper and self._gripper_id is not None:
+            raw_gripper = self._raw_positions.get(int(self._gripper_id), self._encoder_center)
+            self._gripper_position = self._raw_to_angle(raw_gripper, int(self._gripper_id))
+
+    def _update_raw_from_logical(self) -> None:
+        for logical_idx, logical_angle in enumerate(self._positions):
+            physical_indices = self._logical_to_physical.get(logical_idx, [logical_idx])
+            physical_angle = float(logical_angle) + self._master_offset_for_joint(logical_idx)
+            for phys_idx in physical_indices:
+                if 0 <= int(phys_idx) < len(self._actuator_ids):
+                    servo_id = self._actuator_ids[int(phys_idx)]
+                    self._raw_positions[servo_id] = self._angle_to_raw(physical_angle, servo_id)
+
+        if self._has_gripper and self._gripper_id is not None:
+            self._raw_positions[int(self._gripper_id)] = self._angle_to_raw(
+                self._gripper_position,
+                int(self._gripper_id),
+            )
 

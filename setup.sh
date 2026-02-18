@@ -271,12 +271,15 @@ fi
 
 # --- Virtual environment ----------------------------------------------------
 if [[ ! -d .venv ]]; then
-  headline "Creating virtual environment (prefer Python 3.14)"
-  # Prefer system CPython 3.14 if available; otherwise fall back to 3.11; otherwise let uv manage
-  if command -v python3.14 >/dev/null 2>&1; then
-    uv venv .venv --python python3.14 --prompt "Gradient OS"
+  headline "Creating virtual environment (prefer Python 3.12)"
+  # Prefer CPython 3.12 for wheel compatibility across platforms.
+  # Fall back to 3.11, then 3.14, then let uv manage.
+  if command -v python3.12 >/dev/null 2>&1; then
+    uv venv .venv --python python3.12 --prompt "Gradient OS"
   elif command -v python3.11 >/dev/null 2>&1; then
     uv venv .venv --python python3.11 --prompt "Gradient OS"
+  elif command -v python3.14 >/dev/null 2>&1; then
+    uv venv .venv --python python3.14 --prompt "Gradient OS"
   else
     # uv will acquire a compatible interpreter (project supports 3.11–3.14)
     uv venv .venv --prompt "Gradient OS"

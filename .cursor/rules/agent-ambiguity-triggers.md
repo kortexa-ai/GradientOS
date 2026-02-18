@@ -5,6 +5,15 @@ alwaysApply: true
 
 # Ambiguity Triggers (Red Flags) + Required Agent Response
 
+## Required memory context (always)
+
+- Scratchpad skill: `.cursor/skills/learning-scratchpad-loop/SKILL.md`
+- Scratchpad template: `.cursor/skills/learning-scratchpad-loop/references/scratchpad-template.md`
+- Scratchpad file: `AGENT_SCRATCHPAD.md`
+- Devlog skill: `.cursor/skills/devlog-loop/SKILL.md`
+- Devlog template: `.cursor/skills/devlog-loop/references/devlog-entry-template.md`
+- Devlog file: `DEVLOG.md`
+
 ## A) Scope Vagueness (means requirements are missing)
 **Phrases**
 - “just”, “quickly”, “simple”

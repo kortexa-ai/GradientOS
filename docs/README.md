@@ -1,3 +1,201 @@
+# GradientOS Documentation
+
+GradientOS is a robot control and offline programming stack for Gradient Robotics arms.
+It combines a realtime controller, an HTTP/SSE API, and a web operator interface for
+trajectory and weld workflows.
+
+This file is the starting point for new contributors and operators.
+
+## What GradientOS Provides
+
+- Realtime arm control through controller command handlers
+- Cartesian and joint trajectory planning/execution
+- STEP-based offline programming workflow with topology-aware weld planning
+- Web UI with 3D scene visualization, telemetry, and program inspection
+- Program Tree tooling to inspect exact execution path samples and edit control points
+- Optional vision pipeline for camera streaming and image/AI processing
+
+## How The System Works
+
+### Runtime Components
+
+- `gradient-controller`
+  - UDP command server and motion execution runtime
+  - owns planning/execution primitives and actuator IO
+- `gradient-api`
+  - FastAPI proxy over controller commands
+  - provides REST endpoints and `/monitor` SSE telemetry
+- `web-ui`
+  - React/TypeScript operator UI for planning, inspection, and execution
+- `gradient-vision` (optional)
+  - vision and MJPEG streaming utilities
+
+### Data Flow
+
+```mermaid
+flowchart TD
+    A[Web UI or CLI] --> B[gradient-api]
+    B --> C[gradient-controller]
+    C --> D[Trajectory planning and IK FK]
+    D --> E[Actuator backend]
+    C --> F[Telemetry stream]
+    F --> B
+    B --> A
+```
+
+## Quick Start
+
+## Prerequisites
+
+- Python 3.11+ (3.12 preferred)
+- `uv` (recommended for env/package management)
+- Node.js 18+ and npm (for `web-ui`)
+
+## Setup
+
+```bash
+git clone https://github.com/terrorproforma/GradientOS.git --verbose
+cd GradientOS
+./setup.sh
+```
+
+Manual fallback:
+
+```bash
+uv venv .venv
+source ./start.sh
+```
+
+## Run The Stack
+
+### Linux/macOS
+
+```bash
+# Controller (hardware)
+./run.sh
+
+# Or simulator controller
+./run-sim.sh
+
+# API
+./run-api.sh
+
+# Web UI
+./run-web.sh
+```
+
+### Windows PowerShell
+
+```powershell
+# Terminal 1: simulator controller
+.\run-sim.ps1
+
+# Terminal 2: API
+.\run-api.ps1
+
+# Terminal 3: web UI
+cd .\web-ui
+npm install
+npm run dev -- --host 0.0.0.0 --port 8000
+```
+
+Defaults:
+
+- Web UI: `http://localhost:8000`
+- API: `http://localhost:4000`
+
+## First-Run Operator Workflow (Web UI)
+
+1. Open the UI and set API host if needed.
+2. Click **Connect** to subscribe to telemetry.
+3. Load/import a STEP model for topology extraction.
+4. Select edges, configure weld options, and plan preview.
+5. Inspect execution details in Program Tree.
+6. Run preview trajectory/weld program.
+7. Save/load weld programs as needed.
+
+## Key Motion And Weld Behavior
+
+- Weld preview execution uses high-fidelity planned steps.
+- Program Tree reflects exact execution path samples (no intentionally coarse display path).
+- `return_to_start` for weld runs resolves from the run-time pre-weld start pose.
+- Realtime jog and trajectory playback include runtime guards to avoid controller contention.
+
+## CLI And Service Entry Points
+
+After install, common commands include:
+
+- `gradient-controller`
+- `gradient-api`
+- `gradient-ui`
+- `gradient-cli`
+- `gradient-vision`
+
+If scripts are not on PATH, run through modules:
+
+- `python -m gradient_os.run_controller`
+- `python -m gradient_os.api.main`
+- `python -m gradient_os.ui_start`
+- `python -m gradient_os.cli_controller`
+- `python -m gradient_os.vision`
+
+## Project Layout
+
+- `src/gradient_os/arm_controller/` - controller runtime and command handlers
+- `src/gradient_os/api/` - HTTP/SSE API
+- `src/gradient_os/cad/` - topology extraction and STEP-driven planning helpers
+- `src/gradient_os/vision/` - vision pipeline
+- `web-ui/` - React operator interface
+- `docs/` - subsystem docs and references
+- `tests/` - automated tests
+
+## Documentation Map
+
+Core:
+
+- `docs/run_controller.md`
+- `docs/command_api.md`
+- `docs/trajectory_execution.md`
+- `docs/servo_driver.md`
+- `docs/servo_protocol.md`
+- `docs/utils.md`
+- `docs/ik_solver.md`
+- `docs/trajectory_recorder.md`
+
+UI and API:
+
+- `docs/UI_readme.md`
+- `web-ui/README.md`
+
+Vision:
+
+- `src/gradient_os/vision/README.md`
+
+EtherCAT/RTOS:
+
+- `docs/ethercat/bringup.md`
+- `docs/ethercat/igh.md`
+- `docs/ethercat/rtcore_jog.md`
+
+## Deployment Notes
+
+For unattended deployments on Linux targets, see:
+
+- `systemd/README.md`
+- `web-ui/systemd/` (API service helper scripts)
+
+## Troubleshooting Quick Checks
+
+- UI cannot connect:
+  - verify API is running on expected host/port
+  - verify firewall/network path
+- API is up but no motion:
+  - verify controller process is running
+  - verify controller host/port env configuration
+- Unexpected motion behavior:
+  - stop active jog mode before test execution
+  - clear and re-plan preview before rerun
+
 # Mini Arm Controller Documentation
 
 This documentation provides a comprehensive overview of the Mini Arm Controller software, from the high-level API down to the low-level hardware communication and IK solver implementation.
@@ -93,44 +291,6 @@ Features include:
 - Hotkeys (1, 2, 3) for sending the arm to preset Rest, Home, and Zero positions.
 - A live display of the robot's current X/Y/Z position.
 
-## Documentation Checklist (Detailed)
-
-This checklist tracks the progress of documenting each component of the system at a granular level.
-
-### High-Level Architecture
-- [x] System Overview and Data Flow
-- [x] Non-Blocking Command Architecture
-
-### Core Controller Package (`src/arm_controller/`)
-
-**File-Level Documentation:**
-- [x] [`run_controller.py`](./run_controller.md) - Main Entry Point
-- [x] [`command_api.py`](./command_api.md) - UDP Command Handlers
-- [x] [`trajectory_execution.py`](./trajectory_execution.md) - Path Planning & Execution
-- [x] [`servo_driver.py`](./servo_driver.md) - High-Level Servo Control
-- [x] [`servo_protocol.py`](./servo_protocol.md) - Low-Level Servo Communication
-- [x] [`utils.py`](./utils.md) - Shared Constants and Helpers
-- [x] `__init__.py` - Package Initializer (This file makes `src/arm_controller` a Python package, allowing its modules to be imported.)
-
-**Function and Variable-Level Documentation (Docstrings):**
-- [x] `utils.py`
-- [x] `servo_protocol.py`
-- [x] `servo_driver.py`
-- [x] `trajectory_execution.py`
-- [x] `command_api.py` 
-- [x] `run_controller.py`
-
-### External Libraries
-- [x] [Python Wrapper (`ik_solver.py`)](./ik_solver.md)
-- [x] C++ IKFast Implementation Overview & End-Effector Offset
-- [x] `trajectory_planner.py`
-
-### Testing
-- [x] `tests/test_protocol.py`
-- [x] `tests/test_driver.py`
-- [x] `tests/test_planning.py`
-- [x] `tests/test_end_to_end.py` (Mocked Hardware)
-
 ---
 
 ## Vision Module
@@ -160,49 +320,22 @@ The Mini Arm Controller software is designed with a modular, layered architectur
 The following diagram illustrates how a command flows through the system, from the initial UDP packet to the final motor movement.
 
 ```mermaid
-graph TD
-    subgraph User
-        A["UDP Command<br/>e.g., 'MOVE_LINE,...'"]
-    end
-
-    subgraph Raspberry Pi
-        subgraph run_controller.py
-            B["Main Loop<br/>Listens for commands"]
-        end
-
-        subgraph arm_controller Package
-            C["command_api.py<br/>handle_move_line"]
-            D["trajectory_execution.py<br/>_plan_... / _closed_loop_..."]
-            E["servo_driver.py<br/>set_servo_positions"]
-            F["servo_protocol.py<br/>sync_write_..."]
-            G["utils.py<br/>Shared State & Constants"]
-        end
-
-        subgraph External Libraries
-             H["ik_solver.py<br/>(Python Wrapper)"]
-             I["ikfast_solver<br/>(C++ Module)"]
-        end
-        
-        J(("Servos"))
-    end
-
-    A --> B;
-    B --> C;
-    C --> D;
-    D --"Plans Path"--> H;
-    H --"Solves IK"--> I;
-    D --"Executes Path"--> E;
-    E --> F;
-    F --> J;
-    
-    J --"Feedback"--> F;
-    F --"Feedback"--> E;
-    E --"Feedback"--> D;
-    
-    G -.-> C;
-    G -.-> D;
-    G -.-> E;
-    G -.-> F;
+flowchart TD
+    A[UDP Command MOVE_LINE etc] --> B[run_controller main loop]
+    B --> C[command_api handler]
+    C --> D[trajectory_execution planner and executor]
+    D --> E[ik_solver python wrapper]
+    E --> F[ikfast solver]
+    D --> G[servo_driver]
+    G --> H[servo_protocol]
+    H --> I[Actuators]
+    I --> H
+    H --> G
+    G --> D
+    J[utils shared state] -.-> C
+    J -.-> D
+    J -.-> G
+    J -.-> H
 ```
 
 ### Component Breakdown
@@ -245,29 +378,26 @@ The following sequence diagram illustrates how a move is initiated in a backgrou
 ```mermaid
 sequenceDiagram
     participant Client
-    participant MainLoop as "run_controller.py"
-    participant CommandAPI as "command_api.py"
-    participant ExecutorThread as "_closed_loop_executor_thread"
+    participant MainLoop as run_controller
+    participant CommandAPI as command_api
+    participant ExecutorThread as closed_loop_executor
 
-    Client->>+MainLoop: Send "MOVE_LINE,..."
-    MainLoop->>+CommandAPI: handle_move_line(...)
-    CommandAPI->>+ExecutorThread: Start thread
-    Note over CommandAPI, ExecutorThread: The executor starts its high-frequency<br/>error correction loop in the background.
-    ExecutorThread-->>-CommandAPI: Returns immediately
-    CommandAPI-->>-MainLoop: Returns immediately
-    MainLoop-->>-Client: (Ready for next command)
-    
+    Client->>+MainLoop: MOVE_LINE command
+    MainLoop->>+CommandAPI: handle_move_line
+    CommandAPI->>+ExecutorThread: Start background thread
+    ExecutorThread-->>-CommandAPI: Return immediately
+    CommandAPI-->>-MainLoop: Return immediately
+    MainLoop-->>-Client: Ready for next command
+
     loop For Every Point in Path
-        ExecutorThread->>ExecutorThread: Correct Error (Target - Actual)
+        ExecutorThread->>ExecutorThread: Correct error target minus actual
     end
 
-    Client->>+MainLoop: Send "STOP"
-    MainLoop->>+CommandAPI: handle_stop_command()
-    Note over CommandAPI: Sets the stop flag
+    Client->>+MainLoop: STOP command
+    MainLoop->>+CommandAPI: handle_stop_command
     CommandAPI-->>-MainLoop: Returns immediately
-    
-    ExecutorThread->>ExecutorThread: Loop sees stop flag is set and exits
-    Note over ExecutorThread: The move is safely aborted.
+
+    ExecutorThread->>ExecutorThread: Detect stop flag and exit loop
 ```
 
 ### How it Works

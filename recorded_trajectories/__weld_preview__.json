@@ -1,0 +1,88 @@
+{
+  "description": "Planned on 2026-02-18 11:34:17 via PLAN_WELD",
+  "loop": false,
+  "orientation_euler_angles_deg": null,
+  "moves": [
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.4299,
+        -0.0,
+        0.0328
+      ],
+      "orientation_euler_deg": [
+        -0.0,
+        48.53,
+        -0.0
+      ]
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.4299,
+        0.0002,
+        0.0328
+      ],
+      "orientation_euler_deg": [
+        -0.0,
+        48.53,
+        -0.0
+      ],
+      "is_weld": true,
+      "weld_type": "fillet"
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.4299,
+        0.0002,
+        0.1715
+      ],
+      "orientation_euler_deg": [
+        -0.0,
+        48.53,
+        -0.0
+      ]
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.3257,
+        0.0585,
+        0.1715
+      ],
+      "orientation_euler_deg": [
+        -0.0,
+        48.53,
+        -0.0
+      ]
+    },
+    {
+      "command": "move_absolute",
+      "vector": [
+        0.3257,
+        0.0585,
+        0.1365
+      ],
+      "orientation_euler_deg": [
+        -0.0,
+        48.53,
+        -0.0
+      ]
+    }
+  ],
+  "weld": {
+    "type": "fillet",
+    "name": "fillet weld",
+    "model_id": "step-6a86eadda8abf942",
+    "edge_id": "part_0:edge_00107",
+    "start_s": 0.0,
+    "end_s": 1.0,
+    "options": {
+      "work_angle_deg": 45,
+      "travel_angle_deg": 0,
+      "transition_clearance_mm": 35,
+      "post_action": "return_to_start"
+    }
+  }
+}
