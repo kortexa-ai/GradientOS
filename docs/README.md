@@ -33,10 +33,10 @@ This file is the starting point for new contributors and operators.
 ### Data Flow
 
 ```mermaid
-graph TD
+flowchart TD
     A[Web UI or CLI] --> B[gradient-api]
     B --> C[gradient-controller]
-    C --> D[Trajectory planning and IK/FK]
+    C --> D[Trajectory planning and IK FK]
     D --> E[Actuator backend]
     C --> F[Telemetry stream]
     F --> B
@@ -291,44 +291,6 @@ Features include:
 - Hotkeys (1, 2, 3) for sending the arm to preset Rest, Home, and Zero positions.
 - A live display of the robot's current X/Y/Z position.
 
-## Documentation Checklist (Detailed)
-
-This checklist tracks the progress of documenting each component of the system at a granular level.
-
-### High-Level Architecture
-- [x] System Overview and Data Flow
-- [x] Non-Blocking Command Architecture
-
-### Core Controller Package (`src/arm_controller/`)
-
-**File-Level Documentation:**
-- [x] [`run_controller.py`](./run_controller.md) - Main Entry Point
-- [x] [`command_api.py`](./command_api.md) - UDP Command Handlers
-- [x] [`trajectory_execution.py`](./trajectory_execution.md) - Path Planning & Execution
-- [x] [`servo_driver.py`](./servo_driver.md) - High-Level Servo Control
-- [x] [`servo_protocol.py`](./servo_protocol.md) - Low-Level Servo Communication
-- [x] [`utils.py`](./utils.md) - Shared Constants and Helpers
-- [x] `__init__.py` - Package Initializer (This file makes `src/arm_controller` a Python package, allowing its modules to be imported.)
-
-**Function and Variable-Level Documentation (Docstrings):**
-- [x] `utils.py`
-- [x] `servo_protocol.py`
-- [x] `servo_driver.py`
-- [x] `trajectory_execution.py`
-- [x] `command_api.py` 
-- [x] `run_controller.py`
-
-### External Libraries
-- [x] [Python Wrapper (`ik_solver.py`)](./ik_solver.md)
-- [x] C++ IKFast Implementation Overview & End-Effector Offset
-- [x] `trajectory_planner.py`
-
-### Testing
-- [x] `tests/test_protocol.py`
-- [x] `tests/test_driver.py`
-- [x] `tests/test_planning.py`
-- [x] `tests/test_end_to_end.py` (Mocked Hardware)
-
 ---
 
 ## Vision Module
@@ -358,49 +320,22 @@ The Mini Arm Controller software is designed with a modular, layered architectur
 The following diagram illustrates how a command flows through the system, from the initial UDP packet to the final motor movement.
 
 ```mermaid
-graph TD
-    subgraph User
-        A["UDP Command<br/>e.g., 'MOVE_LINE,...'"]
-    end
-
-    subgraph Raspberry Pi
-        subgraph run_controller.py
-            B["Main Loop<br/>Listens for commands"]
-        end
-
-        subgraph arm_controller Package
-            C["command_api.py<br/>handle_move_line"]
-            D["trajectory_execution.py<br/>_plan_... / _closed_loop_..."]
-            E["servo_driver.py<br/>set_servo_positions"]
-            F["servo_protocol.py<br/>sync_write_..."]
-            G["utils.py<br/>Shared State & Constants"]
-        end
-
-        subgraph External Libraries
-             H["ik_solver.py<br/>(Python Wrapper)"]
-             I["ikfast_solver<br/>(C++ Module)"]
-        end
-        
-        J(("Servos"))
-    end
-
-    A --> B;
-    B --> C;
-    C --> D;
-    D --"Plans Path"--> H;
-    H --"Solves IK"--> I;
-    D --"Executes Path"--> E;
-    E --> F;
-    F --> J;
-    
-    J --"Feedback"--> F;
-    F --"Feedback"--> E;
-    E --"Feedback"--> D;
-    
-    G -.-> C;
-    G -.-> D;
-    G -.-> E;
-    G -.-> F;
+flowchart TD
+    A[UDP Command MOVE_LINE etc] --> B[run_controller main loop]
+    B --> C[command_api handler]
+    C --> D[trajectory_execution planner and executor]
+    D --> E[ik_solver python wrapper]
+    E --> F[ikfast solver]
+    D --> G[servo_driver]
+    G --> H[servo_protocol]
+    H --> I[Actuators]
+    I --> H
+    H --> G
+    G --> D
+    J[utils shared state] -.-> C
+    J -.-> D
+    J -.-> G
+    J -.-> H
 ```
 
 ### Component Breakdown
@@ -443,29 +378,26 @@ The following sequence diagram illustrates how a move is initiated in a backgrou
 ```mermaid
 sequenceDiagram
     participant Client
-    participant MainLoop as "run_controller.py"
-    participant CommandAPI as "command_api.py"
-    participant ExecutorThread as "_closed_loop_executor_thread"
+    participant MainLoop as run_controller
+    participant CommandAPI as command_api
+    participant ExecutorThread as closed_loop_executor
 
-    Client->>+MainLoop: Send "MOVE_LINE,..."
-    MainLoop->>+CommandAPI: handle_move_line(...)
-    CommandAPI->>+ExecutorThread: Start thread
-    Note over CommandAPI, ExecutorThread: The executor starts its high-frequency<br/>error correction loop in the background.
-    ExecutorThread-->>-CommandAPI: Returns immediately
-    CommandAPI-->>-MainLoop: Returns immediately
-    MainLoop-->>-Client: (Ready for next command)
-    
+    Client->>+MainLoop: MOVE_LINE command
+    MainLoop->>+CommandAPI: handle_move_line
+    CommandAPI->>+ExecutorThread: Start background thread
+    ExecutorThread-->>-CommandAPI: Return immediately
+    CommandAPI-->>-MainLoop: Return immediately
+    MainLoop-->>-Client: Ready for next command
+
     loop For Every Point in Path
-        ExecutorThread->>ExecutorThread: Correct Error (Target - Actual)
+        ExecutorThread->>ExecutorThread: Correct error target minus actual
     end
 
-    Client->>+MainLoop: Send "STOP"
-    MainLoop->>+CommandAPI: handle_stop_command()
-    Note over CommandAPI: Sets the stop flag
+    Client->>+MainLoop: STOP command
+    MainLoop->>+CommandAPI: handle_stop_command
     CommandAPI-->>-MainLoop: Returns immediately
-    
-    ExecutorThread->>ExecutorThread: Loop sees stop flag is set and exits
-    Note over ExecutorThread: The move is safely aborted.
+
+    ExecutorThread->>ExecutorThread: Detect stop flag and exit loop
 ```
 
 ### How it Works

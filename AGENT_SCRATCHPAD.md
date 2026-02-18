@@ -1898,3 +1898,49 @@ Use this file as persistent, repo-local execution memory.
 
 - Remaining risk or pending check:
   - None immediate.
+
+### 2026-02-18 12:28 +11:00 - Diagram renderer compatibility fix only
+
+#### Task Summary
+
+- Applied targeted fixes to Mermaid blocks in `docs/README.md` so diagrams render in the repo preview environment.
+
+#### Mistakes And Fixes
+
+- Source: `[user]`
+- Mistake:
+  - Diagram syntax was too permissive/complex for the active markdown renderer and produced "No diagram type detected" errors.
+- Detection:
+  - User screenshots showed Mermaid parser failures in rendered README sections.
+- Fix:
+  - Rewrote Mermaid blocks with strict `flowchart TD` and simplified `sequenceDiagram` content.
+  - Removed HTML line breaks and complex quoted labels from diagram text.
+- Preventive rule:
+  - For README diagrams, prefer conservative Mermaid syntax over decorative labels.
+
+#### User Preferences
+
+- New or reinforced preference:
+  - Scope must stay exactly on requested fix when user asks for a targeted patch.
+- How it changed execution:
+  - Limited edits to diagram blocks only.
+
+#### What Worked
+
+- Pattern/check that worked:
+  - Re-typing diagram blocks from scratch prevented hidden syntax issues from surviving.
+
+#### What Did Not Work
+
+- Failed attempt and why:
+  - None in this step.
+
+#### Guardrails For Next Session
+
+- Preflight rule:
+  - When diagrams fail, first simplify to minimal valid Mermaid syntax before broader doc edits.
+
+#### Follow-Ups / Risks
+
+- Remaining risk or pending check:
+  - None immediate.

@@ -725,3 +725,17 @@
   - Lint check: `ReadLints` on `docs/README.md` reported no issues.
 - Follow-up notes / risks:
   - If needed, older deep-dive narrative content can be moved into dedicated per-subsystem docs to keep this entrypoint concise.
+
+## 2026-02-18 12:28 +11:00
+
+- Task summary:
+  - Fixed broken diagram rendering in `docs/README.md`.
+- Changes:
+  - Rewrote all Mermaid blocks to strict minimal syntax:
+    - switched flow diagrams to `flowchart TD`,
+    - removed HTML tags and complex labels in nodes/notes,
+    - simplified sequence diagram participant labels and event text.
+- Validation:
+  - Lint check: `ReadLints` on `docs/README.md` reported no issues.
+- Follow-up notes / risks:
+  - None.
